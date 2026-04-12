@@ -1,0 +1,115 @@
+# LLM (OpenAI Compatible API) の設定
+llm:
+  base_url: "http://127.0.0.1:11434/v1"
+  model: "your-model-name" # 使用するモデル名
+  # api_key: "your-api-key"  # APIキー（省略時は "ollama"。OpenAI等の場合は sk-... を指定）
+
+  # OpenAI互換APIの標準パラメータ（全ステップ共通デフォルト、省略可能）
+  # ステップ固有の summarizer.steps.<step>.parameters で上書きできます
+  #parameters:
+  #  temperature: 0.3
+  #  top_p: 0.9
+  #  max_tokens: 8192          # 最大出力トークン数（Ollama では num_predict に相当）。無限生成防止に有効
+  #  reasoning_effort: "medium"  # o1/o3/o4-mini など reasoning 対応モデル向け ("low" | "medium" | "high")
+
+  # モデル固有の特殊なパラメータ（APIプロバイダー固有の拡張フィールド、省略可能）
+  # Ollama で thinking を有効にする場合の例:
+  #extra_body:
+  #  think: true           # Ollama thinking モードを有効化
+  #  think_budget: 8192    # 思考トークン予算（省略可能）
+  #  options:
+  #    num_ctx: 4096
+
+  # thinking フラグ: temperature の自動除外にのみ使用（disable_temperature_with_thinking と組み合わせる）
+  # ※ thinking 自体の有効化は extra_body で行ってください
+  #thinking: true
+
+  # Gemma 4 のThinking安定化: true にするとシステムプロンプト先頭に <|think|> を自動注入する
+  # extra_body: think: true と組み合わせて使用してください
+  #gemma4_think: true
+
+  # thinking 有効時に temperature を自動除外する（thinking モデルで temperature が非推奨の場合に有効化）
+  #disable_temperature_with_thinking: true
+
+  # LLM 生成失敗時の再試行回数（JSON パースエラー等が発生した場合に再試行する。デフォルト: 3）
+  #max_retries: 3
+
+  # Structured Output を使用するか（デフォルト: true）
+  # false にすると response_format を使わず、プロンプトで JSON 出力を指示して手動パースする。
+  # Structured Output 非対応プロバイダー（一部ローカル LLM 等）や Repetition 問題の回避に使用。
+  #structured_output: true
+
+  # Embedding モデル（省略時は LLM による直接グルーピングを使用）
+  # Ollama で利用可能な embedding 専用モデルを指定してください。
+  # 例: ollama pull bge-m3
+  #embedding_model: "bge-m3"
+
+# 要約設定
+summarizer:
+  # 個別要約の最大文字数
+  individual_max_length: 200
+  # ダイジェストの最大文字数
+  digest_max_length: 1500
+  # カテゴリ一覧（LLMがこの中から分類する）
+  categories:
+    - "テクノロジー"
+    - "ビジネス"
+    - "科学"
+    - "セキュリティ"
+    - "AI・機械学習"
+    - "プログラミング"
+    - "その他"
+
+  # ステップ別 LLM パラメータ設定
+  # 省略したパラメータは llm.parameters のグローバル設定を継承します
+  steps:
+    grouper:
+      # embedding ベースのグルーピングを有効化（llm.embedding_model の設定が必要）
+      # true: 要約後の個別要約テキストを embedding してクラスタリング → LLM はトピック命名のみ
+      # false（デフォルト）: 従来の LLM グルーピング（記事数が多いとコンテキスト溢れに注意）
+      #use_embeddings: true
+      # コサイン類似度の閾値（これ以上の類似度の記事を同一グループとみなす）
+      #similarity_threshold: 0.85
+      parameters:
+        temperature: 0.1      # 低め：決定論的な分類を優先
+        #max_tokens: 4096     # ステップ別に最大出力トークン数を上書きする場合
+
+    summarizer:
+      parameters:
+        temperature: 0.3      # 標準的な多様性
+        #max_tokens: 4096
+
+    digest:
+      #thinking: true         # thinking 有効時に temperature を除外したい場合（disable_temperature_with_thinking と組み合わせる）
+      #parameters:            # 省略時はグローバル設定を継承
+      #  temperature: 0.7
+      #  max_tokens: 16384    # digest は長文になりやすいため大きめに設定
+      #  reasoning_effort: "high"  # ステップ別に reasoning_effort を上書きする場合
+
+# データベースの設定
+database:
+  path: "data/news_summarizer.db"
+
+# Miniflux API の設定
+miniflux:
+  base_url: "http://your-miniflux-host"
+  api_key: "your-miniflux-api-key"
+
+# POP3 メールサーバーの設定
+email:
+  host: "your-mail-server.example.com"
+  port: 995
+  username: "your-email@example.com"
+  password: "your-email-password"
+  use_ssl: true
+
+# Discord Webhook の設定
+discord:
+  webhook_url: "https://discord.com/api/webhooks/your-webhook-url"
+  embed_color: 5814786
+  footer_text: "AI News Summarizer"  # フッターテキスト（空文字列 "" または省略で無効化）
+  post_individual_articles: true  # 個別記事をダイジェストの後に投稿するか（デフォルト: true）
+
+# ロギング設定
+logging:
+  level: "INFO"  # DEBUG | INFO | WARNING | ERROR

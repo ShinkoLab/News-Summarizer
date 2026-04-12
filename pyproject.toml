@@ -1,0 +1,14 @@
+[project]
+name = "news-summarizer"
+version = "0.1.0"
+description = "AI-powered news summarization pipeline: fetches articles from RSS/email, summarizes with LLM, and delivers digests via Discord"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "numpy>=2.0",
+    "openai>=2.29.0",
+    "pydantic>=2.12.5",
+    "pyyaml>=6.0.3",
+    "scikit-learn>=1.5",
+    "tqdm>=4.67.3",
+]

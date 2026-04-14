@@ -116,7 +116,7 @@ def generate_digest(summaries: List[ArticleSummary], stream: bool = False) -> Di
 
     client = get_client()
     model = get_model_name()
-    max_length = config["summarizer"]["digest_max_length"]
+    max_length = config.summarizer.digest_max_length
     parameters, extra_body = build_step_params("digest")
 
     # カテゴリ別にグループ化

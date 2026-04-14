@@ -3,8 +3,8 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-from config import load_config
 import config as config_module
+from config import reload_config
 from logger import setup_logging, get_logger
 
 from outputs.database import Database
@@ -29,7 +29,7 @@ def main():
 
     # 設定の再読み込み
     if args.config != "config.yaml":
-        config_module.config.update(load_config(args.config))
+        reload_config(args.config)
 
     setup_logging()
     logger.info("プロセス開始")
@@ -84,10 +84,10 @@ def main():
     embeddings: np.ndarray | None = None
     article_group_map: dict[int, tuple] = {}
 
-    from summarizer.llm_client import _get_llm_config, get_step_config
+    from summarizer.llm_client import get_step_config
     step_cfg = get_step_config("grouper")
-    use_embeddings = step_cfg.get("use_embeddings", False)
-    embedding_model = _get_llm_config().get("embedding_model")
+    use_embeddings = step_cfg.use_embeddings
+    embedding_model = config_module.config.llm.embedding_model
 
     if use_embeddings and embedding_model:
         logger.info("Embedding を取得中...")

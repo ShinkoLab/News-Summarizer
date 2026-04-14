@@ -6,7 +6,7 @@ from config import config
 
 def setup_logging() -> None:
     """ロギングシステムを初期化する。config.yaml の logging.level を参照する。"""
-    level_str = config.get("logging", {}).get("level", "INFO").upper()
+    level_str = config.logging.level.upper()
     level = getattr(logging, level_str, logging.INFO)
 
     handler = logging.StreamHandler(sys.stderr)

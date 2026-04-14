@@ -10,11 +10,11 @@ logger = get_logger(__name__)
 
 class DiscordOutput:
     def __init__(self):
-        discord_cfg = config.get("discord", {})
-        self.webhook_url = discord_cfg.get("webhook_url")
-        self.embed_color = discord_cfg.get("embed_color", 0x5865F2)
-        self.footer_text = discord_cfg.get("footer_text", "")
-        self.post_individual_articles = discord_cfg.get("post_individual_articles", True)
+        discord_cfg = config.discord
+        self.webhook_url = discord_cfg.webhook_url
+        self.embed_color = discord_cfg.embed_color
+        self.footer_text = discord_cfg.footer_text
+        self.post_individual_articles = discord_cfg.post_individual_articles
 
     def post(self, digest: DigestResult, summaries: List[ArticleSummary]):
         if not self.webhook_url:

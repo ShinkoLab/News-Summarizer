@@ -2,40 +2,33 @@ import json
 import re
 from openai import OpenAI
 from config import config
+from config import SummarizerStepConfig
 from logger import get_logger
 
 logger = get_logger(__name__)
 
 
-def _get_llm_config() -> dict:
-    """LLM 設定を取得する。`llm` キーを優先し、後方互換として `ollama` にフォールバック。"""
-    return config.get("llm") or config.get("ollama", {})
-
-
 def use_structured_output() -> bool:
     """Structured Output を使用するか（デフォルト: True）。"""
-    return _get_llm_config().get("structured_output", True)
+    return config.llm.structured_output
 
 
 def get_client() -> OpenAI:
     """OpenAI 互換クライアントを初期化して返す"""
-    llm_config = _get_llm_config()
     return OpenAI(
-        base_url=llm_config["base_url"],
-        api_key=llm_config.get("api_key", "ollama"),
+        base_url=config.llm.base_url,
+        api_key=config.llm.api_key,
     )
 
 
 def get_model_name() -> str:
     """使用するモデル名を取得する"""
-    return _get_llm_config()["model"]
+    return config.llm.model
 
 
-def get_step_config(step_name: str) -> dict:
-    """指定ステップの設定辞書を返す（parameters 以外のフィールドも含む）。"""
-    summarizer_config = config.get("summarizer") or {}
-    steps_config = summarizer_config.get("steps") or {}
-    return steps_config.get(step_name) or {}
+def get_step_config(step_name: str) -> SummarizerStepConfig:
+    """指定ステップの設定を返す。未定義の場合はデフォルト値を持つ SummarizerStepConfig を返す。"""
+    return config.summarizer.steps.get(step_name, SummarizerStepConfig())
 
 
 def build_step_params(step_name: str) -> tuple[dict, dict | None]:
@@ -43,10 +36,6 @@ def build_step_params(step_name: str) -> tuple[dict, dict | None]:
 
     優先順位:
       ステップ固有設定 (summarizer.steps.<step>) > グローバル設定 (llm.*) の順にマージ。
-
-    後方互換:
-      summarizer.steps が未設定の場合は summarizer.<step>_thinking フラットキーにフォールバック。
-      設定キーは `llm` を優先し、`ollama` にフォールバック。
 
     Args:
         step_name: "grouper" | "summarizer" | "digest"
@@ -56,40 +45,33 @@ def build_step_params(step_name: str) -> tuple[dict, dict | None]:
         parameters は completion_kwargs に ** 展開して渡す。
         extra_body は None または dict（llm.extra_body の値をそのまま使用）。
     """
-    llm_config = _get_llm_config()
-    summarizer_config = config.get("summarizer") or {}
-    steps_config = summarizer_config.get("steps") or {}
-    step_config = steps_config.get(step_name) or {}
+    llm_cfg = config.llm
+    step_cfg = get_step_config(step_name)
 
     # --- parameters: グローバルをベースにステップ固有でオーバーライド ---
-    global_params = dict(llm_config.get("parameters") or {})
-    step_params_override = step_config.get("parameters", None)
-    if step_params_override is not None:
-        parameters = {**global_params, **step_params_override}
+    global_params = dict(llm_cfg.parameters)
+    if step_cfg.parameters:
+        parameters = {**global_params, **step_cfg.parameters}
     else:
         parameters = global_params
 
     # --- thinking: disable_temperature_with_thinking の判定にのみ使用 ---
-    legacy_key = f"{step_name}_thinking"
-    thinking = step_config.get(
-        "thinking",
-        summarizer_config.get(legacy_key, llm_config.get("thinking", None))
-    )
+    # Step-level thinking overrides the global llm.thinking
+    thinking = step_cfg.thinking if step_cfg.thinking is not None else llm_cfg.thinking
 
     # thinking 有効時に temperature を除外するオプション
-    if thinking and llm_config.get("disable_temperature_with_thinking", False):
+    if thinking and llm_cfg.disable_temperature_with_thinking:
         parameters.pop("temperature", None)
 
     # --- extra_body: 設定ファイルの llm.extra_body をそのまま使用 ---
-    extra_body = llm_config.get("extra_body", None)
+    extra_body = llm_cfg.extra_body
 
     return parameters, extra_body
 
 
 def _inject_thinking_token(messages: list[dict]) -> list[dict]:
     """gemma4_think: true のとき、システムプロンプト先頭に <|think|> を注入する。"""
-    llm_config = _get_llm_config()
-    if not llm_config.get("gemma4_think", False):
+    if not config.llm.gemma4_think:
         return messages
     messages = list(messages)
     for i, msg in enumerate(messages):
@@ -154,7 +136,7 @@ def call_with_retry(client, completion_kwargs, stream: bool = False):
 
 def _call_structured_with_retry(client, completion_kwargs, stream: bool = False):
     """Structured Output モード: response_format に Pydantic モデルを渡して parse する。"""
-    max_retries = _get_llm_config().get("max_retries", 3)
+    max_retries = config.llm.max_retries
     last_error: Exception | None = None
 
     completion_kwargs = dict(completion_kwargs)
@@ -182,7 +164,7 @@ def _call_structured_with_retry(client, completion_kwargs, stream: bool = False)
 
 def _call_plain_text_with_retry(client, completion_kwargs, stream: bool = False):
     """プレーンテキストモード: response_format なしで呼び出し、JSON を手動パースする。"""
-    max_retries = _get_llm_config().get("max_retries", 3)
+    max_retries = config.llm.max_retries
     last_error: Exception | None = None
 
     # response_format からモデルクラスを取り出し、kwargs から除去

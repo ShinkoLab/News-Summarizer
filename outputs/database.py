@@ -13,7 +13,7 @@ logger = get_logger(__name__)
 class Database:
     def __init__(self, db_path: str | None = None):
         if db_path is None:
-            db_path = config["database"]["path"]
+            db_path = config.database.path
             
         self.db_path = Path(db_path)
         # 必要なディレクトリの作成
@@ -21,10 +21,7 @@ class Database:
         self.init_db()
 
     def get_connection(self):
-        conn = sqlite3.connect(
-            self.db_path,
-            detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES
-        )
+        conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 

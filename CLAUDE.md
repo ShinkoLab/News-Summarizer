@@ -10,6 +10,8 @@ Always create a branch before implementing any new features.
 git checkout -b feature/<feature-name>
 ```
 
+コミットメッセージは必ず**日本語**で記載すること。
+
 ## Development Commands
 
 ```bash

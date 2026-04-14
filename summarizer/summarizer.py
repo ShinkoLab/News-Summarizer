@@ -12,8 +12,8 @@ def summarize_article(article: Article, stream: bool = False) -> ArticleSummary:
     """
     client = get_client()
     model = get_model_name()
-    categories = ", ".join(config["summarizer"]["categories"])
-    max_length = config["summarizer"]["individual_max_length"]
+    categories = ", ".join(config.summarizer.categories)
+    max_length = config.summarizer.individual_max_length
 
     prompt = f"""以下の記事を読み、要約・キーワード・カテゴリ分類を行ってください。
 

@@ -9,12 +9,13 @@ from logger import get_logger
 logger = get_logger(__name__)
 
 class MinifluxFetcher(BaseFetcher):
-    def __init__(self):
+    def __init__(self, dry_run: bool = False):
         if config.miniflux is None:
             raise ValueError("miniflux の設定が config.yaml に見つかりません。")
         miniflux_cfg = config.miniflux
         self.base_url = miniflux_cfg.base_url
         self.api_key = miniflux_cfg.api_key
+        self.dry_run = dry_run
         self.headers = {
             "X-Auth-Token": self.api_key
         }
@@ -70,6 +71,9 @@ class MinifluxFetcher(BaseFetcher):
         return articles
 
     def _mark_as_read(self, entry_ids: List[int]):
+        if self.dry_run:
+            logger.info("[Dry-Run] 既読化をスキップしました")
+            return
         url = f"{self.base_url}/v1/entries"
         payload = {
             "entry_ids": entry_ids,

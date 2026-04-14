@@ -10,9 +10,11 @@ logger = get_logger(__name__)
 
 class MinifluxFetcher(BaseFetcher):
     def __init__(self):
-        miniflux_cfg = config["miniflux"]
-        self.base_url = miniflux_cfg["base_url"]
-        self.api_key = miniflux_cfg["api_key"]
+        if config.miniflux is None:
+            raise ValueError("miniflux の設定が config.yaml に見つかりません。")
+        miniflux_cfg = config.miniflux
+        self.base_url = miniflux_cfg.base_url
+        self.api_key = miniflux_cfg.api_key
         self.headers = {
             "X-Auth-Token": self.api_key
         }

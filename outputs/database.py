@@ -13,7 +13,7 @@ logger = get_logger(__name__)
 class Database:
     def __init__(self, db_path: str | None = None):
         if db_path is None:
-            db_path = config["database"]["path"]
+            db_path = config.database.path
             
         self.db_path = Path(db_path)
         # 必要なディレクトリの作成

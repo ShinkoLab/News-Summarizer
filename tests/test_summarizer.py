@@ -20,12 +20,14 @@ def _make_cfg(
     categories: list[str] | None = None,
     fallback_category: str = "未分類",
     max_retries: int = 2,
+    category_max_retries: int = 2,
 ) -> AppConfig:
     return AppConfig(
         llm=LLMConfig(model="test-model", max_retries=max_retries),
         summarizer=SummarizerConfig(
             categories=categories or ["テクノロジー", "ビジネス", "その他"],
             fallback_category=fallback_category,
+            category_max_retries=category_max_retries,
         ),
         database=DatabaseConfig(path=":memory:"),
         discord=DiscordConfig(webhook_url=None),
@@ -72,7 +74,7 @@ class TestSummarizeArticleCategoryRetry:
             import summarizer.summarizer as summod
             importlib.reload(summod)
 
-            with patch("summarizer.summarizer.call_with_retry") as mock_call, \
+            with patch("summarizer.summarizer.call_once") as mock_call, \
                  patch("summarizer.summarizer.get_client"), \
                  patch("summarizer.summarizer.get_model_name", return_value="test-model"), \
                  patch("summarizer.summarizer.build_step_params", return_value=({}, None)):
@@ -93,7 +95,7 @@ class TestSummarizeArticleCategoryRetry:
             import summarizer.summarizer as summod
             importlib.reload(summod)
 
-            with patch("summarizer.summarizer.call_with_retry") as mock_call, \
+            with patch("summarizer.summarizer.call_once") as mock_call, \
                  patch("summarizer.summarizer.get_client"), \
                  patch("summarizer.summarizer.get_model_name", return_value="test-model"), \
                  patch("summarizer.summarizer.build_step_params", return_value=({}, None)):
@@ -118,7 +120,7 @@ class TestSummarizeArticleCategoryRetry:
             import summarizer.summarizer as summod
             importlib.reload(summod)
 
-            with patch("summarizer.summarizer.call_with_retry") as mock_call, \
+            with patch("summarizer.summarizer.call_once") as mock_call, \
                  patch("summarizer.summarizer.get_client"), \
                  patch("summarizer.summarizer.get_model_name", return_value="test-model"), \
                  patch("summarizer.summarizer.build_step_params", return_value=({}, None)):
@@ -148,7 +150,7 @@ class TestSummarizeArticleCategoryRetry:
             import summarizer.summarizer as summod
             importlib.reload(summod)
 
-            with patch("summarizer.summarizer.call_with_retry") as mock_call, \
+            with patch("summarizer.summarizer.call_once") as mock_call, \
                  patch("summarizer.summarizer.get_client"), \
                  patch("summarizer.summarizer.get_model_name", return_value="test-model"), \
                  patch("summarizer.summarizer.build_step_params", return_value=({}, None)):
@@ -162,7 +164,7 @@ class TestSummarizeArticleCategoryRetry:
 
     def test_fallback_uses_config_value(self):
         """fallback_category に設定した値が使われること。"""
-        cfg = _make_cfg(fallback_category="その他", max_retries=1)
+        cfg = _make_cfg(fallback_category="その他", category_max_retries=1)
         article = _make_article()
 
         with patch.object(config_module, "config", cfg):
@@ -170,7 +172,7 @@ class TestSummarizeArticleCategoryRetry:
             import summarizer.summarizer as summod
             importlib.reload(summod)
 
-            with patch("summarizer.summarizer.call_with_retry") as mock_call, \
+            with patch("summarizer.summarizer.call_once") as mock_call, \
                  patch("summarizer.summarizer.get_client"), \
                  patch("summarizer.summarizer.get_model_name", return_value="test-model"), \
                  patch("summarizer.summarizer.build_step_params", return_value=({}, None)):
@@ -179,3 +181,26 @@ class TestSummarizeArticleCategoryRetry:
                 result = summod.summarize_article(article)
 
         assert result.category == "その他"
+
+    def test_category_max_retries_independent_from_llm_max_retries(self):
+        """category_max_retries は llm.max_retries と独立して動作すること。"""
+        # llm.max_retries=5（大きい）、category_max_retries=1（小さい）で
+        # API 呼び出し回数が category_max_retries + 1 = 2 回であることを確認
+        cfg = _make_cfg(max_retries=5, category_max_retries=1)
+        article = _make_article()
+
+        with patch.object(config_module, "config", cfg):
+            import importlib
+            import summarizer.summarizer as summod
+            importlib.reload(summod)
+
+            with patch("summarizer.summarizer.call_once") as mock_call, \
+                 patch("summarizer.summarizer.get_client"), \
+                 patch("summarizer.summarizer.get_model_name", return_value="test-model"), \
+                 patch("summarizer.summarizer.build_step_params", return_value=({}, None)):
+
+                mock_call.side_effect = [_make_summary("不正")] * 2
+                result = summod.summarize_article(article)
+
+        assert result.category == "未分類"
+        assert mock_call.call_count == 2  # category_max_retries=1 → 初回+1回 = 2回

@@ -194,6 +194,52 @@ def _call_plain_text_with_retry(client, completion_kwargs, stream: bool = False)
     raise last_error
 
 
+def call_once(client, completion_kwargs, stream: bool = False):
+    """LLM を1回だけ呼び出す（内側リトライなし）。カテゴリ検証の外側ループ用。
+
+    カテゴリ検証では外側ループが再試行を管理するため、内側リトライは不要。
+    structured_output 設定に応じてモードを切り替える点は call_with_retry と同じ。
+    """
+    if use_structured_output():
+        return _call_structured_once(client, completion_kwargs, stream)
+    else:
+        return _call_plain_text_once(client, completion_kwargs, stream)
+
+
+def _call_structured_once(client, completion_kwargs, stream: bool = False):
+    """Structured Output モード（リトライなし）。"""
+    completion_kwargs = dict(completion_kwargs)
+    completion_kwargs["messages"] = _inject_thinking_token(completion_kwargs["messages"])
+
+    if stream:
+        response = stream_completion(client, completion_kwargs)
+    else:
+        response = client.chat.completions.parse(**completion_kwargs)
+
+    parsed = response.choices[0].message.parsed
+    if not parsed:
+        raise ValueError("Failed to parse the structured output from LLM.")
+    return parsed
+
+
+def _call_plain_text_once(client, completion_kwargs, stream: bool = False):
+    """プレーンテキストモード（リトライなし）。"""
+    kwargs = dict(completion_kwargs)
+    kwargs["messages"] = _inject_thinking_token(kwargs["messages"])
+    model_class = kwargs.pop("response_format", None)
+    if model_class is None:
+        raise ValueError("response_format が指定されていません。")
+
+    kwargs["messages"] = _inject_json_instruction(kwargs["messages"], model_class)
+
+    if stream:
+        text = stream_plain_text_completion(client, kwargs)
+    else:
+        response = client.chat.completions.create(**kwargs)
+        text = response.choices[0].message.content or ""
+    return _extract_json(text, model_class)
+
+
 def stream_plain_text_completion(client, completion_kwargs) -> str:
     """ストリーミングでプレーンテキスト補完を実行し、出力しながら全文を返す。"""
     thinking_active = False

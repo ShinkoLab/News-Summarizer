@@ -1,5 +1,5 @@
 from models import Article, ArticleSummary
-from summarizer.llm_client import get_client, get_model_name, build_step_params, call_with_retry
+from summarizer.llm_client import get_client, get_model_name, build_step_params, call_with_retry, call_once
 from config import config
 from logger import get_logger
 
@@ -18,7 +18,7 @@ def summarize_article(article: Article, stream: bool = False) -> ArticleSummary:
     categories = config.summarizer.categories
     categories_str = ", ".join(categories)
     max_length = config.summarizer.individual_max_length
-    max_retries = config.llm.max_retries
+    category_max_retries = config.summarizer.category_max_retries
 
     base_prompt = f"""以下の記事を読み、要約・キーワード・カテゴリ分類を行ってください。
 
@@ -41,7 +41,7 @@ def summarize_article(article: Article, stream: bool = False) -> ArticleSummary:
 
     last_result: ArticleSummary | None = None
 
-    for attempt in range(max_retries + 1):
+    for attempt in range(category_max_retries + 1):
         if attempt == 0:
             user_prompt = base_prompt
         else:
@@ -55,7 +55,7 @@ def summarize_article(article: Article, stream: bool = False) -> ArticleSummary:
             logger.warning(
                 "[カテゴリ再試行 %d/%d] 記事「%s」に未定義カテゴリ「%s」が返されました。再試行します。",
                 attempt,
-                max_retries,
+                category_max_retries,
                 article.title,
                 last_result.category,
             )
@@ -73,7 +73,7 @@ def summarize_article(article: Article, stream: bool = False) -> ArticleSummary:
         if extra_body:
             completion_kwargs["extra_body"] = extra_body
 
-        result: ArticleSummary = call_with_retry(client, completion_kwargs, stream)
+        result: ArticleSummary = call_once(client, completion_kwargs, stream)
 
         if result.category in categories:
             return result
@@ -86,7 +86,7 @@ def summarize_article(article: Article, stream: bool = False) -> ArticleSummary:
         "記事「%s」のカテゴリ「%s」が %d 回試行後も未定義のまま。「%s」にフォールバックします。",
         article.title,
         last_result.category,
-        max_retries + 1,
+        category_max_retries + 1,
         fallback,
     )
     last_result.category = fallback

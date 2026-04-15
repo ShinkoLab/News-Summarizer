@@ -42,6 +42,7 @@ class SummarizerConfig(BaseModel):
     individual_max_length: int = 200
     digest_max_length: int = 1500
     categories: list[str] = Field(default_factory=list)
+    fallback_category: str = "未分類"
     steps: dict[str, SummarizerStepConfig] = Field(default_factory=dict)
 
     @field_validator("steps", mode="before")

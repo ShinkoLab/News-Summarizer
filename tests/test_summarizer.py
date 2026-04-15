@@ -111,7 +111,7 @@ class TestSummarizeArticleCategoryRetry:
         assert mock_call.call_count == 2
 
     def test_retry_prompt_includes_invalid_category_feedback(self):
-        """再試行時のプロンプトに無効カテゴリ名とカテゴリ一覧が含まれること。"""
+        """再試行時のメッセージ履歴に無効カテゴリ名・前回応答・カテゴリ一覧が含まれること。"""
         cfg = _make_cfg(max_retries=2)
         article = _make_article()
 
@@ -131,14 +131,21 @@ class TestSummarizeArticleCategoryRetry:
                 ]
                 summod.summarize_article(article)
 
-        # 2回目の呼び出しのメッセージを確認
+        # 2回目の呼び出しのメッセージ履歴を確認
         second_call_kwargs = mock_call.call_args_list[1]
-        completion_kwargs = second_call_kwargs[0][1]  # positional arg index 1
-        user_message = completion_kwargs["messages"][1]["content"]
+        messages = second_call_kwargs[0][1]["messages"]  # positional arg index 1
 
-        assert "未知のカテゴリ" in user_message
-        assert "テクノロジー" in user_message
-        assert "修正依頼" in user_message
+        roles = [m["role"] for m in messages]
+        assert roles == ["system", "user", "assistant", "user"], "マルチターン形式になっていること"
+
+        # assistantメッセージ（前回の出力JSON）に無効カテゴリが含まれること
+        assistant_content = messages[2]["content"]
+        assert "未知のカテゴリ" in assistant_content
+
+        # 最後のuserメッセージに無効カテゴリ名とカテゴリ一覧が含まれること
+        correction_message = messages[3]["content"]
+        assert "未知のカテゴリ" in correction_message
+        assert "テクノロジー" in correction_message
 
     def test_fallback_applied_after_all_retries_exhausted(self):
         """全試行が失敗した場合に fallback_category が適用される。"""

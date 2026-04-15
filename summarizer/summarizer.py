@@ -39,19 +39,14 @@ def summarize_article(article: Article, stream: bool = False) -> ArticleSummary:
     if stream:
         logger.debug("[%s] の要約を生成中...", article.title)
 
+    messages = [
+        {"role": "system", "content": "あなたは優秀なニュース編集者です。与えられたソースから正確で簡潔な要約を生成します。"},
+        {"role": "user", "content": base_prompt},
+    ]
     last_result: ArticleSummary | None = None
 
     for attempt in range(category_max_retries + 1):
-        if attempt == 0:
-            user_prompt = base_prompt
-        else:
-            user_prompt = (
-                base_prompt
-                + f"\n\n【修正依頼】\n"
-                f"前回の出力でカテゴリに「{last_result.category}」が返されましたが、"
-                f"これは定義されていないカテゴリです。\n"
-                f"必ず以下のカテゴリから1つだけ選択してください: [{categories_str}]"
-            )
+        if attempt > 0:
             logger.warning(
                 "[カテゴリ再試行 %d/%d] 記事「%s」に未定義カテゴリ「%s」が返されました。再試行します。",
                 attempt,
@@ -59,13 +54,18 @@ def summarize_article(article: Article, stream: bool = False) -> ArticleSummary:
                 article.title,
                 last_result.category,
             )
+            messages.append({"role": "assistant", "content": last_result.model_dump_json()})
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"カテゴリに「{last_result.category}」が返されましたが、これは定義されていないカテゴリです。\n"
+                    f"必ず以下のカテゴリから1つだけ選択してください: [{categories_str}]"
+                ),
+            })
 
         completion_kwargs = {
             "model": model,
-            "messages": [
-                {"role": "system", "content": "あなたは優秀なニュース編集者です。与えられたソースから正確で簡潔な要約を生成します。"},
-                {"role": "user", "content": user_prompt}
-            ],
+            "messages": messages,
             "response_format": ArticleSummary,
             **parameters
         }

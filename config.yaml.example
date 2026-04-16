@@ -60,6 +60,14 @@ summarizer:
     - "プログラミング"
     - "その他"
 
+  # LLMが定義外のカテゴリを返し続けた場合のフォールバックカテゴリ（省略時: "未分類"）
+  # categories に含まれていない値でも指定可能
+  #fallback_category: "その他"
+
+  # カテゴリ検証失敗時の再試行回数（省略時: 3）
+  # llm.max_retries（APIエラー・JSONパース失敗用）とは独立した設定
+  #category_max_retries: 3
+
   # ステップ別 LLM パラメータ設定
   # 省略したパラメータは llm.parameters のグローバル設定を継承します
   steps:

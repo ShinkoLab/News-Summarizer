@@ -1,5 +1,5 @@
 from models import Article, ArticleSummary
-from summarizer.llm_client import get_client, get_model_name, build_step_params, call_with_retry, call_once
+from summarizer.llm_client import get_client, get_model_name, build_step_params, call_with_retry
 from config import config
 from logger import get_logger
 
@@ -46,7 +46,7 @@ def summarize_article(article: Article, stream: bool = False) -> ArticleSummary:
     last_result: ArticleSummary | None = None
 
     for attempt in range(category_max_retries + 1):
-        if attempt > 0:
+        if attempt > 0 and last_result is not None:
             logger.warning(
                 "[カテゴリ再試行 %d/%d] 記事「%s」に未定義カテゴリ「%s」が返されました。再試行します。",
                 attempt,
@@ -73,7 +73,7 @@ def summarize_article(article: Article, stream: bool = False) -> ArticleSummary:
         if extra_body:
             completion_kwargs["extra_body"] = extra_body
 
-        result: ArticleSummary = call_once(client, completion_kwargs, stream)
+        result: ArticleSummary = call_with_retry(client, completion_kwargs, stream)
 
         if result.category in categories:
             return result

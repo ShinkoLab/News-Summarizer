@@ -1,3 +1,4 @@
+import re
 from collections import defaultdict
 from typing import List
 from datetime import datetime
@@ -8,6 +9,27 @@ from config import config
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+# LLM が list[str] の各要素に混入させがちな箇条書き記号・番号を除去する
+_BULLET_PREFIX = re.compile(
+    r"^(?:"
+    r"\d+[.)）]\s*"      # 1. / 1) / 1）
+    r"|[・•·\-\*○●→▶︎▶]\s*"  # ・ • · - * ○ ● → ▶
+    r")+",
+    re.UNICODE,
+)
+
+
+def _normalize_bullets(items: list[str]) -> list[str]:
+    """LLM出力の箇条書きリストを正規化する。"""
+    result = []
+    for item in items:
+        # 1要素に複数行が詰め込まれている場合は分割
+        for line in item.splitlines():
+            line = _BULLET_PREFIX.sub("", line).strip()
+            if line:
+                result.append(line)
+    return result
 
 
 class _CategoryDigestLLMOutput(BaseModel):
@@ -32,10 +54,12 @@ def _generate_category_digest(
 ) -> CategoryDigest:
     summaries_info = "".join(f"・{s.title}: {s.summary}\n" for s in summaries)
 
-    prompt = f"""カテゴリ「{category}」の記事を1〜2文の箇条書きにまとめてください。
+    prompt = f"""カテゴリ「{category}」の記事を1〜2文ずつ要素にまとめてください。
 
 【制約事項】
-- 各記事を箇条書き1項目として列挙してください。
+- 各記事を配列の1要素として出力してください（1要素=1記事）。
+- 各要素の先頭に「・」「-」「*」「•」「1.」などの記号や番号を含めないでください。
+- 各要素に改行を含めないでください。
 - 全体で{max_chars}文字以内としてください。
 - 出力は日本語に統一してください。
 
@@ -60,7 +84,7 @@ def _generate_category_digest(
     llm_result = call_with_retry(client, completion_kwargs, stream)
     return CategoryDigest(
         category=category,
-        articles=llm_result.articles,
+        articles=_normalize_bullets(llm_result.articles),
         article_count=len(summaries),
     )
 

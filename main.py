@@ -48,12 +48,7 @@ def main():
     if args.config != "config.yaml":
         reload_config(args.config)
 
-    setup_logging()
-    if args.debug:
-        import logging as _logging
-        _logging.getLogger().setLevel(_logging.DEBUG)
-        for _h in _logging.getLogger().handlers:
-            _h.setLevel(_logging.DEBUG)
+    setup_logging(debug=args.debug)
 
     options = RunOptions(
         dry_run=args.dry_run,

@@ -74,7 +74,7 @@ class TestSummarizeArticleCategoryRetry:
             import summarizer.summarizer as summod
             importlib.reload(summod)
 
-            with patch("summarizer.summarizer.call_once") as mock_call, \
+            with patch("summarizer.summarizer.call_with_retry") as mock_call, \
                  patch("summarizer.summarizer.get_client"), \
                  patch("summarizer.summarizer.get_model_name", return_value="test-model"), \
                  patch("summarizer.summarizer.build_step_params", return_value=({}, None)):
@@ -95,7 +95,7 @@ class TestSummarizeArticleCategoryRetry:
             import summarizer.summarizer as summod
             importlib.reload(summod)
 
-            with patch("summarizer.summarizer.call_once") as mock_call, \
+            with patch("summarizer.summarizer.call_with_retry") as mock_call, \
                  patch("summarizer.summarizer.get_client"), \
                  patch("summarizer.summarizer.get_model_name", return_value="test-model"), \
                  patch("summarizer.summarizer.build_step_params", return_value=({}, None)):
@@ -120,7 +120,7 @@ class TestSummarizeArticleCategoryRetry:
             import summarizer.summarizer as summod
             importlib.reload(summod)
 
-            with patch("summarizer.summarizer.call_once") as mock_call, \
+            with patch("summarizer.summarizer.call_with_retry") as mock_call, \
                  patch("summarizer.summarizer.get_client"), \
                  patch("summarizer.summarizer.get_model_name", return_value="test-model"), \
                  patch("summarizer.summarizer.build_step_params", return_value=({}, None)):
@@ -157,7 +157,7 @@ class TestSummarizeArticleCategoryRetry:
             import summarizer.summarizer as summod
             importlib.reload(summod)
 
-            with patch("summarizer.summarizer.call_once") as mock_call, \
+            with patch("summarizer.summarizer.call_with_retry") as mock_call, \
                  patch("summarizer.summarizer.get_client"), \
                  patch("summarizer.summarizer.get_model_name", return_value="test-model"), \
                  patch("summarizer.summarizer.build_step_params", return_value=({}, None)):
@@ -179,7 +179,7 @@ class TestSummarizeArticleCategoryRetry:
             import summarizer.summarizer as summod
             importlib.reload(summod)
 
-            with patch("summarizer.summarizer.call_once") as mock_call, \
+            with patch("summarizer.summarizer.call_with_retry") as mock_call, \
                  patch("summarizer.summarizer.get_client"), \
                  patch("summarizer.summarizer.get_model_name", return_value="test-model"), \
                  patch("summarizer.summarizer.build_step_params", return_value=({}, None)):
@@ -201,7 +201,7 @@ class TestSummarizeArticleCategoryRetry:
             import summarizer.summarizer as summod
             importlib.reload(summod)
 
-            with patch("summarizer.summarizer.call_once") as mock_call, \
+            with patch("summarizer.summarizer.call_with_retry") as mock_call, \
                  patch("summarizer.summarizer.get_client"), \
                  patch("summarizer.summarizer.get_model_name", return_value="test-model"), \
                  patch("summarizer.summarizer.build_step_params", return_value=({}, None)):

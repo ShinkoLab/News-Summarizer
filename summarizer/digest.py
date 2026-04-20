@@ -67,7 +67,8 @@ def _generate_category_digest(
 【制約事項】
 - 各グループを配列の1要素として出力してください（1要素=1グループ）。
 - 複数記事を含むグループは、共通する要点を1〜2文に統合してください。先頭に「【トピック名】」を付けてください。
-- 単独記事のグループはその記事の要点を1〜2文で記述してください（トピック名プレフィックスは不要）。
+- トピック名が付いた1記事グループは、そのトピック名を「【トピック名】」形式で先頭に付けて1〜2文で記述してください。
+- トピック名のない単独記事はその記事の要点を1〜2文で記述してください（トピック名プレフィックスは不要）。
 - 各要素の先頭に「・」「-」「*」「•」「1.」などの記号や番号を含めないでください。
 - 各要素に改行を含めないでください。
 - 全体で{max_chars}文字以内としてください。
@@ -79,7 +80,7 @@ def _generate_category_digest(
     completion_kwargs = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "あなたは優秀なニュース編集者です。記事一覧を読み、各記事の要点を簡潔な箇条書きにまとめます。"},
+            {"role": "system", "content": "あなたは優秀なニュース編集者です。記事グループを読み、同一トピックの複数記事は1つに統合し、単独記事はその要点を簡潔にまとめます。"},
             {"role": "user", "content": prompt}
         ],
         "response_format": _CategoryDigestLLMOutput,
@@ -173,14 +174,11 @@ def generate_digest(
     # Pass 1: カテゴリ別にCategoryDigestを生成
     category_digests: List[CategoryDigest] = []
     for category, bucket in by_category.items():
-        # 複数記事 group を先頭、単独記事を後ろに並べる
+        # グループ記事を先頭、単独記事を後ろに並べる
         groups: list[tuple[str | None, List[ArticleSummary]]] = []
         for g in bucket["groups"].values():
-            if len(g["summaries"]) >= 2:
-                groups.append((g["topic"], g["summaries"]))
-            else:
-                # group に 1 記事しかない場合は単独記事として扱う
-                bucket["singles"].extend(g["summaries"])
+            # 1記事のグループもトピック名を保持して渡す
+            groups.append((g["topic"], g["summaries"]))
         for s in bucket["singles"]:
             groups.append((None, [s]))
 

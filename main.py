@@ -48,7 +48,7 @@ def main():
     if args.config != "config.yaml":
         reload_config(args.config)
 
-    setup_logging()
+    setup_logging(debug=args.debug)
 
     options = RunOptions(
         dry_run=args.dry_run,

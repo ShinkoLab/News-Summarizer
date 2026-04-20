@@ -44,7 +44,7 @@ class _OverviewLLMOutput(BaseModel):
 
 def _generate_category_digest(
     category: str,
-    summaries: List[ArticleSummary],
+    groups: list[tuple[str | None, List[ArticleSummary]]],
     client,
     model: str,
     parameters: dict,
@@ -52,24 +52,35 @@ def _generate_category_digest(
     max_chars: int,
     stream: bool,
 ) -> CategoryDigest:
-    summaries_info = "".join(f"・{s.title}: {s.summary}\n" for s in summaries)
+    total_articles = sum(len(g_summaries) for _, g_summaries in groups)
 
-    prompt = f"""カテゴリ「{category}」の記事を1〜2文ずつ要素にまとめてください。
+    groups_info = ""
+    for i, (topic, g_summaries) in enumerate(groups, start=1):
+        header = f"[グループ{i}] トピック: {topic}" if topic else f"[グループ{i}]（単独記事）"
+        groups_info += f"{header}\n"
+        for s in g_summaries:
+            groups_info += f"・{s.title}: {s.summary}\n"
+        groups_info += "\n"
+
+    prompt = f"""カテゴリ「{category}」の記事群をグループ単位でまとめてください。
 
 【制約事項】
-- 各記事を配列の1要素として出力してください（1要素=1記事）。
+- 各グループを配列の1要素として出力してください（1要素=1グループ）。
+- 複数記事を含むグループは、共通する要点を1〜2文に統合してください。先頭に「【トピック名】」を付けてください。
+- トピック名が付いた1記事グループは、そのトピック名を「【トピック名】」形式で先頭に付けて1〜2文で記述してください。
+- トピック名のない単独記事はその記事の要点を1〜2文で記述してください（トピック名プレフィックスは不要）。
 - 各要素の先頭に「・」「-」「*」「•」「1.」などの記号や番号を含めないでください。
 - 各要素に改行を含めないでください。
 - 全体で{max_chars}文字以内としてください。
 - 出力は日本語に統一してください。
 
-【記事一覧】
-{summaries_info}"""
+【グループ一覧】
+{groups_info.strip()}"""
 
     completion_kwargs = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "あなたは優秀なニュース編集者です。記事一覧を読み、各記事の要点を簡潔な箇条書きにまとめます。"},
+            {"role": "system", "content": "あなたは優秀なニュース編集者です。記事グループを読み、同一トピックの複数記事は1つに統合し、単独記事はその要点を簡潔にまとめます。"},
             {"role": "user", "content": prompt}
         ],
         "response_format": _CategoryDigestLLMOutput,
@@ -85,7 +96,7 @@ def _generate_category_digest(
     return CategoryDigest(
         category=category,
         articles=_normalize_bullets(llm_result.articles),
-        article_count=len(summaries),
+        article_count=total_articles,
     )
 
 
@@ -130,8 +141,11 @@ def _generate_overview(
     return llm_result.overview
 
 
-def generate_digest(summaries: List[ArticleSummary], stream: bool = False) -> DigestResult:
-    if not summaries:
+def generate_digest(
+    grouped_summaries: List[tuple[ArticleSummary, int | None, str | None]],
+    stream: bool = False,
+) -> DigestResult:
+    if not grouped_summaries:
         return DigestResult(
             overview="記事がありませんでした。",
             categories=[],
@@ -143,20 +157,34 @@ def generate_digest(summaries: List[ArticleSummary], stream: bool = False) -> Di
     max_length = config.summarizer.digest_max_length
     parameters, extra_body = build_step_params("digest")
 
-    # カテゴリ別にグループ化
-    by_category: dict[str, List[ArticleSummary]] = defaultdict(list)
-    for s in summaries:
-        by_category[s.category].append(s)
+    # カテゴリ別 → group_id 別に階層化
+    # group_id が None の記事は単独グループ扱い
+    by_category: dict[str, dict] = defaultdict(lambda: {"groups": {}, "singles": []})
+    for summary, group_id, group_topic in grouped_summaries:
+        bucket = by_category[summary.category]
+        if group_id is None:
+            bucket["singles"].append(summary)
+        else:
+            g = bucket["groups"].setdefault(group_id, {"topic": group_topic, "summaries": []})
+            g["summaries"].append(summary)
 
     n_categories = len(by_category)
     max_chars_per_category = max_length // max(1, n_categories)
 
     # Pass 1: カテゴリ別にCategoryDigestを生成
     category_digests: List[CategoryDigest] = []
-    for category, cat_summaries in by_category.items():
+    for category, bucket in by_category.items():
+        # グループ記事を先頭、単独記事を後ろに並べる
+        groups: list[tuple[str | None, List[ArticleSummary]]] = []
+        for g in bucket["groups"].values():
+            # 1記事のグループもトピック名を保持して渡す
+            groups.append((g["topic"], g["summaries"]))
+        for s in bucket["singles"]:
+            groups.append((None, [s]))
+
         cd = _generate_category_digest(
             category=category,
-            summaries=cat_summaries,
+            groups=groups,
             client=client,
             model=model,
             parameters=parameters,
@@ -179,5 +207,5 @@ def generate_digest(summaries: List[ArticleSummary], stream: bool = False) -> Di
     return DigestResult(
         overview=overview,
         categories=category_digests,
-        total_articles=len(summaries),
+        total_articles=len(grouped_summaries),
     )

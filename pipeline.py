@@ -186,8 +186,8 @@ def build_digest(
         summaries.append((article, summary, group_info[0], group_info[1]))
 
     logger.info("ダイジェストを生成しています...")
-    only_summaries = [s[1] for s in summaries]
-    digest = generate_digest(only_summaries, stream=options.stream)
+    grouped_summaries = [(s[1], s[2], s[3]) for s in summaries]
+    digest = generate_digest(grouped_summaries, stream=options.stream)
     return summaries, digest
 
 

@@ -166,7 +166,8 @@ def _call_structured_with_retry(client, completion_kwargs, stream: bool = False)
             parsed = response.choices[0].message.parsed
             if not parsed:
                 raise ValueError("Failed to parse the structured output from LLM.")
-            _log_usage(response, completion_kwargs.get("model", ""))
+            if not stream:
+                _log_usage(response, completion_kwargs.get("model", ""))
             return parsed
         except Exception as e:
             last_error = e

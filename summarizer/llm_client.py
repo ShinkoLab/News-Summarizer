@@ -122,6 +122,18 @@ def _extract_json(text: str, model_class):
     return model_class.model_validate_json(json_str)
 
 
+def _log_usage(response, context: str = "") -> None:
+    """レスポンスのトークン使用量を DEBUG レベルで出力する。"""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+    prompt = getattr(usage, "prompt_tokens", "?")
+    completion = getattr(usage, "completion_tokens", "?")
+    total = getattr(usage, "total_tokens", "?")
+    prefix = f"[{context}] " if context else ""
+    logger.debug("%sToken usage — prompt: %s, completion: %s, total: %s", prefix, prompt, completion, total)
+
+
 def call_with_retry(client, completion_kwargs, stream: bool = False):
     """LLM を呼び出し、パース失敗時は max_retries 回まで再試行する。
 
@@ -154,6 +166,7 @@ def _call_structured_with_retry(client, completion_kwargs, stream: bool = False)
             parsed = response.choices[0].message.parsed
             if not parsed:
                 raise ValueError("Failed to parse the structured output from LLM.")
+            _log_usage(response, completion_kwargs.get("model", ""))
             return parsed
         except Exception as e:
             last_error = e
@@ -186,6 +199,7 @@ def _call_plain_text_with_retry(client, completion_kwargs, stream: bool = False)
             else:
                 response = client.chat.completions.create(**kwargs)
                 text = response.choices[0].message.content or ""
+                _log_usage(response, kwargs.get("model", ""))
             return _extract_json(text, model_class)
         except Exception as e:
             last_error = e
@@ -254,6 +268,8 @@ def stream_completion(client, completion_kwargs):
         if thinking_active:
             print("\n--- [/Thinking] ---\n", flush=True)
         print("\n", flush=True)
-        return stream_ctx.get_final_completion()
+        final = stream_ctx.get_final_completion()
+        _log_usage(final, completion_kwargs.get("model", ""))
+        return final
 
 

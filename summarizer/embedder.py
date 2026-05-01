@@ -3,7 +3,7 @@ import time
 import numpy as np
 from openai import OpenAI
 
-from summarizer.llm_client import _get_llm_config
+from config import config
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -25,8 +25,8 @@ def get_embeddings(texts: list[str], debug: bool = False) -> np.ndarray:
     Raises:
         ValueError: llm.embedding_model が未設定の場合
     """
-    llm_config = _get_llm_config()
-    embedding_model = llm_config.get("embedding_model")
+    llm_cfg = config.llm
+    embedding_model = llm_cfg.embedding_model
     if not embedding_model:
         raise ValueError("llm.embedding_model が設定されていません。")
 
@@ -34,8 +34,8 @@ def get_embeddings(texts: list[str], debug: bool = False) -> np.ndarray:
         logger.debug("Embedding モデル: %s, 入力: %d件", embedding_model, len(texts))
 
     client = OpenAI(
-        base_url=llm_config["base_url"],
-        api_key=llm_config.get("api_key", "ollama"),
+        base_url=llm_cfg.base_url,
+        api_key=llm_cfg.api_key,
     )
 
     start = time.perf_counter()

@@ -23,12 +23,14 @@ def strip_tags(html: str) -> str:
 
 class EmailFetcher(BaseFetcher):
     def __init__(self, db: Database):
-        email_cfg = config["email"]
-        self.host = email_cfg["host"]
-        self.port = email_cfg.get("port", 995)
-        self.username = email_cfg["username"]
-        self.password = email_cfg["password"]
-        self.use_ssl = email_cfg.get("use_ssl", True)
+        if config.email is None:
+            raise ValueError("email の設定が config.yaml に見つかりません。")
+        email_cfg = config.email
+        self.host = email_cfg.host
+        self.port = email_cfg.port
+        self.username = email_cfg.username
+        self.password = email_cfg.password
+        self.use_ssl = email_cfg.use_ssl
         self.db = db
 
     def fetch(self) -> List[Article]:

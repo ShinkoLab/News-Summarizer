@@ -4,13 +4,20 @@ import sys
 from config import config
 
 
-def setup_logging() -> None:
-    """ロギングシステムを初期化する。config.yaml の logging.level を参照する。"""
-    level_str = config.get("logging", {}).get("level", "INFO").upper()
+_APP_NAMESPACES = ("main", "config", "logger", "pipeline", "models", "summarizer", "fetchers", "outputs")
+
+
+def setup_logging(debug: bool = False) -> None:
+    """ロギングシステムを初期化する。config.yaml の logging.level を参照する。
+
+    debug=True のとき、アプリ固有のロガー（_APP_NAMESPACES）だけ DEBUG に昇格する。
+    サードパーティライブラリ（httpx, openai 等）はconfig指定レベルのまま維持される。
+    """
+    level_str = config.logging.level.upper()
     level = getattr(logging, level_str, logging.INFO)
 
     handler = logging.StreamHandler(sys.stderr)
-    handler.setLevel(level)
+    handler.setLevel(logging.DEBUG)
 
     formatter = logging.Formatter(
         fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -21,6 +28,10 @@ def setup_logging() -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
     root_logger.addHandler(handler)
+
+    if debug:
+        for ns in _APP_NAMESPACES:
+            logging.getLogger(ns).setLevel(logging.DEBUG)
 
 
 def get_logger(name: str) -> logging.Logger:

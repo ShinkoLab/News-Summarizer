@@ -1,6 +1,6 @@
 [project]
 name = "news-summarizer"
-version = "0.1.0"
+version = "1.0.0"
 description = "AI-powered news summarization pipeline: fetches articles from RSS/email, summarizes with LLM, and delivers digests via Discord"
 requires-python = ">=3.12"
 dependencies = [
@@ -12,3 +12,13 @@ dependencies = [
     "scikit-learn>=1.5",
     "tqdm>=4.67.3",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-mock>=3.15.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

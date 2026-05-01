@@ -27,10 +27,10 @@ def group_articles(articles: List[Article], stream: bool = False) -> GroupingRes
         return GroupingResult(groups=[])
 
     step_cfg = get_step_config("grouper")
-    use_embeddings = step_cfg.get("use_embeddings", False)
+    use_embeddings = step_cfg.use_embeddings
 
-    from summarizer.llm_client import _get_llm_config
-    embedding_model = _get_llm_config().get("embedding_model")
+    from config import config
+    embedding_model = config.llm.embedding_model
 
     if use_embeddings and embedding_model:
         from summarizer.embedder import get_embeddings
@@ -71,12 +71,12 @@ def group_summaries(
 
 
 def _group_with_embeddings(
-    summaries, embeddings: np.ndarray, step_cfg: dict, stream: bool, debug: bool = False
+    summaries, embeddings: np.ndarray, step_cfg, stream: bool, debug: bool = False
 ) -> GroupingResult:
     """embedding + AgglomerativeClustering でグルーピングし、LLM でトピック命名する。"""
     from sklearn.metrics.pairwise import cosine_similarity as _cosine_similarity
 
-    similarity_threshold = step_cfg.get("similarity_threshold", 0.85)
+    similarity_threshold = step_cfg.similarity_threshold
     distance_threshold = 1.0 - similarity_threshold
 
     if stream:

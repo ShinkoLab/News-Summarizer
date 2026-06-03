@@ -15,7 +15,7 @@ from tqdm import tqdm
 import config as config_module
 from config import AppConfig
 from logger import get_logger
-from models import Article, ArticleSummary
+from models import Article, ArticleSummary, DigestResult
 
 from fetchers.rss_fetcher import MinifluxFetcher
 from fetchers.email_fetcher import EmailFetcher
@@ -65,9 +65,16 @@ class RunOptions:
 # Pipeline steps
 # ---------------------------------------------------------------------------
 
-def fetch_articles(options: RunOptions, db: Database) -> list[Article]:
-    """Fetch articles from enabled sources with per-source error isolation."""
+def fetch_articles(
+    options: RunOptions, db: Database
+) -> tuple[list[Article], MinifluxFetcher | None]:
+    """Fetch articles from enabled sources with per-source error isolation.
+
+    Returns the fetched articles and the MinifluxFetcher instance (or None when
+    RSS is disabled), so the caller can defer mark-as-read until after persistence.
+    """
     articles: list[Article] = []
+    rss_fetcher: MinifluxFetcher | None = None
 
     if options.run_rss:
         try:
@@ -85,7 +92,7 @@ def fetch_articles(options: RunOptions, db: Database) -> list[Article]:
         except Exception as e:
             logger.error("Emailの取得中にエラーが発生しました: %s", e, exc_info=True)
 
-    return articles
+    return articles, rss_fetcher
 
 
 def summarize_all(
@@ -191,7 +198,10 @@ def build_digest(
     return summaries, digest
 
 
-def persist_and_publish(summaries, digest, embeddings, db: Database, options: RunOptions) -> None:
+def persist_and_publish(
+    summaries, digest, embeddings, db: Database, options: RunOptions,
+    rss_fetcher: MinifluxFetcher | None = None,
+) -> None:
     """Save to DB and/or post to Discord based on RunOptions."""
     logger.info("結果を保存・出力しています...")
     only_summaries = [s[1] for s in summaries]
@@ -200,12 +210,18 @@ def persist_and_publish(summaries, digest, embeddings, db: Database, options: Ru
         batch_id = db.create_batch(
             total_articles=len(only_summaries), digest_text=digest.overview
         )
+        rss_entry_ids: list[int] = []
         for i, (article, summary, group_id, group_topic) in enumerate(summaries):
             embedding_list = embeddings[i].tolist() if embeddings is not None else None
             db.save_summary(batch_id, article, summary, group_id, group_topic, embedding_list)
             if article.source_type == "email":
                 db.mark_email_processed(article.source_id)
+            elif article.source_type == "rss":
+                rss_entry_ids.append(int(article.source_id))
         logger.info("データベースへの保存が完了しました。")
+        # DB保存に成功したRSS記事だけを既読化する（要約・保存に失敗した記事は次回再取得）
+        if rss_fetcher is not None and rss_entry_ids:
+            rss_fetcher.mark_as_read(rss_entry_ids)
     else:
         logger.info("[Dry-Run] データベースへの保存をスキップしました。")
 
@@ -232,7 +248,7 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
 
     db = Database()
 
-    articles = fetch_articles(options, db)
+    articles, rss_fetcher = fetch_articles(options, db)
     if not articles:
         logger.info("新規記事はありませんでした。処理を終了します。")
         return
@@ -249,9 +265,18 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
     try:
         summaries, digest = build_digest(pairs, article_group_map, options)
     except Exception as e:
-        logger.error("ダイジェスト生成中にエラーが発生しました: %s", e, exc_info=True)
-        return
+        # ダイジェスト生成の想定外失敗で個別要約まで失わないよう、空ダイジェストで続行する
+        logger.error(
+            "ダイジェスト生成中にエラーが発生しました。空のダイジェストで出力を続行します: %s",
+            e,
+            exc_info=True,
+        )
+        summaries = [
+            (article, summary, article_group_map.get(i, (None, None))[0], article_group_map.get(i, (None, None))[1])
+            for i, (article, summary) in enumerate(pairs)
+        ]
+        digest = DigestResult(overview="", categories=[], total_articles=len(pairs))
 
-    persist_and_publish(summaries, digest, embeddings, db, options)
+    persist_and_publish(summaries, digest, embeddings, db, options, rss_fetcher)
 
     logger.info("プロセス完了")

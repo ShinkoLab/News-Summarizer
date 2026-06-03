@@ -180,27 +180,46 @@ def generate_digest(
         for s in bucket["singles"]:
             groups.append((None, [s]))
 
-        cd = _generate_category_digest(
-            category=category,
-            groups=groups,
+        # Pass 1: カテゴリ単位の失敗は握りつぶし、そのカテゴリを除外する
+        # （コンテキスト溢れ等で1カテゴリが失敗してもダイジェスト全体を巻き込まない）
+        try:
+            cd = _generate_category_digest(
+                category=category,
+                groups=groups,
+                client=client,
+                model=model,
+                parameters=parameters,
+                extra_body=extra_body,
+                max_chars=max_chars_per_category,
+                stream=stream,
+            )
+            category_digests.append(cd)
+        except Exception as e:
+            logger.warning(
+                "カテゴリ「%s」のダイジェスト生成に失敗しました。このカテゴリを除外します: %s",
+                category,
+                e,
+                exc_info=True,
+            )
+
+    # Pass 2: カテゴリ別ダイジェストからoverviewを生成
+    # overview生成の失敗も握りつぶし、カテゴリ別ダイジェストは保持する
+    try:
+        overview = _generate_overview(
+            category_digests=category_digests,
             client=client,
             model=model,
             parameters=parameters,
             extra_body=extra_body,
-            max_chars=max_chars_per_category,
             stream=stream,
         )
-        category_digests.append(cd)
-
-    # Pass 2: カテゴリ別ダイジェストからoverviewを生成
-    overview = _generate_overview(
-        category_digests=category_digests,
-        client=client,
-        model=model,
-        parameters=parameters,
-        extra_body=extra_body,
-        stream=stream,
-    )
+    except Exception as e:
+        logger.warning(
+            "overviewの生成に失敗しました。overviewを空にして続行します: %s",
+            e,
+            exc_info=True,
+        )
+        overview = ""
 
     return DigestResult(
         overview=overview,

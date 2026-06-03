@@ -34,13 +34,14 @@ class MinifluxFetcher(BaseFetcher):
         entries = data.get("entries", [])
         
         articles = []
-        entry_ids = []
-        
+        empty_entry_ids = []
+
         for entry in entries:
             # 本文が空の記事はスキップ
             if not entry.get("content", "").strip():
                 logger.debug("本文が空のため記事をスキップします: %r", entry.get("title", ""))
-                entry_ids.append(entry["id"])
+                # 本文が空の記事は要約対象外の恒久スキップ。再取得しても無駄なため即既読化する。
+                empty_entry_ids.append(entry["id"])
                 continue
 
             # Minifluxの日時フォーマットのパース
@@ -62,15 +63,18 @@ class MinifluxFetcher(BaseFetcher):
                 fetched_at=datetime.now(),
                 feed_title=entry.get("feed", {}).get("title", "")
             ))
-            entry_ids.append(entry["id"])
 
-        # 取得した記事を既読にする
-        if entry_ids:
-            self._mark_as_read(entry_ids)
+        # 本文ありの実記事はここで既読化しない。要約・DB保存に成功した分だけ
+        # パイプライン側から mark_as_read() を呼んで既読化する（失敗時の記事ロスト防止）。
+        # 本文が空のスキップ記事のみ即既読化する。
+        if empty_entry_ids:
+            self.mark_as_read(empty_entry_ids)
 
         return articles
 
-    def _mark_as_read(self, entry_ids: List[int]):
+    def mark_as_read(self, entry_ids: List[int]):
+        if not entry_ids:
+            return
         if self.dry_run:
             logger.info("[Dry-Run] 既読化をスキップしました")
             return
@@ -80,6 +84,7 @@ class MinifluxFetcher(BaseFetcher):
             "status": "read"
         }
         try:
-            httpx.put(url, headers=self.headers, json=payload, timeout=10.0)
-        except httpx.RequestError as e:
-            logger.warning("Minifluxでの既読化に失敗しました: %s", e, exc_info=True)
+            response = httpx.put(url, headers=self.headers, json=payload, timeout=10.0)
+            response.raise_for_status()
+        except httpx.HTTPError as e:
+            logger.error("Minifluxでの既読化に失敗しました: %s", e, exc_info=True)

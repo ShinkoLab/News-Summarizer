@@ -121,6 +121,35 @@ class TestCreateDigestEmbed:
         embed = self.output._create_digest_embed(digest)
         assert "Test Footer" not in embed["footer"]["text"]
 
+    def test_overview_omitted_when_empty(self):
+        # overview 失敗時は太字 overview 行を出さない（カテゴリは表示）
+        digest = DigestResult(
+            overview="",
+            categories=[CategoryDigest(category="テクノロジー", articles=["x"], article_count=3)],
+            total_articles=3,
+            generated_at=datetime(2026, 4, 14, 12, 0, 0),
+        )
+        embed = self.output._create_digest_embed(digest)
+        assert not embed["description"].startswith("**\n")
+        assert "テクノロジー" in embed["description"]
+
+    def test_footer_shows_degraded_note_when_categories_dropped(self):
+        # 表示カテゴリの記事数合計 < total_articles なら退化注記を出す
+        digest = _make_digest()  # categories合計3, total_articles=3
+        digest = DigestResult(
+            overview="概要",
+            categories=[CategoryDigest(category="テクノロジー", articles=["x"], article_count=1)],
+            total_articles=3,  # 2件分のカテゴリが除外された状態
+            generated_at=datetime(2026, 4, 14, 12, 0, 0),
+        )
+        embed = self.output._create_digest_embed(digest)
+        assert "※" in embed["footer"]["text"]
+
+    def test_footer_no_degraded_note_when_complete(self):
+        digest = _make_digest()  # 合計3 == total 3, overviewあり
+        embed = self.output._create_digest_embed(digest)
+        assert "※" not in embed["footer"]["text"]
+
 
 # ---------------------------------------------------------------------------
 # _create_summary_embed structure
@@ -225,6 +254,24 @@ class TestPost:
 
         # Digest call + at least one batch of individual articles
         assert mock_post.call_count >= 2
+
+    def test_empty_digest_skips_digest_embed_but_posts_articles(self):
+        """overview も categories も空なら digest embed をスキップし個別記事は投稿する。"""
+        out = self._make_output(post_individual=True)
+        empty_digest = DigestResult(overview="", categories=[], total_articles=2)
+        summaries = _make_summaries(2)
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+
+        with patch("httpx.post", return_value=mock_response) as mock_post:
+            out.post(empty_digest, summaries)
+
+        # digest embed は送られず、個別記事のバッチのみ送られる
+        assert mock_post.call_count == 1
+        payload = mock_post.call_args_list[0][1]["json"]
+        # 個別記事Embed（タイトル付き）であることを確認
+        assert payload["embeds"][0]["title"] == "記事タイトル0"
 
     def test_no_webhook_skips_post(self):
         cfg = _make_app_config(webhook_url=None)

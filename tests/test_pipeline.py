@@ -16,7 +16,7 @@ from pipeline import RunOptions, run_pipeline
 # Fixtures
 # ---------------------------------------------------------------------------
 
-def _make_article(source_id: str = "rss-1", source_type: str = "rss") -> Article:
+def _make_article(source_id: str = "1", source_type: str = "rss") -> Article:
     now = datetime.now()
     return Article(
         source_type=source_type,
@@ -291,3 +291,71 @@ class TestSourceFiltering:
             run_pipeline(minimal_config, options)
 
         MockRss.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Miniflux 既読化の後ろ倒し + ダイジェスト失敗時のグレースフルデグラデーション
+# ---------------------------------------------------------------------------
+
+class TestMinifluxMarkAsRead:
+    def _run(self, config, options, articles, *, summarize_side_effect, generate_digest):
+        db_instance = MagicMock()
+        db_instance.create_batch.return_value = 1
+        discord_instance = MagicMock()
+        with (
+            patch("pipeline.MinifluxFetcher") as MockRss,
+            patch("pipeline.EmailFetcher") as MockEmail,
+            patch("pipeline.summarize_article", side_effect=summarize_side_effect),
+            patch("pipeline.group_articles", return_value=_make_grouping(len(articles))),
+            patch("pipeline.generate_digest", **generate_digest),
+            patch("pipeline.Database", return_value=db_instance),
+            patch("pipeline.DiscordOutput", return_value=discord_instance),
+        ):
+            rss_instance = MagicMock()
+            rss_instance.fetch.return_value = [a for a in articles if a.source_type == "rss"]
+            MockRss.return_value = rss_instance
+            MockEmail.return_value.fetch.return_value = [a for a in articles if a.source_type == "email"]
+            run_pipeline(config, options)
+        return db_instance, discord_instance, rss_instance
+
+    def test_digest_failure_still_persists_and_marks(self, minimal_config):
+        """ダイジェスト失敗でも個別要約は保存され、成功記事は既読化され、Discordも呼ばれる。"""
+        articles = [_make_article(source_id="1"), _make_article(source_id="2")]
+        db_instance, discord_instance, rss_instance = self._run(
+            minimal_config,
+            RunOptions(dry_run=False),
+            articles,
+            summarize_side_effect=[_make_summary(), _make_summary()],
+            generate_digest={"side_effect": RuntimeError("digest boom")},
+        )
+
+        assert db_instance.save_summary.call_count == 2
+        rss_instance.mark_as_read.assert_called_once_with([1, 2])
+        discord_instance.post.assert_called_once()
+
+    def test_failed_summary_article_not_marked(self, minimal_config):
+        """要約に失敗した記事は既読化対象に含まれない（記事単位）。"""
+        articles = [_make_article(source_id="1"), _make_article(source_id="2")]
+        db_instance, _, rss_instance = self._run(
+            minimal_config,
+            RunOptions(dry_run=False),
+            articles,
+            summarize_side_effect=[_make_summary(), RuntimeError("summarize fail")],
+            generate_digest={"return_value": _make_digest(1)},
+        )
+
+        assert db_instance.save_summary.call_count == 1
+        rss_instance.mark_as_read.assert_called_once_with([1])
+
+    def test_dry_run_does_not_mark(self, minimal_config):
+        """dry_run では既読化しない。"""
+        articles = [_make_article(source_id="1")]
+        _, _, rss_instance = self._run(
+            minimal_config,
+            RunOptions(dry_run=True),
+            articles,
+            summarize_side_effect=[_make_summary()],
+            generate_digest={"return_value": _make_digest(1)},
+        )
+
+        rss_instance.mark_as_read.assert_not_called()

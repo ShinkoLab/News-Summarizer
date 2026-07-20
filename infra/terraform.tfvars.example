@@ -1,0 +1,15 @@
+project_id       = "your-google-cloud-project"
+summarizer_image = "asia-northeast1-docker.pkg.dev/your-google-cloud-project/news-summarizer/summarizer:COMMIT_SHA"
+viewer_image     = "asia-northeast1-docker.pkg.dev/your-google-cloud-project/news-summarizer/viewer:COMMIT_SHA"
+
+viewer_users = [
+  "you@example.com",
+  "family@example.com",
+]
+
+miniflux_base_url = "https://miniflux.example.com"
+email_host        = "pop.example.com"
+email_username    = "news@example.com"
+
+# billing_account_id = "000000-000000-000000"
+# monthly_budget_jpy = 2000

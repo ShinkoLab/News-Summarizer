@@ -1,6 +1,6 @@
 # AI ニュース要約システム
 
-ローカル環境で動作する、AIを活用したニュース記事の自動要約・配信システム。
+ローカル環境またはGoogle Cloud上で動作する、AIを活用したニュース記事の自動要約・配信システム。
 複数ソース（RSS / メールマガジン）から記事を収集し、LLMで要約・分類した上で、Discord等への通知やWebアプリ連携用のデータとして提供する。
 
 ## 目次
@@ -18,6 +18,7 @@
 - [実行方式](#実行方式)
 - [ディレクトリ構成](#ディレクトリ構成)
 - [セットアップ](#セットアップ)
+- [Google Cloudへの移行](#google-cloudへの移行)
 - [将来の拡張](#将来の拡張)
 
 
@@ -36,7 +37,7 @@
 - **ダイジェスト生成**: カテゴリ別に整理した800〜1500文字のサマリー
 - **多言語対応**: 日本語・英語の記事を処理し、出力は日本語に統一
 - **配信**: Discord Webhook（Embed形式）での通知
-- **データ保存**: SQLite への永続化（Webアプリ連携用）
+- **データ保存**: ローカルはSQLite、Google CloudではFirestoreへ永続化（Webアプリ連携用）
 
 ## アーキテクチャ
 
@@ -83,7 +84,7 @@
          ┌───────────┴───────────┐
          ▼                       ▼
 ┌─────────────────┐     ┌─────────────────┐
-│  Discord         │     │  SQLite          │
+│  Discord         │     │ Firestore/SQLite │
 │  Webhook出力     │     │  データ保存       │
 │  (Embed形式)     │     │  (Webアプリ連携)  │
 └─────────────────┘     └─────────────────┘
@@ -95,12 +96,12 @@
 | カテゴリ | 技術 | 備考 |
 |---------|------|------|
 | 言語 | Python 3.12+ | `uv` + `mise` で管理 |
-| AIモデル | Ollama（または任意のOpenAI互換API） | `llm.base_url` で切り替え可能 |
-| AI連携 | openai (Python SDK) | Structured Output を活用 |
-| Embedding | Ollama embedding モデル（任意） | グルーピング精度向上に使用 |
+| AIモデル | Vertex AI Gemini / Ollama（または任意のOpenAI互換API） | `llm.provider` で切り替え可能 |
+| AI連携 | Google Gen AI SDK / openai (Python SDK) | Structured Output を活用 |
+| Embedding | Vertex AI / Ollama embedding モデル（任意） | グルーピング精度向上に使用 |
 | RSS取得 | Miniflux API | HTTP クライアント経由 |
 | メール取得 | poplib（標準ライブラリ） | POP3 + UIDL による差分管理 |
-| データベース | SQLite | 要約結果の永続化・Webアプリ連携 |
+| データベース | Firestore / SQLite | クラウドとローカルを設定で切り替え |
 | 通知 | Discord Webhook | Embed 形式 |
 | 設定管理 | YAML | PyYAML を使用 |
 | HTTP | httpx | Miniflux API / Webhook 通信 |
@@ -133,7 +134,7 @@ LLM を使用した記事の分析・要約処理を担当する。
 
 #### `summarizer/llm_client.py` — LLMクライアント
 
-- OpenAI SDK を用いた共通 LLM 呼び出しロジック
+- Vertex AIまたはOpenAI互換APIを用いた共通 LLM 呼び出しロジック
 - ステップ別パラメータの解決・マージ
 - JSONパースエラー時の自動リトライ（`llm.max_retries` で設定）
 - `structured_output: false` 時はプロンプト指示+手動パースにフォールバック
@@ -168,9 +169,9 @@ LLM を使用した記事の分析・要約処理を担当する。
 - Discord Webhook API を使用して Embed 形式で投稿
 - ダイジェストと個別要約をそれぞれ適切な Embed に整形
 
-#### `outputs/database.py` — データベース保存
+#### `outputs/database.py` / `outputs/firestore_database.py` — データベース保存
 
-- SQLite に要約結果・メタデータを保存
+- FirestoreまたはSQLiteに要約結果・メタデータを保存
 - Webアプリケーションからの参照に対応するスキーマ設計
 - 処理済みメールIDの管理もここで担当
 
@@ -435,6 +436,13 @@ CREATE INDEX idx_summaries_category ON article_summaries(category);
 CREATE INDEX idx_summaries_created ON article_summaries(created_at);
 ```
 
+### Firestore コレクション設計
+
+Google Cloudでは同じデータを`batches`、`articleSummaries`、`processedEmails`へ保存します。
+記事ドキュメントIDは`source_type`と`source_id`から決定的に生成し、Cloud Schedulerの重複実行時も
+同じ記事を二重保存しません。1回の結果はFirestoreの一括書き込みで確定し、実行の排他制御には
+`pipelineLocks/current`の期限付きリースを使います。
+
 ## 入力仕様
 
 ### Miniflux API
@@ -451,7 +459,7 @@ CREATE INDEX idx_summaries_created ON article_summaries(created_at);
 | 項目 | 内容 |
 |------|------|
 | プロトコル | POP3 over SSL（ポート 995） |
-| 差分管理 | `UIDL` でメッセージID取得 → SQLite で管理 |
+| 差分管理 | `UIDL` でメッセージID取得 → FirestoreまたはSQLiteで管理 |
 | パース | `email` 標準ライブラリで MIME パース |
 | 本文抽出 | HTML → テキスト変換（`html2text` 等） |
 | 削除 | **しない**（サーバー上に保持） |
@@ -460,7 +468,8 @@ CREATE INDEX idx_summaries_created ON article_summaries(created_at);
 
 ### 共通設定
 
-- **APIエンドポイント**: 任意の OpenAI 互換 API（`llm.base_url` で指定、デフォルトはローカル Ollama `http://127.0.0.1:11434/v1`）
+- **APIプロバイダー**: `llm.provider: vertex`ではVertex AI、`openai`ではOpenAI互換APIを使用
+- **認証**: Vertex AIはApplication Default Credentials、OpenAI互換APIは`llm.api_key`を使用
 - **レスポンス形式**: Structured Output（`response_format` パラメータ）
 - **出力言語**: 日本語に統一
 
@@ -524,17 +533,18 @@ Discord Webhook を使用して Embed 形式で投稿する。1回の実行で�
 
 ダイジェストの後にスレッドとして個別記事の要約を投稿することも可能とする。
 
-### SQLite 保存
+### Firestore / SQLite 保存
 
 - 各実行をバッチとして記録
 - 個別要約・ダイジェストともにDB保存
-- Webアプリケーションから `batches` → `article_summaries` を JOIN して参照可能
+- FirestoreではViewerが`batch_id`で記事を取得し、SQLiteでは従来どおりJOINして参照可能
 
 ## 実行方式
 
 ### 実行頻度
 
-1日に3〜5回の定期実行を想定。
+ローカルではcron、Google CloudではCloud SchedulerからCloud Run Jobを起動します。
+家族利用向けTerraformの既定値は、LLM利用料と外部APIアクセスを抑えるため1日1回です。
 
 ```
 # cron の例（1日5回: 7時, 10時, 13時, 16時, 20時）
@@ -548,7 +558,7 @@ Discord Webhook を使用して Embed 形式で投稿する。1回の実行で�
 | Miniflux API 接続失敗 | スキップして続行、ログ出力 |
 | POP3 接続失敗 | スキップして続行、ログ出力 |
 | LLM API 接続失敗 | 処理を中断（要約不可のため） |
-| Discord Webhook 送信失敗 | ログ出力、SQLite保存は継続 |
+| Discord Webhook 送信失敗 | ログ出力、DB保存は継続 |
 | 新規記事なし | 正常終了（出力なし） |
 
 ### コマンドライン
@@ -608,7 +618,13 @@ News-Summarizer/
 ├── outputs/                   # 出力モジュール
 │   ├── __init__.py
 │   ├── discord_output.py     # Discord Webhook 出力
-│   └── database.py           # SQLite データ保存
+│   ├── database.py           # SQLite データ保存・バックエンド選択
+│   └── firestore_database.py # Firestore データ保存
+├── scripts/
+│   └── migrate_sqlite_to_firestore.py # 既存履歴の移行
+├── infra/                    # Google Cloud Terraform構成
+├── Dockerfile                # Cloud Run Job用イメージ
+├── cloudbuild.yaml           # Artifact Registryへのビルド
 ├── tests/                     # pytest テストスイート
 └── data/                      # データディレクトリ（自動生成）
     └── news_summarizer.db    # SQLite データベース
@@ -628,6 +644,17 @@ cp config.yaml.example config.yaml
 uv run python main.py --dry-run
 ```
 
+## Google Cloudへの移行
+
+家族だけが利用する低固定費構成として、SummarizerをCloud Run Job、Viewerを最小インスタンス0の
+Cloud Run、永続化をFirestore、生成AIをVertex AIへ移します。Viewerは直接IAPで許可した
+Googleアカウントだけが閲覧できます。サービスアカウント鍵は作らず、Secret Managerと
+Application Default Credentialsを使用します。
+
+構築、コンテナ配布、SQLite履歴移行、切替確認の具体的な手順は
+[`infra/README.md`](infra/README.md)を参照してください。Terraformには月額予算通知、
+Viewer最大1インスタンス、Job再試行なし、Artifact Registryの世代削除も含まれます。
+
 ## 将来の拡張
 
 以下は現時点では対象外とし、必要に応じて追加する。
@@ -636,7 +663,6 @@ uv run python main.py --dry-run
 |---------|------|
 | **Slack Webhook 出力** | Slack 用の出力モジュール追加 |
 | **REST API** | Webアプリ向けの読み取り専用 API サーバー |
-| **Webフロントエンド** | 別プロジェクトとして開発 |
 | **イベント駆動実行** | cron の代替（ファイル監視、Webhook トリガー等） |
 
 ## 免責事項

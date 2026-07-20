@@ -86,7 +86,7 @@ def _run_with_patches(
     grouping = _make_grouping(len(articles))
 
     db_instance = db_mock or MagicMock()
-    db_instance.create_batch.return_value = 1
+    db_instance.is_article_processed.return_value = False
     discord_instance = discord_mock or MagicMock()
 
     with (
@@ -96,7 +96,7 @@ def _run_with_patches(
         patch("pipeline.group_articles", return_value=grouping),
         patch("pipeline.group_summaries", return_value=grouping),
         patch("pipeline.generate_digest", return_value=digest),
-        patch("pipeline.Database", return_value=db_instance),
+        patch("pipeline.create_database", return_value=db_instance),
         patch("pipeline.DiscordOutput", return_value=discord_instance),
     ):
         rss_instance = MagicMock()
@@ -124,7 +124,7 @@ class TestEmptyArticles:
             patch("pipeline.MinifluxFetcher") as MockRss,
             patch("pipeline.EmailFetcher") as MockEmail,
             patch("pipeline.summarize_article") as mock_summarize,
-            patch("pipeline.Database"),
+            patch("pipeline.create_database"),
             patch("pipeline.DiscordOutput"),
         ):
             MockRss.return_value.fetch.return_value = []
@@ -142,7 +142,7 @@ class TestDryRun:
     def test_dry_run_skips_db(self, minimal_config):
         articles = [_make_article()]
         db_mock = MagicMock()
-        db_mock.create_batch.return_value = 1
+        db_mock.is_article_processed.return_value = False
 
         db_mock, discord_mock = _run_with_patches(
             minimal_config,
@@ -151,8 +151,7 @@ class TestDryRun:
             db_mock=db_mock,
         )
 
-        db_mock.create_batch.assert_not_called()
-        db_mock.save_summary.assert_not_called()
+        db_mock.save_batch.assert_not_called()
 
     def test_dry_run_skips_discord(self, minimal_config):
         articles = [_make_article()]
@@ -189,7 +188,7 @@ class TestForcedOutputs:
     def test_dry_run_forced_discord_skips_db(self, minimal_config):
         articles = [_make_article()]
         db_mock = MagicMock()
-        db_mock.create_batch.return_value = 1
+        db_mock.is_article_processed.return_value = False
 
         db_mock, _ = _run_with_patches(
             minimal_config,
@@ -198,12 +197,12 @@ class TestForcedOutputs:
             db_mock=db_mock,
         )
 
-        db_mock.create_batch.assert_not_called()
+        db_mock.save_batch.assert_not_called()
 
     def test_forced_all_calls_both(self, minimal_config):
         articles = [_make_article()]
         db_mock = MagicMock()
-        db_mock.create_batch.return_value = 1
+        db_mock.is_article_processed.return_value = False
         discord_mock = MagicMock()
 
         db_mock, discord_mock = _run_with_patches(
@@ -214,7 +213,7 @@ class TestForcedOutputs:
             discord_mock=discord_mock,
         )
 
-        db_mock.create_batch.assert_called_once()
+        db_mock.save_batch.assert_called_once()
         discord_mock.post.assert_called_once()
 
 
@@ -226,7 +225,7 @@ class TestNonDryRun:
     def test_non_dry_run_calls_db(self, minimal_config):
         articles = [_make_article()]
         db_mock = MagicMock()
-        db_mock.create_batch.return_value = 1
+        db_mock.is_article_processed.return_value = False
 
         db_mock, _ = _run_with_patches(
             minimal_config,
@@ -235,8 +234,7 @@ class TestNonDryRun:
             db_mock=db_mock,
         )
 
-        db_mock.create_batch.assert_called_once()
-        db_mock.save_summary.assert_called_once()
+        db_mock.save_batch.assert_called_once()
 
     def test_non_dry_run_calls_discord(self, minimal_config):
         articles = [_make_article()]
@@ -250,6 +248,35 @@ class TestNonDryRun:
         )
 
         discord_mock.post.assert_called_once()
+
+    def test_processed_articles_are_skipped(self, minimal_config):
+        articles = [_make_article(source_id="1"), _make_article(source_id="2")]
+        db_mock = MagicMock()
+        db_mock.is_article_processed.side_effect = [True, False]
+
+        db_mock, _ = _run_with_patches(
+            minimal_config,
+            RunOptions(dry_run=False),
+            articles,
+            db_mock=db_mock,
+        )
+
+        saved = db_mock.save_batch.call_args.args[0]
+        assert [article.source_id for article, *_ in saved] == ["2"]
+
+    def test_article_count_is_limited_per_run(self, minimal_config):
+        minimal_config.summarizer.max_articles_per_run = 1
+        articles = [_make_article(source_id="1"), _make_article(source_id="2")]
+
+        db_mock, _ = _run_with_patches(
+            minimal_config,
+            RunOptions(dry_run=False),
+            articles,
+        )
+
+        saved = db_mock.save_batch.call_args.args[0]
+        assert len(saved) == 1
+        assert saved[0][0].source_id == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +293,7 @@ class TestSourceFiltering:
             patch("pipeline.summarize_article", return_value=_make_summary()),
             patch("pipeline.group_articles", return_value=_make_grouping()),
             patch("pipeline.generate_digest", return_value=_make_digest()),
-            patch("pipeline.Database"),
+            patch("pipeline.create_database"),
             patch("pipeline.DiscordOutput"),
         ):
             MockRss.return_value.fetch.return_value = []
@@ -283,10 +310,10 @@ class TestSourceFiltering:
             patch("pipeline.summarize_article", return_value=_make_summary()),
             patch("pipeline.group_articles", return_value=_make_grouping()),
             patch("pipeline.generate_digest", return_value=_make_digest()),
-            patch("pipeline.Database") as MockDb,
+            patch("pipeline.create_database") as MockDb,
             patch("pipeline.DiscordOutput"),
         ):
-            MockDb.return_value.create_batch.return_value = 1
+            MockDb.return_value.is_article_processed.return_value = False
             MockEmail.return_value.fetch.return_value = []
             run_pipeline(minimal_config, options)
 
@@ -300,7 +327,7 @@ class TestSourceFiltering:
 class TestMinifluxMarkAsRead:
     def _run(self, config, options, articles, *, summarize_side_effect, generate_digest):
         db_instance = MagicMock()
-        db_instance.create_batch.return_value = 1
+        db_instance.is_article_processed.return_value = False
         discord_instance = MagicMock()
         with (
             patch("pipeline.MinifluxFetcher") as MockRss,
@@ -308,7 +335,7 @@ class TestMinifluxMarkAsRead:
             patch("pipeline.summarize_article", side_effect=summarize_side_effect),
             patch("pipeline.group_articles", return_value=_make_grouping(len(articles))),
             patch("pipeline.generate_digest", **generate_digest),
-            patch("pipeline.Database", return_value=db_instance),
+            patch("pipeline.create_database", return_value=db_instance),
             patch("pipeline.DiscordOutput", return_value=discord_instance),
         ):
             rss_instance = MagicMock()
@@ -329,7 +356,8 @@ class TestMinifluxMarkAsRead:
             generate_digest={"side_effect": RuntimeError("digest boom")},
         )
 
-        assert db_instance.save_summary.call_count == 2
+        db_instance.save_batch.assert_called_once()
+        assert len(db_instance.save_batch.call_args.args[0]) == 2
         rss_instance.mark_as_read.assert_called_once_with([1, 2])
         discord_instance.post.assert_called_once()
 
@@ -344,7 +372,8 @@ class TestMinifluxMarkAsRead:
             generate_digest={"return_value": _make_digest(1)},
         )
 
-        assert db_instance.save_summary.call_count == 1
+        db_instance.save_batch.assert_called_once()
+        assert len(db_instance.save_batch.call_args.args[0]) == 1
         rss_instance.mark_as_read.assert_called_once_with([1])
 
     def test_dry_run_does_not_mark(self, minimal_config):

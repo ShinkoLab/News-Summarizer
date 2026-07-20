@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -14,9 +15,12 @@ from pydantic import BaseModel, Field, field_validator
 class LLMConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
+    provider: Literal["openai", "vertex"] = "openai"
     base_url: str = "http://127.0.0.1:11434/v1"
     model: str
     api_key: str = "ollama"
+    project_id: str | None = None
+    location: str = "global"
     parameters: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] | None = None
     thinking: bool | None = None
@@ -44,6 +48,7 @@ class SummarizerConfig(BaseModel):
     categories: list[str] = Field(default_factory=list)
     fallback_category: str = "未分類"
     category_max_retries: int = 3
+    max_articles_per_run: int = Field(default=100, ge=1, le=200)
     steps: dict[str, SummarizerStepConfig] = Field(default_factory=dict)
 
     @field_validator("steps", mode="before")
@@ -58,7 +63,10 @@ class SummarizerConfig(BaseModel):
 class DatabaseConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
+    backend: Literal["sqlite", "firestore"] = "sqlite"
     path: str = "data/news_summarizer.db"
+    project_id: str | None = None
+    firestore_database: str = "(default)"
 
 
 class MinifluxConfig(BaseModel):
@@ -129,7 +137,106 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     with open(path, "r", encoding="utf-8") as f:
         raw: dict = yaml.safe_load(f) or {}
 
-    return AppConfig.model_validate(raw)
+    return AppConfig.model_validate(_apply_environment_overrides(raw))
+
+
+def _env_bool(name: str) -> bool | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
+    """Apply Cloud Run-friendly environment variables over YAML values.
+
+    Non-secret defaults can remain in YAML while credentials are injected from
+    Secret Manager. A section is created only when at least one corresponding
+    environment variable is present.
+    """
+    result = dict(raw)
+
+    def section(name: str) -> dict[str, Any]:
+        current = dict(result.get(name) or {})
+        result[name] = current
+        return current
+
+    llm = section("llm")
+    llm_mapping = {
+        "LLM_PROVIDER": "provider",
+        "LLM_MODEL": "model",
+        "LLM_BASE_URL": "base_url",
+        "LLM_API_KEY": "api_key",
+        "GOOGLE_CLOUD_PROJECT": "project_id",
+        "GOOGLE_CLOUD_LOCATION": "location",
+    }
+    for env_name, field_name in llm_mapping.items():
+        if value := os.getenv(env_name):
+            llm[field_name] = value
+    if max_retries := os.getenv("LLM_MAX_RETRIES"):
+        llm["max_retries"] = int(max_retries)
+
+    if max_articles := os.getenv("MAX_ARTICLES_PER_RUN"):
+        section("summarizer")["max_articles_per_run"] = int(max_articles)
+
+    database_vars = {
+        "DATABASE_BACKEND": "backend",
+        "SQLITE_DATABASE_PATH": "path",
+        "GOOGLE_CLOUD_PROJECT": "project_id",
+        "FIRESTORE_DATABASE": "firestore_database",
+    }
+    if any(os.getenv(name) for name in database_vars):
+        database = section("database")
+        for env_name, field_name in database_vars.items():
+            if value := os.getenv(env_name):
+                database[field_name] = value
+
+    miniflux_vars = {
+        "MINIFLUX_BASE_URL": "base_url",
+        "MINIFLUX_API_KEY": "api_key",
+    }
+    if any(os.getenv(name) for name in miniflux_vars):
+        miniflux = section("miniflux")
+        for env_name, field_name in miniflux_vars.items():
+            if value := os.getenv(env_name):
+                miniflux[field_name] = value
+
+    email_vars = {
+        "EMAIL_HOST": "host",
+        "EMAIL_USERNAME": "username",
+        "EMAIL_PASSWORD": "password",
+    }
+    if any(os.getenv(name) for name in email_vars):
+        email_config = section("email")
+        for env_name, field_name in email_vars.items():
+            if value := os.getenv(env_name):
+                email_config[field_name] = value
+        if port := os.getenv("EMAIL_PORT"):
+            email_config["port"] = int(port)
+        if (use_ssl := _env_bool("EMAIL_USE_SSL")) is not None:
+            email_config["use_ssl"] = use_ssl
+
+    if webhook_url := os.getenv("DISCORD_WEBHOOK_URL"):
+        section("discord")["webhook_url"] = webhook_url
+    if log_level := os.getenv("LOG_LEVEL"):
+        section("logging")["level"] = log_level
+
+    return result
+
+
+def load_runtime_config(config_path: str | None = None) -> AppConfig:
+    """Load local YAML when present, otherwise construct a Cloud Run config."""
+    path = config_path or os.getenv("CONFIG_PATH", "config.yaml")
+    if Path(path).exists():
+        return load_config(path)
+
+    raw: dict[str, Any] = {
+        "llm": {
+            "provider": os.getenv("LLM_PROVIDER", "vertex"),
+            "model": os.getenv("LLM_MODEL", "gemini-3.1-flash-lite"),
+        }
+    }
+    return AppConfig.model_validate(_apply_environment_overrides(raw))
 
 
 # ---------------------------------------------------------------------------
@@ -139,11 +246,12 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
 # Loaded once at import time from the default config.yaml.
 # Callers that need to reload (e.g. --config CLI flag) should call
 # reload_config() which updates this module attribute in-place.
-config: AppConfig = load_config()
+config: AppConfig = load_runtime_config()
 
 
 def reload_config(config_path: str) -> AppConfig:
-    """Reload configuration from *config_path* and replace the module singleton."""
-    global config
-    config = load_config(config_path)
+    """Reload configuration while preserving references held by other modules."""
+    new_config = load_config(config_path)
+    config.__dict__.clear()
+    config.__dict__.update(new_config.__dict__)
     return config

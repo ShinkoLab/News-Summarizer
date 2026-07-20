@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 import config as config_module
-from config import AppConfig, LLMConfig, load_config, reload_config
+from config import AppConfig, LLMConfig, load_config, load_runtime_config, reload_config
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +120,37 @@ class TestUnknownKeyForbidden:
         # Should not raise
         cfg = load_config(str(cfg_file))
         assert cfg.llm.model == "test-model"
+
+
+class TestEnvironmentOverrides:
+    def test_cloud_runtime_config_from_environment(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "family-news-project")
+        monkeypatch.setenv("LLM_PROVIDER", "vertex")
+        monkeypatch.setenv("LLM_MODEL", "gemini-test")
+        monkeypatch.setenv("DATABASE_BACKEND", "firestore")
+        monkeypatch.setenv("MAX_ARTICLES_PER_RUN", "25")
+
+        cfg = load_runtime_config(str(tmp_path / "missing.yaml"))
+
+        assert cfg.llm.provider == "vertex"
+        assert cfg.llm.model == "gemini-test"
+        assert cfg.llm.project_id == "family-news-project"
+        assert cfg.database.backend == "firestore"
+        assert cfg.database.project_id == "family-news-project"
+        assert cfg.summarizer.max_articles_per_run == 25
+
+    def test_yaml_secret_is_overridden_by_environment(self, tmp_path, monkeypatch):
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            "llm:\n  model: local-model\nminiflux:\n  base_url: https://example.com\n  api_key: local-secret\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("MINIFLUX_API_KEY", "secret-manager-value")
+
+        cfg = load_config(str(cfg_file))
+
+        assert cfg.miniflux is not None
+        assert cfg.miniflux.api_key == "secret-manager-value"
 
 
 # ---------------------------------------------------------------------------

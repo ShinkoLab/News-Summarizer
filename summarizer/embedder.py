@@ -1,6 +1,8 @@
 import time
 
 import numpy as np
+from google import genai
+from google.genai import types as genai_types
 from openai import OpenAI
 
 from config import config
@@ -33,19 +35,30 @@ def get_embeddings(texts: list[str], debug: bool = False) -> np.ndarray:
     if debug:
         logger.debug("Embedding モデル: %s, 入力: %d件", embedding_model, len(texts))
 
-    client = OpenAI(
-        base_url=llm_cfg.base_url,
-        api_key=llm_cfg.api_key,
-    )
-
     start = time.perf_counter()
-    response = client.embeddings.create(
-        model=embedding_model,
-        input=texts,
-    )
+    if llm_cfg.provider == "vertex":
+        client = genai.Client(
+            vertexai=True,
+            project=llm_cfg.project_id,
+            location=llm_cfg.location,
+        )
+        response = client.models.embed_content(
+            model=embedding_model,
+            contents=texts,
+            config=genai_types.EmbedContentConfig(task_type="CLUSTERING"),
+        )
+        embeddings = np.array([item.values for item in response.embeddings])
+    else:
+        client = OpenAI(
+            base_url=llm_cfg.base_url,
+            api_key=llm_cfg.api_key,
+        )
+        response = client.embeddings.create(
+            model=embedding_model,
+            input=texts,
+        )
+        embeddings = np.array([item.embedding for item in response.data])
     elapsed = time.perf_counter() - start
-
-    embeddings = np.array([item.embedding for item in response.data])
 
     if debug:
         logger.debug(

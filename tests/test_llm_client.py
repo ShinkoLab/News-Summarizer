@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import textwrap
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -229,3 +229,41 @@ class TestUseStructuredOutput:
         import summarizer.llm_client as llm_client
         with patch.object(llm_client, "config", cfg):
             assert llm_client.use_structured_output() is False
+
+
+class TestVertexProvider:
+    def test_call_maps_messages_and_validates_response(self):
+        cfg = AppConfig(
+            llm=LLMConfig(provider="vertex", model="gemini-test", max_retries=0),
+        )
+        client = MagicMock()
+        expected = ArticleSummary(
+            title="Vertex要約",
+            summary="Vertex AIからの応答",
+            keywords=["Vertex AI"],
+            category="テクノロジー",
+        )
+        client.models.generate_content.return_value = MagicMock(
+            parsed=expected,
+            text=expected.model_dump_json(),
+        )
+        completion_kwargs = {
+            "model": "gemini-test",
+            "messages": [
+                {"role": "system", "content": "日本語で要約してください"},
+                {"role": "user", "content": "記事本文"},
+            ],
+            "response_format": ArticleSummary,
+            "temperature": 0.2,
+            "max_tokens": 1024,
+        }
+
+        import summarizer.llm_client as llm_client
+        with patch.object(llm_client, "config", cfg):
+            result = llm_client.call_with_retry(client, completion_kwargs)
+
+        assert result == expected
+        call = client.models.generate_content.call_args
+        assert call.kwargs["model"] == "gemini-test"
+        assert call.kwargs["config"].system_instruction == "日本語で要約してください"
+        assert call.kwargs["config"].max_output_tokens == 1024

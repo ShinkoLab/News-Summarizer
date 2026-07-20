@@ -19,7 +19,7 @@ from models import Article, ArticleSummary, DigestResult
 
 from fetchers.rss_fetcher import MinifluxFetcher
 from fetchers.email_fetcher import EmailFetcher
-from outputs.database import Database
+from outputs.database import create_database
 from outputs.discord_output import DiscordOutput
 from summarizer.grouper import group_articles, group_summaries
 from summarizer.summarizer import summarize_article
@@ -66,7 +66,7 @@ class RunOptions:
 # ---------------------------------------------------------------------------
 
 def fetch_articles(
-    options: RunOptions, db: Database
+    options: RunOptions, db
 ) -> tuple[list[Article], MinifluxFetcher | None]:
     """Fetch articles from enabled sources with per-source error isolation.
 
@@ -199,7 +199,7 @@ def build_digest(
 
 
 def persist_and_publish(
-    summaries, digest, embeddings, db: Database, options: RunOptions,
+    summaries, digest, embeddings, db, options: RunOptions,
     rss_fetcher: MinifluxFetcher | None = None,
 ) -> None:
     """Save to DB and/or post to Discord based on RunOptions."""
@@ -207,17 +207,12 @@ def persist_and_publish(
     only_summaries = [s[1] for s in summaries]
 
     if options.run_db:
-        batch_id = db.create_batch(
-            total_articles=len(only_summaries), digest_text=digest.overview
-        )
-        rss_entry_ids: list[int] = []
-        for i, (article, summary, group_id, group_topic) in enumerate(summaries):
-            embedding_list = embeddings[i].tolist() if embeddings is not None else None
-            db.save_summary(batch_id, article, summary, group_id, group_topic, embedding_list)
-            if article.source_type == "email":
-                db.mark_email_processed(article.source_id)
-            elif article.source_type == "rss":
-                rss_entry_ids.append(int(article.source_id))
+        db.save_batch(summaries, digest, embeddings)
+        rss_entry_ids = [
+            int(article.source_id)
+            for article, *_ in summaries
+            if article.source_type == "rss"
+        ]
         logger.info("データベースへの保存が完了しました。")
         # DB保存に成功したRSS記事だけを既読化する（要約・保存に失敗した記事は次回再取得）
         if rss_fetcher is not None and rss_entry_ids:
@@ -246,37 +241,59 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
     """Run the full fetch → summarize → group → digest → output pipeline."""
     logger.info("プロセス開始")
 
-    db = Database()
+    db = create_database()
 
-    articles, rss_fetcher = fetch_articles(options, db)
-    if not articles:
-        logger.info("新規記事はありませんでした。処理を終了します。")
-        return
+    with db.execution_lock():
+        articles, rss_fetcher = fetch_articles(options, db)
+        if not articles:
+            logger.info("新規記事はありませんでした。処理を終了します。")
+            return
 
-    logger.info("%d件の新規記事を取得しました。", len(articles))
-
-    pairs = summarize_all(articles, options)
-    if not pairs:
-        logger.warning("要約に成功した記事がありませんでした。処理を終了します。")
-        return
-
-    article_group_map, embeddings = group_pairs(pairs, options)
-
-    try:
-        summaries, digest = build_digest(pairs, article_group_map, options)
-    except Exception as e:
-        # ダイジェスト生成の想定外失敗で個別要約まで失わないよう、空ダイジェストで続行する
-        logger.error(
-            "ダイジェスト生成中にエラーが発生しました。空のダイジェストで出力を続行します: %s",
-            e,
-            exc_info=True,
-        )
-        summaries = [
-            (article, summary, article_group_map.get(i, (None, None))[0], article_group_map.get(i, (None, None))[1])
-            for i, (article, summary) in enumerate(pairs)
+        before_dedup = len(articles)
+        articles = [
+            article
+            for article in articles
+            if not db.is_article_processed(article.source_type, article.source_id)
         ]
-        digest = DigestResult(overview="", categories=[], total_articles=len(pairs))
+        if before_dedup != len(articles):
+            logger.info("処理済み記事を%d件除外しました。", before_dedup - len(articles))
+        if not articles:
+            logger.info("未処理の記事はありませんでした。処理を終了します。")
+            return
 
-    persist_and_publish(summaries, digest, embeddings, db, options, rss_fetcher)
+        max_articles = config.summarizer.max_articles_per_run
+        if len(articles) > max_articles:
+            logger.warning(
+                "1回の処理上限%d件を超えたため、%d件を次回へ繰り越します。",
+                max_articles,
+                len(articles) - max_articles,
+            )
+            articles = articles[:max_articles]
+
+        logger.info("%d件の新規記事を取得しました。", len(articles))
+
+        pairs = summarize_all(articles, options)
+        if not pairs:
+            logger.warning("要約に成功した記事がありませんでした。処理を終了します。")
+            return
+
+        article_group_map, embeddings = group_pairs(pairs, options)
+
+        try:
+            summaries, digest = build_digest(pairs, article_group_map, options)
+        except Exception as e:
+            # ダイジェスト生成の想定外失敗で個別要約まで失わないよう、空ダイジェストで続行する
+            logger.error(
+                "ダイジェスト生成中にエラーが発生しました。空のダイジェストで出力を続行します: %s",
+                e,
+                exc_info=True,
+            )
+            summaries = [
+                (article, summary, article_group_map.get(i, (None, None))[0], article_group_map.get(i, (None, None))[1])
+                for i, (article, summary) in enumerate(pairs)
+            ]
+            digest = DigestResult(overview="", categories=[], total_articles=len(pairs))
+
+        persist_and_publish(summaries, digest, embeddings, db, options, rss_fetcher)
 
     logger.info("プロセス完了")

@@ -1,6 +1,4 @@
-FROM python:3.12-slim-trixie
-
-RUN pip install --no-cache-dir uv==0.11.29
+FROM ghcr.io/astral-sh/uv:0.11.29-python3.12-trixie-slim
 
 ENV PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \

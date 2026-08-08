@@ -1,6 +1,5 @@
 locals {
   required_services = toset([
-    "aiplatform.googleapis.com",
     "artifactregistry.googleapis.com",
     "billingbudgets.googleapis.com",
     "cloudbuild.googleapis.com",
@@ -78,12 +77,6 @@ resource "google_project_iam_member" "summarizer_datastore" {
   member  = "serviceAccount:${google_service_account.summarizer.email}"
 }
 
-resource "google_project_iam_member" "summarizer_vertex" {
-  project = var.project_id
-  role    = "roles/aiplatform.user"
-  member  = "serviceAccount:${google_service_account.summarizer.email}"
-}
-
 resource "google_project_iam_member" "viewer_datastore" {
   project = var.project_id
   role    = "roles/datastore.user"
@@ -114,11 +107,20 @@ resource "google_secret_manager_secret" "discord_webhook_url" {
   depends_on = [google_project_service.required]
 }
 
+resource "google_secret_manager_secret" "llm_api_key" {
+  secret_id = "news-llm-api-key"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.required]
+}
+
 resource "google_secret_manager_secret_iam_member" "summarizer_secrets" {
   for_each = {
     miniflux = google_secret_manager_secret.miniflux_api_key.id
     email    = google_secret_manager_secret.email_password.id
     discord  = google_secret_manager_secret.discord_webhook_url.id
+    llm      = google_secret_manager_secret.llm_api_key.id
   }
   project   = var.project_id
   secret_id = each.value
@@ -156,16 +158,20 @@ resource "google_cloud_run_v2_job" "summarizer" {
           value = var.project_id
         }
         env {
-          name  = "GOOGLE_CLOUD_LOCATION"
-          value = var.vertex_location
+          name  = "LLM_PROVIDER"
+          value = "openai"
         }
         env {
-          name  = "LLM_PROVIDER"
-          value = "vertex"
+          name  = "LLM_BASE_URL"
+          value = var.llm_base_url
         }
         env {
           name  = "LLM_MODEL"
           value = var.llm_model
+        }
+        env {
+          name  = "LLM_STRUCTURED_OUTPUT"
+          value = "false"
         }
         env {
           name  = "LLM_MAX_RETRIES"
@@ -174,6 +180,10 @@ resource "google_cloud_run_v2_job" "summarizer" {
         env {
           name  = "MAX_ARTICLES_PER_RUN"
           value = "100"
+        }
+        env {
+          name  = "SUMMARIZER_CATEGORIES"
+          value = join(",", var.summarizer_categories)
         }
         env {
           name  = "MINIFLUX_BASE_URL"
@@ -223,6 +233,15 @@ resource "google_cloud_run_v2_job" "summarizer" {
           value_source {
             secret_key_ref {
               secret  = google_secret_manager_secret.discord_webhook_url.secret_id
+              version = "latest"
+            }
+          }
+        }
+        env {
+          name = "LLM_API_KEY"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.llm_api_key.secret_id
               version = "latest"
             }
           }

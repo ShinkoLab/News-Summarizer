@@ -9,16 +9,23 @@ variable "region" {
   default     = "asia-northeast1"
 }
 
-variable "vertex_location" {
-  description = "Vertex AI endpoint location"
+variable "llm_base_url" {
+  description = "OpenAI-compatible LLM endpoint base URL"
   type        = string
-  default     = "global"
 }
 
 variable "llm_model" {
-  description = "Vertex AI model ID"
+  description = "LLM model ID"
   type        = string
-  default     = "gemini-3.1-flash-lite"
+}
+
+variable "summarizer_categories" {
+  description = "Category list the summarizer LLM classifies articles into"
+  type        = list(string)
+  default = [
+    "国際", "政治", "経済", "ビジネス", "市場", "テクノロジー", "AI", "科学",
+    "健康", "社会", "環境", "スポーツ", "文化", "エンタメ", "ライフスタイル", "話題",
+  ]
 }
 
 variable "summarizer_image" {

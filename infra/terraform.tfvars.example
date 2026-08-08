@@ -7,7 +7,11 @@ viewer_users = [
   "family@example.com",
 ]
 
+llm_base_url = "https://your-openai-compatible-endpoint.example.com/v1"
+llm_model    = "your-model-id"
+
 miniflux_base_url = "https://miniflux.example.com"
+# メールを使わない場合もダミー値を設定してください（フェッチ失敗はソース単位で握りつぶされます）
 email_host        = "pop.example.com"
 email_username    = "news@example.com"
 

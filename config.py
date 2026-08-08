@@ -175,9 +175,13 @@ def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
             llm[field_name] = value
     if max_retries := os.getenv("LLM_MAX_RETRIES"):
         llm["max_retries"] = int(max_retries)
+    if (structured_output := _env_bool("LLM_STRUCTURED_OUTPUT")) is not None:
+        llm["structured_output"] = structured_output
 
     if max_articles := os.getenv("MAX_ARTICLES_PER_RUN"):
         section("summarizer")["max_articles_per_run"] = int(max_articles)
+    if categories := os.getenv("SUMMARIZER_CATEGORIES"):
+        section("summarizer")["categories"] = [c.strip() for c in categories.split(",") if c.strip()]
 
     database_vars = {
         "DATABASE_BACKEND": "backend",

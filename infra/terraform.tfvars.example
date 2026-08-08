@@ -10,6 +10,18 @@ viewer_users = [
 llm_base_url = "https://your-openai-compatible-endpoint.example.com/v1"
 llm_model    = "your-model-id"
 
+# LLMパラメータ（省略時のデフォルト: グローバル temperature=0.7, max_tokens=8192、
+# grouper/summarizer は temperature低め+reasoning_effort=low、digest は reasoning_effort=medium）
+# reasoning_effort は reasoning model（GPT-5系等）のみ有効。非対応モデルでは無視されるか
+# エラーになる場合があるため、モデルに応じて空文字や未設定に調整すること。
+# llm_temperature             = 0.7
+# llm_max_tokens              = 8192
+# grouper_temperature         = 0.2
+# grouper_reasoning_effort    = "low"
+# summarizer_temperature      = 0.3
+# summarizer_reasoning_effort = "low"
+# digest_reasoning_effort     = "medium"
+
 miniflux_base_url = "https://miniflux.example.com"
 # メールを使わない場合もダミー値を設定してください（フェッチ失敗はソース単位で握りつぶされます）
 email_host        = "pop.example.com"

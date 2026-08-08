@@ -187,6 +187,14 @@ resource "google_cloud_run_v2_job" "summarizer" {
           value = "1"
         }
         env {
+          name  = "LLM_TEMPERATURE"
+          value = tostring(var.llm_temperature)
+        }
+        env {
+          name  = "LLM_MAX_TOKENS"
+          value = tostring(var.llm_max_tokens)
+        }
+        env {
           name  = "MAX_ARTICLES_PER_RUN"
           value = "100"
         }
@@ -205,6 +213,26 @@ resource "google_cloud_run_v2_job" "summarizer" {
         env {
           name  = "GROUPER_USE_EMBEDDINGS"
           value = "true"
+        }
+        env {
+          name  = "GROUPER_TEMPERATURE"
+          value = tostring(var.grouper_temperature)
+        }
+        env {
+          name  = "GROUPER_REASONING_EFFORT"
+          value = var.grouper_reasoning_effort
+        }
+        env {
+          name  = "SUMMARIZER_TEMPERATURE"
+          value = tostring(var.summarizer_temperature)
+        }
+        env {
+          name  = "SUMMARIZER_REASONING_EFFORT"
+          value = var.summarizer_reasoning_effort
+        }
+        env {
+          name  = "DIGEST_REASONING_EFFORT"
+          value = var.digest_reasoning_effort
         }
         env {
           name  = "MINIFLUX_BASE_URL"

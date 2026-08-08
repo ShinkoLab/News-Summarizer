@@ -269,6 +269,20 @@ client.collection('pipelineLocks').document('current').delete()
 最後まで待つ）ではロックは正しく解放されるため、この対応が必要になるのは
 デバッグ目的で実行を中断した場合のみ。
 
+### 7. `llm.parameters` / `summarizer.steps.*.parameters`（temperature・reasoning_effort）も環境変数から渡せなかった
+
+上記1・2と同じ種類の不具合。ローカル `config.yaml` の `llm.parameters`
+（temperature, max_tokens）や `summarizer.steps.<step>.parameters`
+（temperature, reasoning_effort）を編集しても、Cloud Run側には対応する環境変数
+マッピングが存在せず、デプロイ済みジョブは常に `parameters={}`（全ステップ
+パラメータ無指定）のまま動作していた。`LLM_TEMPERATURE` / `LLM_MAX_TOKENS` /
+`GROUPER_TEMPERATURE` / `GROUPER_REASONING_EFFORT` /
+`SUMMARIZER_TEMPERATURE` / `SUMMARIZER_REASONING_EFFORT` /
+`DIGEST_REASONING_EFFORT` を追加して解消（詳細は次節）。
+なお `llm.extra_body`（Ollama専用の `repeat_penalty` 等）は元々ローカル
+Ollamaモデル向けの設定でありCloud Runの環境変数マッピング対象外のため、
+これは今後も未対応のままでよい。
+
 ## 設定変更手順
 
 ### LLM設定を変更する（プロバイダ・モデル・エンドポイント）
@@ -286,6 +300,25 @@ client.collection('pipelineLocks').document('current').delete()
    --project=<PROJECT_ID> --data-file=-` で新バージョンを追加
    （`print(key, end="")` または `printf '%s'` で改行を含めないこと）。
 5. `terraform apply` を実行（Job定義の環境変数が更新される）。
+
+### LLMパラメータ（temperature・reasoning_effort）を変更する
+
+`terraform.tfvars` に以下を追記して `terraform apply`（省略時のデフォルトは
+`infra/variables.tf` 参照。例はローカル `config.yaml` の設定値に揃えてある）:
+
+```hcl
+llm_temperature             = 0.7   # グローバルデフォルト
+llm_max_tokens              = 8192
+grouper_temperature         = 0.2
+grouper_reasoning_effort    = "low"
+summarizer_temperature      = 0.3
+summarizer_reasoning_effort = "low"
+digest_reasoning_effort     = "medium"
+```
+
+`reasoning_effort` は reasoning model（GPT-5系等）のみ有効なパラメータ。
+非対応モデルに切り替えた場合は空文字や未設定にする（`infra/main.tf` の
+該当 `env` ブロックを削除するか、値を空文字にして送らないようにする）。
 
 ### カテゴリ一覧を変更する
 

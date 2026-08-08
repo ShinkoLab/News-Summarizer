@@ -183,15 +183,42 @@ def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
     if (structured_output := _env_bool("LLM_STRUCTURED_OUTPUT")) is not None:
         llm["structured_output"] = structured_output
 
+    llm_params: dict[str, Any] = {}
+    if temperature := os.getenv("LLM_TEMPERATURE"):
+        llm_params["temperature"] = float(temperature)
+    if max_tokens := os.getenv("LLM_MAX_TOKENS"):
+        llm_params["max_tokens"] = int(max_tokens)
+    if llm_params:
+        llm["parameters"] = {**(llm.get("parameters") or {}), **llm_params}
+
     if max_articles := os.getenv("MAX_ARTICLES_PER_RUN"):
         section("summarizer")["max_articles_per_run"] = int(max_articles)
     if categories := os.getenv("SUMMARIZER_CATEGORIES"):
         section("summarizer")["categories"] = [c.strip() for c in categories.split(",") if c.strip()]
+
+    steps = section("summarizer").setdefault("steps", {})
+
+    def step_section(name: str) -> dict[str, Any]:
+        current = dict(steps.get(name) or {})
+        steps[name] = current
+        return current
+
     if (use_embeddings := _env_bool("GROUPER_USE_EMBEDDINGS")) is not None:
-        steps = section("summarizer").setdefault("steps", {})
-        grouper_step = dict(steps.get("grouper") or {})
-        grouper_step["use_embeddings"] = use_embeddings
-        steps["grouper"] = grouper_step
+        step_section("grouper")["use_embeddings"] = use_embeddings
+
+    step_param_envs: dict[str, dict[str, str]] = {
+        "grouper": {"temperature": "GROUPER_TEMPERATURE", "reasoning_effort": "GROUPER_REASONING_EFFORT"},
+        "summarizer": {"temperature": "SUMMARIZER_TEMPERATURE", "reasoning_effort": "SUMMARIZER_REASONING_EFFORT"},
+        "digest": {"reasoning_effort": "DIGEST_REASONING_EFFORT"},
+    }
+    for step_name, param_envs in step_param_envs.items():
+        step_params: dict[str, Any] = {}
+        for param_name, env_name in param_envs.items():
+            if value := os.getenv(env_name):
+                step_params[param_name] = float(value) if param_name == "temperature" else value
+        if step_params:
+            step = step_section(step_name)
+            step["parameters"] = {**(step.get("parameters") or {}), **step_params}
 
     database_vars = {
         "DATABASE_BACKEND": "backend",

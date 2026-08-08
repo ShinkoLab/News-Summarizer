@@ -31,6 +31,48 @@ variable "embedding_model" {
   default     = "openai/text-embedding-3-small"
 }
 
+variable "llm_temperature" {
+  description = "Global default temperature for llm.parameters"
+  type        = number
+  default     = 0.7
+}
+
+variable "llm_max_tokens" {
+  description = "Global default max_tokens for llm.parameters"
+  type        = number
+  default     = 8192
+}
+
+variable "grouper_temperature" {
+  description = "temperature override for the grouper step"
+  type        = number
+  default     = 0.2
+}
+
+variable "grouper_reasoning_effort" {
+  description = "reasoning_effort override for the grouper step (reasoning models only)"
+  type        = string
+  default     = "low"
+}
+
+variable "summarizer_temperature" {
+  description = "temperature override for the summarizer step"
+  type        = number
+  default     = 0.3
+}
+
+variable "summarizer_reasoning_effort" {
+  description = "reasoning_effort override for the summarizer step (reasoning models only)"
+  type        = string
+  default     = "low"
+}
+
+variable "digest_reasoning_effort" {
+  description = "reasoning_effort override for the digest step (reasoning models only)"
+  type        = string
+  default     = "medium"
+}
+
 variable "summarizer_categories" {
   description = "Category list the summarizer LLM classifies articles into"
   type        = list(string)

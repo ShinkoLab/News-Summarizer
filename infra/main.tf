@@ -79,7 +79,7 @@ resource "google_project_iam_member" "summarizer_datastore" {
 
 resource "google_project_iam_member" "viewer_datastore" {
   project = var.project_id
-  role    = "roles/datastore.user"
+  role    = "roles/datastore.viewer"
   member  = "serviceAccount:${google_service_account.viewer.email}"
 }
 

@@ -15,7 +15,10 @@ def get_embeddings(texts: list[str], debug: bool = False) -> np.ndarray:
     """テキストのリストをまとめて embedding ベクトルに変換して返す。
 
     llm.embedding_model に設定されたモデルを使用する。
-    base_url / api_key は llm 設定を流用（Ollama 共通エンドポイント）。
+    provider が openai の場合、接続先は llm.embedding_base_url / embedding_api_key を
+    優先し、未設定なら llm.base_url / api_key にフォールバックする（チャット用LLMが
+    embedding未対応のプロバイダ、例: OpenCode Zen の場合に、embeddingだけ
+    OpenRouter 等の別プロバイダへ向けられる）。
 
     Args:
         texts: embedding 対象のテキストリスト
@@ -50,8 +53,8 @@ def get_embeddings(texts: list[str], debug: bool = False) -> np.ndarray:
         embeddings = np.array([item.values for item in response.embeddings])
     else:
         client = OpenAI(
-            base_url=llm_cfg.base_url,
-            api_key=llm_cfg.api_key,
+            base_url=llm_cfg.embedding_base_url or llm_cfg.base_url,
+            api_key=llm_cfg.embedding_api_key or llm_cfg.api_key,
         )
         response = client.embeddings.create(
             model=embedding_model,

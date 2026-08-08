@@ -49,6 +49,14 @@ llm:
   # 例: ollama pull bge-m3
   #embedding_model: "bge-m3"
 
+  # チャット用LLM（base_url/api_key）が embedding に対応していない場合
+  # （例: OpenCode Zen 等）、embedding だけ別プロバイダへ向けることができます。
+  # 省略時は base_url / api_key をそのまま流用します。
+  # 例: OpenRouter の Embeddings API（OpenAI互換）を使う場合
+  #embedding_model: "openai/text-embedding-3-small"
+  #embedding_base_url: "https://openrouter.ai/api/v1"
+  #embedding_api_key: "your-openrouter-api-key"
+
 # 要約設定
 summarizer:
   # 暴走時のLLM費用を抑えるための1実行あたり上限

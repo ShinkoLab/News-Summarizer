@@ -12,6 +12,10 @@ GCPプロジェクト `<PROJECT_ID>` に実際にデプロイし、動作確認�
 - GCPプロジェクト: `<PROJECT_ID>`（請求先アカウント: General Account）
 - リージョン: `asia-northeast1`
 - LLM: OpenCode Zen (go) 経由の `gpt-5.6-luna`（OpenAI互換 Chat Completions API）
+- Embedding: OpenCode Zen が embedding 未提供のため、OpenRouter Embeddings API
+  （`https://openrouter.ai/api/v1`、`openai/text-embedding-3-small`）を利用。
+  APIキーは https://openrouter.ai/settings/keys で発行し、`news-embedding-api-key`
+  シークレットに登録する。
 - RSSソース: Miniflux SaaS版（`https://reader.miniflux.app`）
 - メール取得: 未使用（ダミー値で運用、失敗してもソース単位のエラー分離で無視される）
 - Viewerアクセス制御: IAP（Identity-Aware Proxy）、許可ユーザーは `viewer_users` で管理
@@ -88,6 +92,7 @@ terraform plan \
   -target=google_secret_manager_secret.email_password \
   -target=google_secret_manager_secret.discord_webhook_url \
   -target=google_secret_manager_secret.llm_api_key \
+  -target=google_secret_manager_secret.embedding_api_key \
   -out=plan_stage1.tfplan
 terraform apply plan_stage1.tfplan
 ```
@@ -97,6 +102,7 @@ terraform apply plan_stage1.tfplan
 ```bash
 printf '%s' "実際の値" | gcloud secrets versions add news-miniflux-api-key --project=<PROJECT_ID> --data-file=-
 printf '%s' "実際の値" | gcloud secrets versions add news-llm-api-key --project=<PROJECT_ID> --data-file=-
+printf '%s' "実際の値" | gcloud secrets versions add news-embedding-api-key --project=<PROJECT_ID> --data-file=-
 printf '%s' "実際の値" | gcloud secrets versions add news-discord-webhook-url --project=<PROJECT_ID> --data-file=-
 printf '%s' "unused-placeholder" | gcloud secrets versions add news-email-password --project=<PROJECT_ID> --data-file=-
 ```

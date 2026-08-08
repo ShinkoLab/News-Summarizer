@@ -19,6 +19,18 @@ variable "llm_model" {
   type        = string
 }
 
+variable "embedding_base_url" {
+  description = "OpenAI-compatible embedding API endpoint base URL (used for similarity-based grouping)"
+  type        = string
+  default     = "https://openrouter.ai/api/v1"
+}
+
+variable "embedding_model" {
+  description = "Embedding model ID"
+  type        = string
+  default     = "openai/text-embedding-3-small"
+}
+
 variable "summarizer_categories" {
   description = "Category list the summarizer LLM classifies articles into"
   type        = list(string)

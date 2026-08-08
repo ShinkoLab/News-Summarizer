@@ -115,12 +115,21 @@ resource "google_secret_manager_secret" "llm_api_key" {
   depends_on = [google_project_service.required]
 }
 
+resource "google_secret_manager_secret" "embedding_api_key" {
+  secret_id = "news-embedding-api-key"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.required]
+}
+
 resource "google_secret_manager_secret_iam_member" "summarizer_secrets" {
   for_each = {
-    miniflux = google_secret_manager_secret.miniflux_api_key.id
-    email    = google_secret_manager_secret.email_password.id
-    discord  = google_secret_manager_secret.discord_webhook_url.id
-    llm      = google_secret_manager_secret.llm_api_key.id
+    miniflux  = google_secret_manager_secret.miniflux_api_key.id
+    email     = google_secret_manager_secret.email_password.id
+    discord   = google_secret_manager_secret.discord_webhook_url.id
+    llm       = google_secret_manager_secret.llm_api_key.id
+    embedding = google_secret_manager_secret.embedding_api_key.id
   }
   project   = var.project_id
   secret_id = each.value
@@ -186,6 +195,18 @@ resource "google_cloud_run_v2_job" "summarizer" {
           value = join(",", var.summarizer_categories)
         }
         env {
+          name  = "EMBEDDING_BASE_URL"
+          value = var.embedding_base_url
+        }
+        env {
+          name  = "LLM_EMBEDDING_MODEL"
+          value = var.embedding_model
+        }
+        env {
+          name  = "GROUPER_USE_EMBEDDINGS"
+          value = "true"
+        }
+        env {
           name  = "MINIFLUX_BASE_URL"
           value = var.miniflux_base_url
         }
@@ -242,6 +263,15 @@ resource "google_cloud_run_v2_job" "summarizer" {
           value_source {
             secret_key_ref {
               secret  = google_secret_manager_secret.llm_api_key.secret_id
+              version = "latest"
+            }
+          }
+        }
+        env {
+          name = "EMBEDDING_API_KEY"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.embedding_api_key.secret_id
               version = "latest"
             }
           }

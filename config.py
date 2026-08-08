@@ -29,6 +29,8 @@ class LLMConfig(BaseModel):
     max_retries: int = 3
     structured_output: bool = True
     embedding_model: str | None = None
+    embedding_base_url: str | None = None
+    embedding_api_key: str | None = None
 
 
 class SummarizerStepConfig(BaseModel):
@@ -169,6 +171,9 @@ def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         "LLM_API_KEY": "api_key",
         "GOOGLE_CLOUD_PROJECT": "project_id",
         "GOOGLE_CLOUD_LOCATION": "location",
+        "LLM_EMBEDDING_MODEL": "embedding_model",
+        "EMBEDDING_BASE_URL": "embedding_base_url",
+        "EMBEDDING_API_KEY": "embedding_api_key",
     }
     for env_name, field_name in llm_mapping.items():
         if value := os.getenv(env_name):
@@ -182,6 +187,11 @@ def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         section("summarizer")["max_articles_per_run"] = int(max_articles)
     if categories := os.getenv("SUMMARIZER_CATEGORIES"):
         section("summarizer")["categories"] = [c.strip() for c in categories.split(",") if c.strip()]
+    if (use_embeddings := _env_bool("GROUPER_USE_EMBEDDINGS")) is not None:
+        steps = section("summarizer").setdefault("steps", {})
+        grouper_step = dict(steps.get("grouper") or {})
+        grouper_step["use_embeddings"] = use_embeddings
+        steps["grouper"] = grouper_step
 
     database_vars = {
         "DATABASE_BACKEND": "backend",

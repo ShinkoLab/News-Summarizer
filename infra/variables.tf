@@ -67,6 +67,18 @@ variable "summarizer_reasoning_effort" {
   default     = "low"
 }
 
+variable "summarizer_individual_max_length" {
+  description = "Character limit for each per-article summary (feeds the digest)"
+  type        = number
+  default     = 500
+}
+
+variable "grouper_similarity_threshold" {
+  description = "Cosine similarity threshold for embedding-based grouping"
+  type        = number
+  default     = 0.7
+}
+
 variable "digest_reasoning_effort" {
   description = "reasoning_effort override for the digest step (reasoning models only)"
   type        = string

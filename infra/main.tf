@@ -199,6 +199,10 @@ resource "google_cloud_run_v2_job" "summarizer" {
           value = "100"
         }
         env {
+          name  = "SUMMARIZER_INDIVIDUAL_MAX_LENGTH"
+          value = tostring(var.summarizer_individual_max_length)
+        }
+        env {
           name  = "EMBEDDING_BASE_URL"
           value = var.embedding_base_url
         }
@@ -209,6 +213,10 @@ resource "google_cloud_run_v2_job" "summarizer" {
         env {
           name  = "GROUPER_USE_EMBEDDINGS"
           value = "true"
+        }
+        env {
+          name  = "GROUPER_SIMILARITY_THRESHOLD"
+          value = tostring(var.grouper_similarity_threshold)
         }
         env {
           name  = "GROUPER_TEMPERATURE"

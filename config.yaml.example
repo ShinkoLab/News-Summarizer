@@ -121,6 +121,10 @@ email:
   username: "your-email@example.com"
   password: "your-email-password"
   use_ssl: true
+  # POP3のメールはサーバから削除しないため、保存に至らないメールは毎回本文全体を
+  # ダウンロードし直すことになる。取得したが保存しなかった回数がこの値に達したら
+  # 処理済み扱いにして取得対象から外す（poison message対策、デフォルト: 3）。
+  max_fetch_attempts: 3
 
 # Discord Webhook の設定
 discord:

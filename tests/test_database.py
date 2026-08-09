@@ -210,17 +210,54 @@ class TestAtomicBatchStorage:
     def test_save_batch_persists_result_and_processed_email(self, db):
         article = _make_article(source_id="mail-001", source_type="email")
 
-        batch_id = db.save_batch(
+        result = db.save_batch(
             [(article, _make_summary(), 7, "テストトピック")],
             DigestResult(overview="全体概要", categories=[], total_articles=1),
         )
 
         with db.get_connection() as conn:
-            batch = conn.execute("SELECT * FROM batches WHERE id = ?", (batch_id,)).fetchone()
+            batch = conn.execute(
+                "SELECT * FROM batches WHERE id = ?", (result.batch_id,)
+            ).fetchone()
             saved = conn.execute(
-                "SELECT * FROM article_summaries WHERE batch_id = ?", (batch_id,)
+                "SELECT * FROM article_summaries WHERE batch_id = ?", (result.batch_id,)
             ).fetchone()
         assert batch["digest_text"] == "全体概要"
         assert saved["group_id"] == 7
         assert db.is_article_processed("email", "mail-001") is True
         assert db.is_email_processed("mail-001") is True
+        assert result.saved == [("email", "mail-001")]
+        assert result.failed == 0
+
+    def test_save_batch_clears_recorded_email_attempts(self, db):
+        """保存できたメールの試行回数は残さない（poison message判定を汚さない）。"""
+        article = _make_article(source_id="mail-002", source_type="email")
+        db.record_email_attempt("mail-002")
+
+        db.save_batch(
+            [(article, _make_summary(), None, None)],
+            DigestResult(overview="全体概要", categories=[], total_articles=1),
+        )
+
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM email_attempts WHERE uidl = ?", ("mail-002",)
+            ).fetchone()
+        assert row is None
+
+
+class TestEmailAttempts:
+    def test_record_email_attempt_increments(self, db):
+        assert db.record_email_attempt("uidl-a") == 1
+        assert db.record_email_attempt("uidl-a") == 2
+        assert db.record_email_attempt("uidl-a") == 3
+
+    def test_record_email_attempt_is_per_uidl(self, db):
+        db.record_email_attempt("uidl-a")
+        db.record_email_attempt("uidl-a")
+        assert db.record_email_attempt("uidl-b") == 1
+
+    def test_attempt_does_not_mark_email_processed(self, db):
+        """試行回数の記録だけでは取得対象から外れない。"""
+        db.record_email_attempt("uidl-a")
+        assert db.is_email_processed("uidl-a") is False

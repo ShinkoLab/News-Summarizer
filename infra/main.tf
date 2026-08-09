@@ -275,6 +275,10 @@ resource "google_cloud_run_v2_job" "summarizer" {
           value = "true"
         }
         env {
+          name  = "EMAIL_MAX_FETCH_ATTEMPTS"
+          value = tostring(var.email_max_fetch_attempts)
+        }
+        env {
           name  = "LOG_LEVEL"
           value = "INFO"
         }

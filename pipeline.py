@@ -16,7 +16,7 @@ from tqdm import tqdm
 import config as config_module
 from config import AppConfig
 from logger import get_logger
-from models import Article, ArticleSummary, DigestResult
+from models import Article, ArticleSummary, DigestResult, SaveResult
 
 from fetchers.rss_fetcher import MinifluxFetcher
 from fetchers.email_fetcher import EmailFetcher
@@ -94,6 +94,38 @@ def fetch_articles(
             logger.error("Emailの取得中にエラーが発生しました: %s", e, exc_info=True)
 
     return articles, rss_fetcher
+
+
+def select_articles(articles: list[Article], limit: int) -> list[Article]:
+    """1回の処理上限までを、ソース間で公平に配分して選ぶ。
+
+    先頭から単純に切ると、`fetch_articles()` が RSS → Email の順に並べる以上、
+    RSS だけで枠が埋まったとき Email が永久に処理されない。ソースごとに
+    元の順序を保ったままラウンドロビンで配分し、記事数の少ないソースが
+    使わなかった枠は他のソースへ回す。
+    """
+    if len(articles) <= limit:
+        return articles
+
+    queues: dict[str, list[Article]] = {}
+    for article in articles:
+        queues.setdefault(article.source_type, []).append(article)
+
+    selected: list[Article] = []
+    while len(selected) < limit:
+        # 1周しても1件も取れなければ全ソースが空。
+        progressed = False
+        for queue in queues.values():
+            if not queue:
+                continue
+            selected.append(queue.pop(0))
+            progressed = True
+            if len(selected) == limit:
+                break
+        if not progressed:
+            break
+
+    return selected
 
 
 def summarize_all(
@@ -199,23 +231,66 @@ def build_digest(
     return summaries, digest
 
 
+def reconcile_email_attempts(
+    db, attempted_uidls: set[str], saved_uidls: set[str], options: RunOptions,
+    max_attempts: int,
+) -> None:
+    """保存に至らなかったメールの試行回数を記録し、上限に達したら打ち切る。
+
+    POP3のメールはサーバから削除しないため、保存されないメールは毎回フルRETRされる。
+    恒久的に失敗するメール（poison message）が毎回ダウンロードされ続けるのを防ぐ。
+    """
+    if not options.run_db:
+        return
+
+    for uidl in sorted(attempted_uidls - saved_uidls):
+        try:
+            # 保存後の工程（Discord投稿など）で例外離脱した場合、保存済みのメールが
+            # ここに紛れ込みうる。処理済みなら試行回数を数える必要はない。
+            if db.is_email_processed(uidl):
+                continue
+            attempts = db.record_email_attempt(uidl)
+        except Exception as e:
+            logger.error(
+                "メールの試行回数の記録に失敗しました (uidl: %s): %s", uidl, e, exc_info=True
+            )
+            continue
+
+        if attempts >= max_attempts:
+            db.mark_email_processed(uidl)
+            logger.warning(
+                "メールの取得試行が%d回に達したため、処理済みとして打ち切ります "
+                "(uidl: %s)",
+                attempts,
+                uidl,
+            )
+
+
 def persist_and_publish(
     summaries, digest, embeddings, db, options: RunOptions,
     rss_fetcher: MinifluxFetcher | None = None,
-) -> None:
-    """Save to DB and/or post to Discord based on RunOptions."""
+) -> SaveResult:
+    """Save to DB and/or post to Discord based on RunOptions.
+
+    Returns what was actually persisted, so the caller can limit mark-as-read
+    and processed-marking to those articles.
+    """
     logger.info("結果を保存・出力しています...")
     only_summaries = [s[1] for s in summaries]
+    result = SaveResult(batch_id=None, saved=[])
 
     if options.run_db:
-        db.save_batch(summaries, digest, embeddings)
+        result = db.save_batch(summaries, digest, embeddings)
+        if result.is_partial:
+            logger.warning(
+                "%d件の記事を保存できませんでした。未保存分は既読化せず次回に回します。",
+                result.failed,
+            )
+        # DB保存に成功したRSS記事だけを既読化する（要約・保存に失敗した記事は次回再取得）
         rss_entry_ids = [
-            int(article.source_id)
-            for article, *_ in summaries
-            if article.source_type == "rss"
+            int(source_id) for source_type, source_id in result.saved if source_type == "rss"
         ]
         logger.info("データベースへの保存が完了しました。")
-        # DB保存に成功したRSS記事だけを既読化する（要約・保存に失敗した記事は次回再取得）
         if rss_fetcher is not None and rss_entry_ids:
             rss_fetcher.mark_as_read(rss_entry_ids)
     else:
@@ -233,6 +308,8 @@ def persist_and_publish(
             print(f"\n[{c.category}] ({c.article_count}件)\n{c.summary}")
             for highlight in c.highlights:
                 print(f"  • {highlight}")
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -256,11 +333,21 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
             return
 
         before_dedup = len(articles)
-        articles = [
-            article
-            for article in articles
-            if not db.is_article_processed(article.source_type, article.source_id)
-        ]
+        remaining: list[Article] = []
+        processed_rss_ids: list[int] = []
+        for article in articles:
+            if not db.is_article_processed(article.source_type, article.source_id):
+                remaining.append(article)
+            elif article.source_type == "rss":
+                processed_rss_ids.append(int(article.source_id))
+        articles = remaining
+
+        # 保存済みと判明したRSS記事はMinifluxでも既読にする。ここで既読化しないと
+        # 「DB保存済みだがMiniflux上は未読」の記事が毎回取得され続ける。今回の実行の
+        # 成否とは無関係なので、早期returnより前に済ませておく。
+        if rss_fetcher is not None and processed_rss_ids:
+            rss_fetcher.mark_as_read(processed_rss_ids)
+
         if before_dedup != len(articles):
             logger.info("処理済み記事を%d件除外しました。", before_dedup - len(articles))
         if not articles:
@@ -274,32 +361,60 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
                 max_articles,
                 len(articles) - max_articles,
             )
-            articles = articles[:max_articles]
+            articles = select_articles(articles, max_articles)
 
         logger.info("%d件の新規記事を取得しました。", len(articles))
 
-        pairs = summarize_all(articles, options)
-        if not pairs:
-            logger.warning("要約に成功した記事がありませんでした。処理を終了します。")
-            return
-
-        article_group_map, embeddings = group_pairs(pairs, options)
-
+        # 繰り越された（＝要約すら試みていない）メールは対象外。試行していないもので
+        # リトライ枠を消費させない。
+        attempted_email_uidls = {
+            article.source_id for article in articles if article.source_type == "email"
+        }
+        save_result = SaveResult(batch_id=None, saved=[])
         try:
-            summaries, digest = build_digest(pairs, article_group_map, options)
-        except Exception as e:
-            # ダイジェスト生成の想定外失敗で個別要約まで失わないよう、空ダイジェストで続行する
-            logger.error(
-                "ダイジェスト生成中にエラーが発生しました。空のダイジェストで出力を続行します: %s",
-                e,
-                exc_info=True,
+            save_result = _process(articles, db, options, rss_fetcher)
+        finally:
+            saved_uidls = {
+                source_id
+                for source_type, source_id in save_result.saved
+                if source_type == "email"
+            }
+            reconcile_email_attempts(
+                db,
+                attempted_email_uidls,
+                saved_uidls,
+                options,
+                config.email.max_fetch_attempts if config.email else 3,
             )
-            summaries = [
-                (article, summary, article_group_map.get(i, (None, None))[0], article_group_map.get(i, (None, None))[1])
-                for i, (article, summary) in enumerate(pairs)
-            ]
-            digest = DigestResult(overview="", categories=[], total_articles=len(pairs))
-
-        persist_and_publish(summaries, digest, embeddings, db, options, rss_fetcher)
 
     logger.info("プロセス完了")
+
+
+def _process(
+    articles: list[Article], db, options: RunOptions,
+    rss_fetcher: MinifluxFetcher | None,
+) -> SaveResult:
+    """Summarize → group → digest → output. Returns what was persisted."""
+    pairs = summarize_all(articles, options)
+    if not pairs:
+        logger.warning("要約に成功した記事がありませんでした。処理を終了します。")
+        return SaveResult(batch_id=None, saved=[])
+
+    article_group_map, embeddings = group_pairs(pairs, options)
+
+    try:
+        summaries, digest = build_digest(pairs, article_group_map, options)
+    except Exception as e:
+        # ダイジェスト生成の想定外失敗で個別要約まで失わないよう、空ダイジェストで続行する
+        logger.error(
+            "ダイジェスト生成中にエラーが発生しました。空のダイジェストで出力を続行します: %s",
+            e,
+            exc_info=True,
+        )
+        summaries = [
+            (article, summary, article_group_map.get(i, (None, None))[0], article_group_map.get(i, (None, None))[1])
+            for i, (article, summary) in enumerate(pairs)
+        ]
+        digest = DigestResult(overview="", categories=[], total_articles=len(pairs))
+
+    return persist_and_publish(summaries, digest, embeddings, db, options, rss_fetcher)

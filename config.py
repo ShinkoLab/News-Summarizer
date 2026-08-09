@@ -119,6 +119,9 @@ class EmailConfig(BaseModel):
     username: str
     password: str
     use_ssl: bool = True
+    # POP3のメールはサーバから削除しないため、保存に至らないメールは毎回フルRETRされる。
+    # 試行がこの回数に達したら処理済み扱いにして取得対象から外す（poison message対策）。
+    max_fetch_attempts: int = Field(default=3, ge=1)
 
 
 class DiscordConfig(BaseModel):
@@ -330,6 +333,8 @@ def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
             email_config["port"] = int(port)
         if (use_ssl := _env_bool("EMAIL_USE_SSL")) is not None:
             email_config["use_ssl"] = use_ssl
+        if max_attempts := os.getenv("EMAIL_MAX_FETCH_ATTEMPTS"):
+            email_config["max_fetch_attempts"] = int(max_attempts)
 
     if webhook_url := os.getenv("DISCORD_WEBHOOK_URL"):
         section("discord")["webhook_url"] = webhook_url

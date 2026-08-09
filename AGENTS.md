@@ -128,20 +128,42 @@ Controlled by `summarizer.steps.grouper.use_embeddings` in config:
 
 ### Deduplication
 
-- **RSS**: Miniflux API state (entries marked as read after fetch; skipped in `--dry-run` mode)
-- **Email**: UIDL tracking stored in the `processed_emails` table; messages are never deleted from the server
+- **RSS**: Miniflux API state. Entries are marked as read in two places, never in the fetcher
+  itself: articles that `is_article_processed()` reveals are **already stored** are marked
+  immediately after the dedup filter (before any early return — the steady state is "everything
+  filtered out", so deferring this would leave them unread forever), and newly persisted articles
+  are marked from `persist_and_publish()` using `SaveResult.saved`. Both paths no-op in
+  `--dry-run` via `MinifluxFetcher.dry_run`
+- **Email**: UIDL tracking stored in the `processed_emails` table; messages are never deleted from
+  the server. Because a message that is fetched but not saved would be fully re-downloaded every
+  run, `reconcile_email_attempts()` (`pipeline.py`) counts attempts in `email_attempts` /
+  `emailAttempts` and gives up on a message once it reaches `email.max_fetch_attempts`
+  (default `3`), marking it processed. Articles merely carried over by
+  `max_articles_per_run` are never counted — they were not attempted
 - **Article-level**: `db.is_article_processed(source_type, source_id)` filters out anything already
   stored, before summarization. Combined with `summarizer.max_articles_per_run`, the overflow is
-  simply carried over to the next run rather than dropped
+  simply carried over to the next run rather than dropped. The cap is applied by
+  `select_articles()`, which allocates the quota round-robin across source types so RSS cannot
+  starve email
 
 ### Storage backends
 
 `database.backend` selects the implementation (`create_database()` in `outputs/database.py`):
 
-- **`sqlite` (default)** — local file at `database.path`; `execution_lock()` is a no-op
+- **`sqlite` (default)** — local file at `database.path`; `execution_lock()` is a no-op.
+  `save_batch()` stays a single transaction (SQLite has no transaction size limit)
 - **`firestore`** — Cloud Run / Firestore; `execution_lock()` is a real distributed lock with a TTL,
   so overlapping runs cannot double-post. A force-cancelled run can leave the lock document behind —
-  recovery is documented in `infra/DEPLOYMENT.md`
+  recovery is documented in `infra/DEPLOYMENT.md`. `save_batch()` splits its writes across
+  **multiple commits**, bounded by both write count (`_MAX_BATCH_WRITES`) and estimated size
+  (`_MAX_CHUNK_BYTES`), because a single `Transaction too big` failure used to throw away every
+  LLM call of the run. A failed chunk is logged and skipped rather than raised, and the batch
+  document is committed **last** so articles are never left pointing at a batch that does not
+  exist (the Viewer queries articles by `batch_id`)
+
+Both backends return a `SaveResult` (`models.py`) — `batch_id`, the `(source_type, source_id)`
+pairs actually persisted, and a failure count — so mark-as-read and email bookkeeping only ever
+act on what really landed in the database.
 
 `scripts/migrate_sqlite_to_firestore.py` moves existing data across.
 
@@ -203,8 +225,9 @@ Notable optional keys (see `config.yaml.example` for full comments):
 - `database.backend` — `sqlite` (default) or `firestore`; `database.path` (SQLite file, default `data/news_summarizer.db`), `database.project_id` / `database.firestore_database` (Firestore)
 - `summarizer.category_max_retries` — retry count when the LLM returns a category outside the defined list (default: `3`)
 - `summarizer.individual_max_length` / `digest_max_length` — character limits for per-article summaries and the digest. `digest_max_length` (default `3000`) is split across categories by `_allocate_chars()` (`summarizer/digest.py`): the `MIN_CHARS_PER_CATEGORY` floor of 120 is reserved for every category first, then the remainder is distributed **in proportion to article count**, so the total never exceeds the limit
-- `summarizer.max_articles_per_run` — cap on articles processed in one run (default: `100`); the remainder is carried over
+- `summarizer.max_articles_per_run` — cap on articles processed in one run (default: `100`); the remainder is carried over, with the quota allocated round-robin across sources by `select_articles()` (`pipeline.py`)
 - `summarizer.steps.<step>.thinking` — per-step thinking toggle
+- `email.max_fetch_attempts` — give up on a POP3 message after this many runs fetch it without persisting it (default: `3`); prevents a permanently failing message from being fully re-downloaded on every run
 - `discord.post_individual_articles` / `embed_color` / `footer_text` — Discord embed tuning. `post_individual_articles` defaults to **`false`**; enabling it re-posts every article as its own embed, duplicating what the category digest already covers
 - `llm.provider` / `project_id` / `location` — provider selection and Vertex AI target
 - `llm.embedding_model` / `embedding_base_url` / `embedding_api_key` — embedding endpoint, independent of the chat LLM

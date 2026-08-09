@@ -7,9 +7,17 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from config import AppConfig, LLMConfig, SummarizerConfig, DiscordConfig
-from models import Article, ArticleSummary, CategoryDigest, DigestResult, GroupingResult, ArticleGroup
-from pipeline import RunOptions, run_pipeline
+from config import AppConfig, LLMConfig, SummarizerConfig, DiscordConfig, EmailConfig
+from models import (
+    Article,
+    ArticleSummary,
+    CategoryDigest,
+    DigestResult,
+    GroupingResult,
+    ArticleGroup,
+    SaveResult,
+)
+from pipeline import RunOptions, run_pipeline, select_articles
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +64,30 @@ def _make_grouping(n: int = 1) -> GroupingResult:
     )
 
 
+def _make_db(saved_source_ids: list[str] | None = None) -> MagicMock:
+    """A DB mock whose save_batch() reports back what it was handed.
+
+    save_batch() now returns a SaveResult and the pipeline drives mark-as-read /
+    email bookkeeping off it, so a bare MagicMock (which yields an empty
+    SaveResult.saved) would silently disable both.
+    `saved_source_ids` narrows the result to simulate a partial save.
+    """
+    db = MagicMock()
+    db.is_article_processed.return_value = False
+    db.is_email_processed.return_value = False
+    db.record_email_attempt.return_value = 1
+
+    def save_batch(summaries, digest, embeddings=None):
+        keys = [(article.source_type, article.source_id) for article, *_ in summaries]
+        if saved_source_ids is None:
+            return SaveResult(batch_id=1, saved=keys)
+        kept = [key for key in keys if key[1] in saved_source_ids]
+        return SaveResult(batch_id=1, saved=kept, failed=len(keys) - len(kept))
+
+    db.save_batch.side_effect = save_batch
+    return db
+
+
 @pytest.fixture
 def minimal_config() -> AppConfig:
     return AppConfig(
@@ -85,8 +117,7 @@ def _run_with_patches(
     digest = _make_digest(len(articles))
     grouping = _make_grouping(len(articles))
 
-    db_instance = db_mock or MagicMock()
-    db_instance.is_article_processed.return_value = False
+    db_instance = db_mock or _make_db()
     discord_instance = discord_mock or MagicMock()
 
     with (
@@ -141,8 +172,7 @@ class TestEmptyArticles:
 class TestDryRun:
     def test_dry_run_skips_db(self, minimal_config):
         articles = [_make_article()]
-        db_mock = MagicMock()
-        db_mock.is_article_processed.return_value = False
+        db_mock = _make_db()
 
         db_mock, discord_mock = _run_with_patches(
             minimal_config,
@@ -187,8 +217,7 @@ class TestForcedOutputs:
 
     def test_dry_run_forced_discord_skips_db(self, minimal_config):
         articles = [_make_article()]
-        db_mock = MagicMock()
-        db_mock.is_article_processed.return_value = False
+        db_mock = _make_db()
 
         db_mock, _ = _run_with_patches(
             minimal_config,
@@ -201,8 +230,7 @@ class TestForcedOutputs:
 
     def test_forced_all_calls_both(self, minimal_config):
         articles = [_make_article()]
-        db_mock = MagicMock()
-        db_mock.is_article_processed.return_value = False
+        db_mock = _make_db()
         discord_mock = MagicMock()
 
         db_mock, discord_mock = _run_with_patches(
@@ -224,8 +252,7 @@ class TestForcedOutputs:
 class TestNonDryRun:
     def test_non_dry_run_calls_db(self, minimal_config):
         articles = [_make_article()]
-        db_mock = MagicMock()
-        db_mock.is_article_processed.return_value = False
+        db_mock = _make_db()
 
         db_mock, _ = _run_with_patches(
             minimal_config,
@@ -325,9 +352,9 @@ class TestSourceFiltering:
 # ---------------------------------------------------------------------------
 
 class TestMinifluxMarkAsRead:
-    def _run(self, config, options, articles, *, summarize_side_effect, generate_digest):
-        db_instance = MagicMock()
-        db_instance.is_article_processed.return_value = False
+    def _run(self, config, options, articles, *, summarize_side_effect, generate_digest,
+             db_instance=None):
+        db_instance = db_instance or _make_db()
         discord_instance = MagicMock()
         with (
             patch("pipeline.MinifluxFetcher") as MockRss,
@@ -388,3 +415,210 @@ class TestMinifluxMarkAsRead:
         )
 
         rss_instance.mark_as_read.assert_not_called()
+
+    def test_partially_saved_batch_only_marks_persisted_articles(self, minimal_config):
+        """分割コミットで落ちた記事は既読化しない（次回の再取得に回す）。"""
+        articles = [_make_article(source_id="1"), _make_article(source_id="2")]
+        _, _, rss_instance = self._run(
+            minimal_config,
+            RunOptions(dry_run=False),
+            articles,
+            summarize_side_effect=[_make_summary(), _make_summary()],
+            generate_digest={"return_value": _make_digest(2)},
+            db_instance=_make_db(saved_source_ids=["1"]),
+        )
+
+        rss_instance.mark_as_read.assert_called_once_with([1])
+
+
+# ---------------------------------------------------------------------------
+# 保存済みと判明した記事を取得元から外す（issue #27）
+# ---------------------------------------------------------------------------
+
+def _run_with_db(config, options, articles, db_instance):
+    """run_pipeline を走らせ、MinifluxFetcher のモックを返す。"""
+    with (
+        patch("pipeline.MinifluxFetcher") as MockRss,
+        patch("pipeline.EmailFetcher") as MockEmail,
+        patch("pipeline.summarize_article", side_effect=lambda *a, **k: _make_summary()),
+        patch("pipeline.group_articles", return_value=_make_grouping(len(articles))),
+        patch("pipeline.generate_digest", return_value=_make_digest(len(articles))),
+        patch("pipeline.create_database", return_value=db_instance),
+        patch("pipeline.DiscordOutput"),
+    ):
+        rss_instance = MagicMock()
+        rss_instance.fetch.return_value = [a for a in articles if a.source_type == "rss"]
+        MockRss.return_value = rss_instance
+        MockEmail.return_value.fetch.return_value = [
+            a for a in articles if a.source_type == "email"
+        ]
+        run_pipeline(config, options)
+    return rss_instance
+
+
+class TestProcessedArticlesAreMarkedRead:
+    def test_already_processed_rss_is_marked_read_on_early_return(self, minimal_config):
+        """全件が処理済みで早期returnする経路でも既読化する。
+
+        定常状態はまさにこの経路（毎回取得→毎回フィルタで捨てる）なので、
+        ここで既読化しないと未読の滞留は永久に解消されない。
+        """
+        articles = [_make_article(source_id="1"), _make_article(source_id="2")]
+        db_instance = _make_db()
+        db_instance.is_article_processed.return_value = True
+
+        rss_instance = _run_with_db(
+            minimal_config, RunOptions(dry_run=False), articles, db_instance
+        )
+
+        rss_instance.mark_as_read.assert_called_once_with([1, 2])
+        db_instance.save_batch.assert_not_called()
+
+    def test_processed_and_new_articles_are_marked_separately(self, minimal_config):
+        """処理済み分は除外直後に、新規分は保存後に既読化される。"""
+        articles = [_make_article(source_id="1"), _make_article(source_id="2")]
+        db_instance = _make_db()
+        db_instance.is_article_processed.side_effect = [True, False]
+
+        rss_instance = _run_with_db(
+            minimal_config, RunOptions(dry_run=False), articles, db_instance
+        )
+
+        assert rss_instance.mark_as_read.call_args_list == [call([1]), call([2])]
+
+    def test_processed_email_is_not_passed_to_mark_as_read(self, minimal_config):
+        """MinifluxのIDは整数。email の source_id を混ぜてはいけない。"""
+        articles = [_make_article(source_id="mail-1", source_type="email")]
+        db_instance = _make_db()
+        db_instance.is_article_processed.return_value = True
+
+        rss_instance = _run_with_db(
+            minimal_config, RunOptions(dry_run=False), articles, db_instance
+        )
+
+        rss_instance.mark_as_read.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# メールの試行回数カウンタ（issue #27 / poison message 対策）
+# ---------------------------------------------------------------------------
+
+class TestEmailAttemptReconciliation:
+    def test_unsaved_email_records_an_attempt(self, minimal_config):
+        articles = [_make_article(source_id="mail-1", source_type="email")]
+        db_instance = _make_db(saved_source_ids=[])  # 保存に失敗した
+
+        _run_with_db(minimal_config, RunOptions(dry_run=False), articles, db_instance)
+
+        db_instance.record_email_attempt.assert_called_once_with("mail-1")
+        db_instance.mark_email_processed.assert_not_called()
+
+    def test_saved_email_records_no_attempt(self, minimal_config):
+        articles = [_make_article(source_id="mail-1", source_type="email")]
+        db_instance = _make_db()
+
+        _run_with_db(minimal_config, RunOptions(dry_run=False), articles, db_instance)
+
+        db_instance.record_email_attempt.assert_not_called()
+
+    def test_attempt_limit_marks_the_email_processed(self, minimal_config):
+        """恒久的に失敗するメールを毎回フルRETRし続けないよう打ち切る。"""
+        minimal_config.email = EmailConfig(
+            host="pop.example.com", username="u", password="p", max_fetch_attempts=2
+        )
+        articles = [_make_article(source_id="mail-1", source_type="email")]
+        db_instance = _make_db(saved_source_ids=[])
+        db_instance.record_email_attempt.return_value = 2
+
+        _run_with_db(minimal_config, RunOptions(dry_run=False), articles, db_instance)
+
+        db_instance.mark_email_processed.assert_called_once_with("mail-1")
+
+    def test_attempt_limit_comes_from_config(self, minimal_config):
+        """上限は設定値。既定の3ではなく config の値で判定する。"""
+        minimal_config.email = EmailConfig(
+            host="pop.example.com", username="u", password="p", max_fetch_attempts=10
+        )
+        articles = [_make_article(source_id="mail-1", source_type="email")]
+        db_instance = _make_db(saved_source_ids=[])
+        db_instance.record_email_attempt.return_value = 4
+
+        _run_with_db(minimal_config, RunOptions(dry_run=False), articles, db_instance)
+
+        db_instance.mark_email_processed.assert_not_called()
+
+    def test_carried_over_email_records_no_attempt(self, minimal_config):
+        """繰り越された（要約すら試みていない）メールでリトライ枠を消費しない。"""
+        minimal_config.summarizer.max_articles_per_run = 1
+        articles = [
+            _make_article(source_id="mail-1", source_type="email"),
+            _make_article(source_id="mail-2", source_type="email"),
+        ]
+        db_instance = _make_db(saved_source_ids=[])
+
+        _run_with_db(minimal_config, RunOptions(dry_run=False), articles, db_instance)
+
+        db_instance.record_email_attempt.assert_called_once_with("mail-1")
+
+    def test_summarize_failure_records_an_attempt(self, minimal_config):
+        articles = [_make_article(source_id="mail-1", source_type="email")]
+        db_instance = _make_db()
+
+        with (
+            patch("pipeline.MinifluxFetcher"),
+            patch("pipeline.EmailFetcher") as MockEmail,
+            patch("pipeline.summarize_article", side_effect=RuntimeError("boom")),
+            patch("pipeline.create_database", return_value=db_instance),
+            patch("pipeline.DiscordOutput"),
+        ):
+            MockEmail.return_value.fetch.return_value = articles
+            run_pipeline(minimal_config, RunOptions(dry_run=False, sources=frozenset({"email"})))
+
+        db_instance.record_email_attempt.assert_called_once_with("mail-1")
+
+    def test_dry_run_records_no_attempt(self, minimal_config):
+        articles = [_make_article(source_id="mail-1", source_type="email")]
+        db_instance = _make_db()
+
+        _run_with_db(minimal_config, RunOptions(dry_run=True), articles, db_instance)
+
+        db_instance.record_email_attempt.assert_not_called()
+        db_instance.mark_email_processed.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# max_articles_per_run のソース間公平配分（issue #27）
+# ---------------------------------------------------------------------------
+
+class TestSelectArticles:
+    def test_under_the_limit_returns_everything_unchanged(self):
+        articles = [_make_article(source_id=str(i)) for i in range(3)]
+        assert select_articles(articles, 10) == articles
+
+    def test_single_source_keeps_the_original_order(self):
+        articles = [_make_article(source_id=str(i)) for i in range(5)]
+        selected = select_articles(articles, 3)
+        assert [a.source_id for a in selected] == ["0", "1", "2"]
+
+    def test_rss_cannot_starve_email(self):
+        """RSSが枠を独占してEmailが永久に処理されない状態を作らない。"""
+        articles = [_make_article(source_id=f"rss-{i}") for i in range(10)]
+        articles += [
+            _make_article(source_id=f"mail-{i}", source_type="email") for i in range(10)
+        ]
+
+        selected = select_articles(articles, 4)
+
+        assert len(selected) == 4
+        assert sum(1 for a in selected if a.source_type == "rss") == 2
+        assert sum(1 for a in selected if a.source_type == "email") == 2
+
+    def test_spare_capacity_spills_to_the_other_source(self):
+        """記事数の少ないソースが使わなかった枠は他ソースへ回す。"""
+        articles = [_make_article(source_id=f"rss-{i}") for i in range(10)]
+        articles += [_make_article(source_id="mail-0", source_type="email")]
+
+        selected = select_articles(articles, 5)
+
+        assert len(selected) == 5
+        assert sum(1 for a in selected if a.source_type == "email") == 1

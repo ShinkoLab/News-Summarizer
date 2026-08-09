@@ -63,6 +63,7 @@ class TestCategoryTaxonomy:
         taxonomy = load_taxonomy()
         assert set(taxonomy.names) == {
             "政治・社会",
+            "事件・事故・災害",
             "経済・ビジネス",
             "テクノロジー",
             "AI・機械学習",
@@ -70,7 +71,7 @@ class TestCategoryTaxonomy:
             "健康・ライフ",
             "カルチャー",
         }
-        assert len(taxonomy.names) == 7
+        assert len(taxonomy.names) == 8
 
     def test_fallback_is_outside_the_category_list(self):
         """フォールバックは分類失敗のシグナルなので、意図的に categories 外の値。"""

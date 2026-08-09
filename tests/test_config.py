@@ -281,6 +281,29 @@ class TestEnvironmentOverrides:
         assert cfg.summarizer.steps["grouper"].use_embeddings is True
         assert cfg.summarizer.steps["grouper"].similarity_threshold == 0.7
 
+    def test_email_max_fetch_attempts_from_environment(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("EMAIL_HOST", "pop.example.com")
+        monkeypatch.setenv("EMAIL_USERNAME", "user")
+        monkeypatch.setenv("EMAIL_PASSWORD", "pass")
+        monkeypatch.setenv("EMAIL_MAX_FETCH_ATTEMPTS", "5")
+
+        cfg = load_runtime_config(str(tmp_path / "missing.yaml"))
+
+        assert cfg.email is not None
+        assert cfg.email.max_fetch_attempts == 5
+
+    def test_email_max_fetch_attempts_defaults(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("EMAIL_HOST", "pop.example.com")
+        monkeypatch.setenv("EMAIL_USERNAME", "user")
+        monkeypatch.setenv("EMAIL_PASSWORD", "pass")
+
+        cfg = load_runtime_config(str(tmp_path / "missing.yaml"))
+
+        assert cfg.email is not None
+        assert cfg.email.max_fetch_attempts == 3
+
 
 # ---------------------------------------------------------------------------
 # reload_config replaces the module-level singleton

@@ -7,8 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `email.max_fetch_attempts`（環境変数 `EMAIL_MAX_FETCH_ATTEMPTS`、既定 `3`）。
+  取得できるが保存に至らないメールを、この回数に達した時点で処理済みとして打ち切る
+
 ### Fixed
 
+- Firestore の `save_batch()` が全件を1トランザクションでコミットしており、
+  失敗すると要約・グルーピング・ダイジェストの LLM 呼び出しが丸ごと無駄になっていた問題。
+  書き込み件数（`_MAX_BATCH_WRITES` = 450）と推定サイズ（`_MAX_CHUNK_BYTES` = 1 MiB）の
+  両方で複数コミットに分割し、途中のチャンクが失敗しても例外を投げずに続行する。
+  バッチドキュメントは最後にコミットし、`status` は部分保存なら `"partial"`、
+  `total_articles` は実際に保存できた件数になる。
+  両バックエンドの `save_batch()` は保存できた記事を示す `SaveResult` を返すようになり、
+  既読化・メールの処理済みマークは実際に永続化された記事だけを対象とする
+- 取得したが保存しなかった記事を取得元から外す経路が無く、取得コストが単調増加していた問題。
+  RSS は `is_article_processed()` で除外した記事を（早期 return より前に）Miniflux で
+  既読化するようになり、「DB保存済みだが未読」の滞留が解消する。
+  メールは `email_attempts` / `emailAttempts` で試行回数を数え、
+  `email.max_fetch_attempts` に達したものを処理済みとして打ち切る
+- `summarizer.max_articles_per_run` の枠を RSS が使い切り、メールが永久に処理されない
+  ことがあった問題。`select_articles()` がソース種別ごとにラウンドロビンで枠を配分する
 - 記事数が増えると Firestore への一括保存が
   `400 Transaction too big` で失敗していた問題（80記事で発生）。
   `embedding`（1536要素の配列）の各要素が Firestore に自動インデックスされ、

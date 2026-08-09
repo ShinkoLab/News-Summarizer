@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pydantic import BaseModel, Field
 
@@ -13,6 +13,24 @@ class Article:
     published_at: datetime # 公開日時
     fetched_at: datetime   # 取得日時
     feed_title: str | None # フィード名（RSSの場合）
+
+
+@dataclass(frozen=True)
+class SaveResult:
+    """`save_batch()` の結果。
+
+    Firestore は保存を複数コミットに分割するため、実行が「全部成功」か
+    「全部失敗」かの2択ではなくなった。既読化・処理済みマークの対象を
+    実際に永続化できた記事だけに絞るために、何が保存されたかを返す。
+    """
+
+    batch_id: int | None                                # 1件も保存できなければ None
+    saved: list[tuple[str, str]] = field(default_factory=list)  # (source_type, source_id)
+    failed: int = 0                                     # 保存できなかった記事数
+
+    @property
+    def is_partial(self) -> bool:
+        return self.failed > 0
 
 
 class ArticleGroup(BaseModel):

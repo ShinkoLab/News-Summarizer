@@ -128,6 +128,12 @@ variable "email_username" {
   type = string
 }
 
+variable "email_max_fetch_attempts" {
+  description = "保存に至らないメールをこの回数で打ち切り、処理済み扱いにする（poison message対策）"
+  type        = number
+  default     = 3
+}
+
 variable "billing_account_id" {
   description = "Optional billing account ID for a monthly budget alert"
   type        = string

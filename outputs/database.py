@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 from config import config
-from models import Article, ArticleSummary
+from models import Article, ArticleSummary, SaveResult
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -60,6 +60,15 @@ class Database:
         CREATE TABLE IF NOT EXISTS processed_emails (
             uidl TEXT PRIMARY KEY,
             processed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        -- 取得したが保存に至らなかったメールの試行回数。processed_emails とは
+        -- 別に持つ（同じテーブルに混ぜると is_email_processed() が試行中の
+        -- メールを処理済みと誤判定する）。
+        CREATE TABLE IF NOT EXISTS email_attempts (
+            uidl TEXT PRIMARY KEY,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE INDEX IF NOT EXISTS idx_summaries_batch ON article_summaries(batch_id);
@@ -183,13 +192,37 @@ class Database:
             conn.commit()
             logger.debug("メールを処理済みとしてマークしました (uidl: %s)", uidl)
 
+    def record_email_attempt(self, uidl: str) -> int:
+        """
+        指定したメールUIDLの試行回数を1つ増やし、増加後の回数を返す。
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO email_attempts (uidl, attempts) VALUES (?, 1)
+                ON CONFLICT(uidl) DO UPDATE SET
+                    attempts = attempts + 1,
+                    last_attempt_at = CURRENT_TIMESTAMP
+                """,
+                (uidl,),
+            )
+            conn.commit()
+            cursor.execute("SELECT attempts FROM email_attempts WHERE uidl = ?", (uidl,))
+            row = cursor.fetchone()
+            return int(row[0]) if row else 1
+
     def save_batch(
         self,
         summaries: list[tuple[Article, ArticleSummary, int | None, str | None]],
         digest: "DigestResult",
         embeddings=None,
-    ) -> int:
-        """Persist a completed pipeline result in a single SQLite transaction."""
+    ) -> SaveResult:
+        """Persist a completed pipeline result in a single SQLite transaction.
+
+        SQLite にはトランザクションサイズの制限が無いため、Firestore と違って
+        分割はしない（`SaveResult` の形だけ合わせる）。
+        """
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -234,10 +267,18 @@ class Database:
                         "INSERT OR IGNORE INTO processed_emails (uidl) VALUES (?)",
                         (article.source_id,),
                     )
+                    # 保存できた以上、poison message 判定用の試行回数はもう不要。
+                    cursor.execute(
+                        "DELETE FROM email_attempts WHERE uidl = ?",
+                        (article.source_id,),
+                    )
 
             conn.commit()
             logger.debug("バッチを一括保存しました (batch_id: %d)", batch_id)
-            return int(batch_id)
+            return SaveResult(
+                batch_id=int(batch_id),
+                saved=[(article.source_type, article.source_id) for article, *_ in summaries],
+            )
 
     @contextmanager
     def execution_lock(self):

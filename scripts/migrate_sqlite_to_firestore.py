@@ -81,10 +81,14 @@ def migrate(database_path: Path, project_id: str, database_id: str, dry_run: boo
             article_ref = client.collection("articleSummaries").document(
                 make_document_id(row["source_type"], row["source_id"])
             )
-            write_batch.create(
+            # set() rather than create(): a migration that dies partway must be
+            # re-runnable, and the document id is already content-derived.
+            write_batch.set(
                 article_ref,
                 {
-                    "id": str(row["id"]),
+                    # Must match what FirestoreDatabase.save_batch writes at runtime
+                    # (the document id), not the SQLite rowid.
+                    "id": article_ref.id,
                     "batch_id": batch_id,
                     "source_type": row["source_type"],
                     "source_id": row["source_id"],

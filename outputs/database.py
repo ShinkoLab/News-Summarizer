@@ -65,6 +65,9 @@ class Database:
         CREATE INDEX IF NOT EXISTS idx_summaries_batch ON article_summaries(batch_id);
         CREATE INDEX IF NOT EXISTS idx_summaries_category ON article_summaries(category);
         CREATE INDEX IF NOT EXISTS idx_summaries_created ON article_summaries(created_at);
+        -- is_article_processed() is called once per fetched article on every run.
+        CREATE INDEX IF NOT EXISTS idx_summaries_source
+            ON article_summaries(source_type, source_id);
         """
         with self.get_connection() as conn:
             conn.executescript(schema)

@@ -1,5 +1,7 @@
 import json
 import re
+from google import genai
+from google.genai import types as genai_types
 from openai import OpenAI
 from config import config
 from config import SummarizerStepConfig
@@ -13,8 +15,14 @@ def use_structured_output() -> bool:
     return config.llm.structured_output
 
 
-def get_client() -> OpenAI:
-    """OpenAI 互換クライアントを初期化して返す"""
+def get_client():
+    """Configured provider client. Vertex AI uses Application Default Credentials."""
+    if config.llm.provider == "vertex":
+        return genai.Client(
+            vertexai=True,
+            project=config.llm.project_id,
+            location=config.llm.location,
+        )
     return OpenAI(
         base_url=config.llm.base_url,
         api_key=config.llm.api_key,
@@ -140,10 +148,93 @@ def call_with_retry(client, completion_kwargs, stream: bool = False):
     structured_output 設定に応じて Structured Output モードとプレーンテキストモードを切り替える。
     パース済みオブジェクトを返す。全試行失敗時は最後の例外を再送出する。
     """
+    if config.llm.provider == "vertex":
+        return _call_vertex_with_retry(client, completion_kwargs, stream)
     if use_structured_output():
         return _call_structured_with_retry(client, completion_kwargs, stream)
     else:
         return _call_plain_text_with_retry(client, completion_kwargs, stream)
+
+
+def _call_vertex_with_retry(client, completion_kwargs, stream: bool = False):
+    """Call Vertex AI through Google Gen AI SDK and validate the JSON schema."""
+    max_retries = config.llm.max_retries
+    kwargs = dict(completion_kwargs)
+    model_class = kwargs.pop("response_format")
+    model = kwargs.pop("model")
+    messages = _inject_thinking_token(kwargs.pop("messages"))
+    kwargs.pop("extra_body", None)
+
+    system_parts: list[str] = []
+    contents: list[genai_types.Content] = []
+    for message in messages:
+        role = message.get("role")
+        content = str(message.get("content", ""))
+        if role == "system":
+            system_parts.append(content)
+            continue
+        contents.append(
+            genai_types.Content(
+                role="model" if role == "assistant" else "user",
+                parts=[genai_types.Part.from_text(text=content)],
+            )
+        )
+
+    generation_args: dict = {
+        "system_instruction": "\n\n".join(system_parts) or None,
+        "response_mime_type": "application/json",
+        "response_schema": model_class,
+    }
+    parameter_mapping = {
+        "temperature": "temperature",
+        "top_p": "top_p",
+        "top_k": "top_k",
+        "max_tokens": "max_output_tokens",
+        "max_output_tokens": "max_output_tokens",
+        "seed": "seed",
+        "stop": "stop_sequences",
+    }
+    for source_name, target_name in parameter_mapping.items():
+        if source_name in kwargs:
+            generation_args[target_name] = kwargs[source_name]
+
+    reasoning_effort = kwargs.get("reasoning_effort")
+    if reasoning_effort:
+        generation_args["thinking_config"] = genai_types.ThinkingConfig(
+            thinking_level=str(reasoning_effort).upper()
+        )
+
+    last_error: Exception | None = None
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            logger.warning("[再試行 %d/%d] Vertex AI生成を再試行します...", attempt, max_retries)
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=genai_types.GenerateContentConfig(**generation_args),
+            )
+            if stream and response.text:
+                print(response.text, flush=True)
+            parsed = getattr(response, "parsed", None)
+            if isinstance(parsed, model_class):
+                return parsed
+            if parsed is not None:
+                return model_class.model_validate(parsed)
+            if not response.text:
+                raise ValueError("Vertex AIから空の応答が返されました。")
+            return model_class.model_validate_json(response.text)
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                "Vertex AI生成エラー (試行 %d/%d): %s",
+                attempt + 1,
+                max_retries + 1,
+                e,
+                exc_info=True,
+            )
+
+    raise last_error
 
 
 def _call_structured_with_retry(client, completion_kwargs, stream: bool = False):
@@ -272,5 +363,4 @@ def stream_completion(client, completion_kwargs):
         final = stream_ctx.get_final_completion()
         _log_usage(final, completion_kwargs.get("model", ""))
         return final
-
 

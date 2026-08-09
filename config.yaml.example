@@ -1,7 +1,12 @@
 # LLM (OpenAI Compatible API) の設定
 llm:
+  # Cloud Run + Vertex AI では "vertex"。ローカルOllamaでは "openai"
+  provider: "openai"
   base_url: "http://127.0.0.1:11434/v1"
   model: "your-model-name" # 使用するモデル名
+  # Vertex AI利用時（Cloud Runでは環境変数から設定可能）
+  #project_id: "your-google-cloud-project"
+  #location: "global"
   # api_key: "your-api-key"  # APIキー（省略時は "ollama"。OpenAI等の場合は sk-... を指定）
 
   # OpenAI互換APIの標準パラメータ（全ステップ共通デフォルト、省略可能）
@@ -44,8 +49,18 @@ llm:
   # 例: ollama pull bge-m3
   #embedding_model: "bge-m3"
 
+  # チャット用LLM（base_url/api_key）が embedding に対応していない場合
+  # （例: OpenCode Zen 等）、embedding だけ別プロバイダへ向けることができます。
+  # 省略時は base_url / api_key をそのまま流用します。
+  # 例: OpenRouter の Embeddings API（OpenAI互換）を使う場合
+  #embedding_model: "openai/text-embedding-3-small"
+  #embedding_base_url: "https://openrouter.ai/api/v1"
+  #embedding_api_key: "your-openrouter-api-key"
+
 # 要約設定
 summarizer:
+  # 暴走時のLLM費用を抑えるための1実行あたり上限
+  max_articles_per_run: 100
   # 個別要約の最大文字数
   individual_max_length: 200
   # ダイジェストの最大文字数
@@ -96,7 +111,11 @@ summarizer:
 
 # データベースの設定
 database:
+  # Cloud Runでは "firestore"、ローカルでは "sqlite"
+  backend: "sqlite"
   path: "data/news_summarizer.db"
+  #project_id: "your-google-cloud-project"
+  #firestore_database: "(default)"
 
 # Miniflux API の設定
 miniflux:

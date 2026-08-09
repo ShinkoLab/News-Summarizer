@@ -1,6 +1,6 @@
 # AI ニュース要約システム
 
-ローカル環境で動作する、AIを活用したニュース記事の自動要約・配信システム。
+ローカル環境またはGoogle Cloud上で動作する、AIを活用したニュース記事の自動要約・配信システム。
 複数ソース（RSS / メールマガジン）から記事を収集し、LLMで要約・分類した上で、Discord等への通知やWebアプリ連携用のデータとして提供する。
 
 ## 目次
@@ -18,6 +18,7 @@
 - [実行方式](#実行方式)
 - [ディレクトリ構成](#ディレクトリ構成)
 - [セットアップ](#セットアップ)
+- [Google Cloudへの移行](#google-cloudへの移行)
 - [将来の拡張](#将来の拡張)
 
 
@@ -33,10 +34,10 @@
 - **差分管理**: 前回処理分との差分のみを処理（重複回避）
 - **類似記事統合**: LLMによる同一トピック記事のグルーピング
 - **個別要約**: 各記事の要点を100〜200文字に要約
-- **ダイジェスト生成**: カテゴリ別に整理した800〜1500文字のサマリー
+- **ダイジェスト生成**: カテゴリ別に散文で整理したサマリー（既定で全体3000文字以内、記事数に応じてカテゴリへ配分）
 - **多言語対応**: 日本語・英語の記事を処理し、出力は日本語に統一
 - **配信**: Discord Webhook（Embed形式）での通知
-- **データ保存**: SQLite への永続化（Webアプリ連携用）
+- **データ保存**: ローカルはSQLite、Google CloudではFirestoreへ永続化（Webアプリ連携用）
 
 ## アーキテクチャ
 
@@ -77,13 +78,13 @@
           │  ダイジェスト生成     │
           │  (LLM)              │
           │  カテゴリ別整理       │
-          │  800〜1500文字       │
+          │  既定3000文字以内     │
           └──────────┬──────────┘
                      ▼
          ┌───────────┴───────────┐
          ▼                       ▼
 ┌─────────────────┐     ┌─────────────────┐
-│  Discord         │     │  SQLite          │
+│  Discord         │     │ Firestore/SQLite │
 │  Webhook出力     │     │  データ保存       │
 │  (Embed形式)     │     │  (Webアプリ連携)  │
 └─────────────────┘     └─────────────────┘
@@ -95,12 +96,12 @@
 | カテゴリ | 技術 | 備考 |
 |---------|------|------|
 | 言語 | Python 3.12+ | `uv` + `mise` で管理 |
-| AIモデル | Ollama（または任意のOpenAI互換API） | `llm.base_url` で切り替え可能 |
-| AI連携 | openai (Python SDK) | Structured Output を活用 |
-| Embedding | Ollama embedding モデル（任意） | グルーピング精度向上に使用 |
+| AIモデル | Vertex AI Gemini / Ollama（または任意のOpenAI互換API） | `llm.provider` で切り替え可能 |
+| AI連携 | Google Gen AI SDK / openai (Python SDK) | Structured Output を活用 |
+| Embedding | Vertex AI / Ollama embedding モデル（任意） | グルーピング精度向上に使用 |
 | RSS取得 | Miniflux API | HTTP クライアント経由 |
 | メール取得 | poplib（標準ライブラリ） | POP3 + UIDL による差分管理 |
-| データベース | SQLite | 要約結果の永続化・Webアプリ連携 |
+| データベース | Firestore / SQLite | クラウドとローカルを設定で切り替え |
 | 通知 | Discord Webhook | Embed 形式 |
 | 設定管理 | YAML | PyYAML を使用 |
 | HTTP | httpx | Miniflux API / Webhook 通信 |
@@ -133,7 +134,7 @@ LLM を使用した記事の分析・要約処理を担当する。
 
 #### `summarizer/llm_client.py` — LLMクライアント
 
-- OpenAI SDK を用いた共通 LLM 呼び出しロジック
+- Vertex AIまたはOpenAI互換APIを用いた共通 LLM 呼び出しロジック
 - ステップ別パラメータの解決・マージ
 - JSONパースエラー時の自動リトライ（`llm.max_retries` で設定）
 - `structured_output: false` 時はプロンプト指示+手動パースにフォールバック
@@ -168,9 +169,9 @@ LLM を使用した記事の分析・要約処理を担当する。
 - Discord Webhook API を使用して Embed 形式で投稿
 - ダイジェストと個別要約をそれぞれ適切な Embed に整形
 
-#### `outputs/database.py` — データベース保存
+#### `outputs/database.py` / `outputs/firestore_database.py` — データベース保存
 
-- SQLite に要約結果・メタデータを保存
+- FirestoreまたはSQLiteに要約結果・メタデータを保存
 - Webアプリケーションからの参照に対応するスキーマ設計
 - 処理済みメールIDの管理もここで担当
 
@@ -236,12 +237,20 @@ LLM を使用した記事の分析・要約処理を担当する。
 `config.yaml.example` をコピーして使用する。主要な設定項目は以下の通り。
 
 ```yaml
-# LLM (OpenAI 互換 API) の設定
+# LLM の設定
 llm:
+  # provider: "openai"  # "openai"（OpenAI互換エンドポイント、デフォルト） | "vertex"（Vertex AI）
   base_url: "http://127.0.0.1:11434/v1"
   model: "your-model-name"
   # api_key: "your-api-key"  # 省略時は "ollama"
+  # provider: "vertex" の場合に指定
+  # project_id: "your-gcp-project"
+  # location: "asia-northeast1"
+
   # embedding_model: "bge-m3"  # Embeddingグルーピングを使う場合
+  # Embedding だけ別プロバイダに向ける場合（未指定時は上の base_url / api_key を使用）
+  # embedding_base_url: "https://openrouter.ai/api/v1"
+  # embedding_api_key: "your-embedding-api-key"
 
   # 全ステップ共通の LLM パラメータ（ステップ別設定で上書き可）
   # parameters:
@@ -280,26 +289,23 @@ discord:
   webhook_url: "https://discord.com/api/webhooks/your-webhook-url"
   embed_color: 5814786
   footer_text: "AI News Summarizer"
-  post_individual_articles: true  # 個別記事をダイジェスト後に投稿するか
+  post_individual_articles: false  # 個別記事をダイジェスト後に投稿するか（既定 false。true にすると全記事がダイジェストと二重に届く）
 
 # データベースの設定
 database:
+  # backend: "sqlite"  # "sqlite"（デフォルト） | "firestore"（Cloud Run 実行時）
   path: "data/news_summarizer.db"
+  # backend: "firestore" の場合に指定
+  # project_id: "your-gcp-project"
+  # firestore_database: "(default)"
 
 # 要約設定
 summarizer:
   individual_max_length: 200
-  digest_max_length: 1500
-  categories:
-    - "テクノロジー"
-    - "ビジネス"
-    - "科学"
-    - "セキュリティ"
-    - "AI・機械学習"
-    - "プログラミング"
-    - "その他"
-  # LLMが定義外カテゴリを返した場合のフォールバック（デフォルト: "未分類"）
-  # fallback_category: "その他"
+  digest_max_length: 3000
+  # 1回の実行で処理する記事数の上限（デフォルト: 100）。超過分は次回に繰り越す
+  # max_articles_per_run: 100
+  # カテゴリ一覧・定義文・フォールバックは categories.yaml で管理する（後述）
   # カテゴリ検証失敗時の再試行回数（デフォルト: 3）
   # category_max_retries: 3
   steps:
@@ -318,6 +324,55 @@ logging:
   level: "INFO"  # DEBUG | INFO | WARNING | ERROR
 ```
 
+### カテゴリ定義 (`categories.yaml`)
+
+カテゴリ分類の定義はリポジトリ直下の `categories.yaml` に置く。`config.yaml`
+（gitignored）とは別ファイルで、機密情報を含まないため git 管理し、Docker
+イメージにも同梱される。ローカル実行・Cloud Run 実行の双方がこの同じファイルを
+読むため、カテゴリ一覧の二重管理が起きない。読み込むパスは `CATEGORIES_PATH`
+環境変数で差し替えできる（既定 `categories.yaml`）。
+
+```yaml
+categories:
+  - name: AI・機械学習
+    description: >
+      生成AI・LLM、機械学習・深層学習、AIモデル／研究／製品、
+      AIの技術・応用・倫理（技術が主眼のもの）。
+  - name: 政治・社会
+    description: >
+      政治・選挙・政策・外交・国際政治、行政・法律・司法、社会問題・労働、
+      教育制度・教育政策。戦争・紛争・軍事行動とその被害もここに含める。
+      「国際」「中東」などの地域は軸にせず、記事の内容で判断する。
+  - name: 事件・事故・災害
+    description: >
+      地震・台風・洪水・土砂災害・山火事などの自然災害、航空・鉄道・交通事故、
+      火災・爆発・産業事故、殺人・強盗などの犯罪・テロ、避難・救助・被害状況。
+      発生と被害そのものを伝える記事が対象。
+  # …計8カテゴリ
+
+principles:          # 判定の原則
+  - 見出しと第1段落が「何について書かれているか（記事の主眼）」で判断する。
+
+tiebreak_rules:      # 複数カテゴリに該当する場合の優先規則
+  - "企業の決算・株価・資金調達・M&A が主眼 → 業種を問わず 経済・ビジネス。"
+
+fallback: 未分類     # 定義外カテゴリが返され続けた場合の値（意図的に categories 外）
+```
+
+現在のカテゴリは定義順に **AI・機械学習 / テクノロジー / 経済・ビジネス /
+政治・社会 / 事件・事故・災害 / 科学・環境 / 健康・ライフ / カルチャー** の8分類。
+`description`・`principles`・`tiebreak_rules` はそのまま要約プロンプトに注入され、
+ダイジェストのカテゴリ表示順もこのファイルの定義順に従う（上の並びがそのまま
+表示順になる）。分類精度の調整はこのファイルの文言変更だけで完結し、コード変更は不要。
+
+`categories` が空、または名前が重複している場合は設定読み込み時点で
+`ValidationError` になる。
+
+> **既存の `config.yaml` からの移行**: `summarizer.categories` と
+> `summarizer.fallback_category` は `categories.yaml` へ移設され、設定キーとしては
+> 廃止された。`SummarizerConfig` は未知のキーを拒否する（`extra="forbid"`）ため、
+> 手元の `config.yaml` にこれらが残っていると起動時に `ValidationError` で
+> **失敗する**。両キーを削除すること。
 
 ## データモデル
 
@@ -374,7 +429,7 @@ class ArticleSummary(BaseModel):
     title: str          # 要約タイトル（日本語）
     summary: str        # 要約本文（100〜200文字、日本語）
     keywords: list[str] # キーワード（3〜5個）
-    category: str       # カテゴリ（設定ファイルの categories から選択）
+    category: str       # カテゴリ（categories.yaml の定義から選択）
 ```
 
 #### ダイジェスト結果
@@ -435,6 +490,13 @@ CREATE INDEX idx_summaries_category ON article_summaries(category);
 CREATE INDEX idx_summaries_created ON article_summaries(created_at);
 ```
 
+### Firestore コレクション設計
+
+Google Cloudでは同じデータを`batches`、`articleSummaries`、`processedEmails`へ保存します。
+記事ドキュメントIDは`source_type`と`source_id`から決定的に生成し、Cloud Schedulerの重複実行時も
+同じ記事を二重保存しません。1回の結果はFirestoreの一括書き込みで確定し、実行の排他制御には
+`pipelineLocks/current`の期限付きリースを使います。
+
 ## 入力仕様
 
 ### Miniflux API
@@ -451,7 +513,7 @@ CREATE INDEX idx_summaries_created ON article_summaries(created_at);
 | 項目 | 内容 |
 |------|------|
 | プロトコル | POP3 over SSL（ポート 995） |
-| 差分管理 | `UIDL` でメッセージID取得 → SQLite で管理 |
+| 差分管理 | `UIDL` でメッセージID取得 → FirestoreまたはSQLiteで管理 |
 | パース | `email` 標準ライブラリで MIME パース |
 | 本文抽出 | HTML → テキスト変換（`html2text` 等） |
 | 削除 | **しない**（サーバー上に保持） |
@@ -460,7 +522,8 @@ CREATE INDEX idx_summaries_created ON article_summaries(created_at);
 
 ### 共通設定
 
-- **APIエンドポイント**: 任意の OpenAI 互換 API（`llm.base_url` で指定、デフォルトはローカル Ollama `http://127.0.0.1:11434/v1`）
+- **APIプロバイダー**: `llm.provider: vertex`ではVertex AI、`openai`ではOpenAI互換APIを使用
+- **認証**: Vertex AIはApplication Default Credentials、OpenAI互換APIは`llm.api_key`を使用
 - **レスポンス形式**: Structured Output（`response_format` パラメータ）
 - **出力言語**: 日本語に統一
 
@@ -487,7 +550,7 @@ LLM に記事タイトルと本文の冒頭を渡し、同一トピックの記�
 
 - **入力**: 個別要約の一覧
 - **出力**: `DigestResult`（Structured Output）
-- **文字数**: 全体で800〜1500文字
+- **文字数**: 全体で `summarizer.digest_max_length` 以内（既定3000文字）。各カテゴリへは記事数に比例して配分し、記事の少ないカテゴリにも下限120文字を確保する（合計が上限を超えないよう、下限を先に確保してから残りを比例配分する）
 - **構成**: 全体概要 + カテゴリ別サマリー
 
 ## 出力仕様
@@ -506,35 +569,43 @@ Discord Webhook を使用して Embed 形式で投稿する。1回の実行で�
 │                                     │
 │ [全体概要: 2〜3文]                   │
 │                                     │
-│ 🖥️ テクノロジー (3件)               │
-│ [カテゴリ要約]                       │
+│ テクノロジー (3件)                   │
+│ [カテゴリ本文: 1〜2段落の散文]        │
+│ • [特筆トピック1]                    │
+│ • [特筆トピック2]                    │
 │                                     │
-│ 🔒 セキュリティ (2件)               │
-│ [カテゴリ要約]                       │
-│                                     │
-│ 🤖 AI・機械学習 (4件)               │
-│ [カテゴリ要約]                       │
+│ AI・機械学習 (4件)                   │
+│ [カテゴリ本文: 1〜2段落の散文]        │
+│ • [特筆トピック1]                    │
 │                                     │
 ├─────────────────────────────────────┤
 │ AI News Summarizer │ 全12件の記事    │
 └─────────────────────────────────────┘
 ```
 
-#### 個別記事 Embed（オプション: 詳細スレッド）
+カテゴリ本文は散文でまとめ、その下に特筆すべきトピックを**最大3件**だけ箇条書きで添える。
+箇条書きの件数はカテゴリの記事数に応じて決まり（`summarizer/digest.py` の `_highlight_quota()`）、
+5件未満のカテゴリは散文のみ、それ以上は記事数の1/3を上限に最大3件まで。記事が少ないカテゴリでは
+散文が全記事を言い切ってしまい、箇条書きが本文の言い換えになるため。
+件数表示は記事数であり、箇条書きの行数とは一致しない。
 
-ダイジェストの後にスレッドとして個別記事の要約を投稿することも可能とする。
+#### 個別記事 Embed（オプション、既定は無効）
 
-### SQLite 保存
+`discord.post_individual_articles: true` にすると、ダイジェストの後に全記事の要約を
+1件ずつ Embed で投稿する。カテゴリ別ダイジェストと同じ記事が二重に届くため既定では無効。
+
+### Firestore / SQLite 保存
 
 - 各実行をバッチとして記録
 - 個別要約・ダイジェストともにDB保存
-- Webアプリケーションから `batches` → `article_summaries` を JOIN して参照可能
+- FirestoreではViewerが`batch_id`で記事を取得し、SQLiteでは従来どおりJOINして参照可能
 
 ## 実行方式
 
 ### 実行頻度
 
-1日に3〜5回の定期実行を想定。
+ローカルではcron、Google CloudではCloud SchedulerからCloud Run Jobを起動します。
+家族利用向けTerraformの既定値は、LLM利用料と外部APIアクセスを抑えるため1日1回です。
 
 ```
 # cron の例（1日5回: 7時, 10時, 13時, 16時, 20時）
@@ -548,7 +619,7 @@ Discord Webhook を使用して Embed 形式で投稿する。1回の実行で�
 | Miniflux API 接続失敗 | スキップして続行、ログ出力 |
 | POP3 接続失敗 | スキップして続行、ログ出力 |
 | LLM API 接続失敗 | 処理を中断（要約不可のため） |
-| Discord Webhook 送信失敗 | ログ出力、SQLite保存は継続 |
+| Discord Webhook 送信失敗 | ログ出力、DB保存は継続 |
 | 新規記事なし | 正常終了（出力なし） |
 
 ### コマンドライン
@@ -582,12 +653,16 @@ uv run python main.py --debug
 ```
 News-Summarizer/
 ├── README.md                  # 本ドキュメント
-├── CLAUDE.md                  # Claude Code 向けガイド
+├── AGENTS.md                  # コーディングエージェント向けガイド（実体）
+├── CLAUDE.md                  # AGENTS.md への参照のみ
+├── CHANGELOG.md               # 変更履歴（Keep a Changelog 準拠）
+├── LICENSE
+├── categories.yaml            # カテゴリ分類の定義（git管理・イメージに同梱）
 ├── config.yaml.example        # 設定ファイルテンプレート
 ├── config.yaml                # 設定ファイル（gitignore）
 ├── pyproject.toml             # Python プロジェクト定義
 ├── uv.lock                    # 依存ロックファイル
-├── mise.toml                  # ランタイム（Python 3.12）指定
+├── mise.toml                  # ランタイム（Python 3.12 / Terraform）指定
 ├── main.py                    # CLIエントリポイント
 ├── pipeline.py                # パイプライン本体（RunOptions + run_pipeline）
 ├── config.py                  # 設定読み込み・バリデーション
@@ -608,7 +683,14 @@ News-Summarizer/
 ├── outputs/                   # 出力モジュール
 │   ├── __init__.py
 │   ├── discord_output.py     # Discord Webhook 出力
-│   └── database.py           # SQLite データ保存
+│   ├── database.py           # SQLite データ保存・バックエンド選択
+│   └── firestore_database.py # Firestore データ保存
+├── scripts/
+│   └── migrate_sqlite_to_firestore.py # 既存履歴の移行
+├── infra/                    # Google Cloud Terraform構成
+├── Dockerfile                # Cloud Run Job用イメージ
+├── .dockerignore             # イメージから除外するファイル
+├── cloudbuild.yaml           # Artifact Registryへのビルド
 ├── tests/                     # pytest テストスイート
 └── data/                      # データディレクトリ（自動生成）
     └── news_summarizer.db    # SQLite データベース
@@ -628,6 +710,17 @@ cp config.yaml.example config.yaml
 uv run python main.py --dry-run
 ```
 
+## Google Cloudへの移行
+
+家族だけが利用する低固定費構成として、SummarizerをCloud Run Job、Viewerを最小インスタンス0の
+Cloud Run、永続化をFirestore、生成AIをVertex AIへ移します。Viewerは直接IAPで許可した
+Googleアカウントだけが閲覧できます。サービスアカウント鍵は作らず、Secret Managerと
+Application Default Credentialsを使用します。
+
+構築、コンテナ配布、SQLite履歴移行、切替確認の具体的な手順は
+[`infra/README.md`](infra/README.md)を参照してください。Terraformには月額予算通知、
+Viewer最大1インスタンス、Job再試行なし、Artifact Registryの世代削除も含まれます。
+
 ## 将来の拡張
 
 以下は現時点では対象外とし、必要に応じて追加する。
@@ -636,7 +729,6 @@ uv run python main.py --dry-run
 |---------|------|
 | **Slack Webhook 出力** | Slack 用の出力モジュール追加 |
 | **REST API** | Webアプリ向けの読み取り専用 API サーバー |
-| **Webフロントエンド** | 別プロジェクトとして開発 |
 | **イベント駆動実行** | cron の代替（ファイル監視、Webhook トリガー等） |
 
 ## 免責事項

@@ -1,7 +1,12 @@
 # LLM (OpenAI Compatible API) の設定
 llm:
+  # Cloud Run + Vertex AI では "vertex"。ローカルOllamaでは "openai"
+  provider: "openai"
   base_url: "http://127.0.0.1:11434/v1"
   model: "your-model-name" # 使用するモデル名
+  # Vertex AI利用時（Cloud Runでは環境変数から設定可能）
+  #project_id: "your-google-cloud-project"
+  #location: "global"
   # api_key: "your-api-key"  # APIキー（省略時は "ollama"。OpenAI等の場合は sk-... を指定）
 
   # OpenAI互換APIの標準パラメータ（全ステップ共通デフォルト、省略可能）
@@ -44,25 +49,27 @@ llm:
   # 例: ollama pull bge-m3
   #embedding_model: "bge-m3"
 
+  # チャット用LLM（base_url/api_key）が embedding に対応していない場合
+  # （例: OpenCode Zen 等）、embedding だけ別プロバイダへ向けることができます。
+  # 省略時は base_url / api_key をそのまま流用します。
+  # 例: OpenRouter の Embeddings API（OpenAI互換）を使う場合
+  #embedding_model: "openai/text-embedding-3-small"
+  #embedding_base_url: "https://openrouter.ai/api/v1"
+  #embedding_api_key: "your-openrouter-api-key"
+
 # 要約設定
 summarizer:
+  # 暴走時のLLM費用を抑えるための1実行あたり上限
+  max_articles_per_run: 100
   # 個別要約の最大文字数
   individual_max_length: 200
   # ダイジェストの最大文字数
-  digest_max_length: 1500
-  # カテゴリ一覧（LLMがこの中から分類する）
-  categories:
-    - "テクノロジー"
-    - "ビジネス"
-    - "科学"
-    - "セキュリティ"
-    - "AI・機械学習"
-    - "プログラミング"
-    - "その他"
-
-  # LLMが定義外のカテゴリを返し続けた場合のフォールバックカテゴリ（省略時: "未分類"）
-  # categories に含まれていない値でも指定可能
-  #fallback_category: "その他"
+  # カテゴリごとの割り当ては記事数に比例配分される（下限120字）
+  digest_max_length: 3000
+  # カテゴリ一覧・各カテゴリの定義文・判定のタイブレーク規則、および
+  # 定義外カテゴリが返され続けた場合のフォールバックは、リポジトリ直下の
+  # categories.yaml で一元管理する（ローカル実行・Cloud Run 実行で共通）。
+  # 読み込むファイルは CATEGORIES_PATH 環境変数で差し替え可能。
 
   # カテゴリ検証失敗時の再試行回数（省略時: 3）
   # llm.max_retries（APIエラー・JSONパース失敗用）とは独立した設定
@@ -96,7 +103,11 @@ summarizer:
 
 # データベースの設定
 database:
+  # Cloud Runでは "firestore"、ローカルでは "sqlite"
+  backend: "sqlite"
   path: "data/news_summarizer.db"
+  #project_id: "your-google-cloud-project"
+  #firestore_database: "(default)"
 
 # Miniflux API の設定
 miniflux:
@@ -116,7 +127,9 @@ discord:
   webhook_url: "https://discord.com/api/webhooks/your-webhook-url"
   embed_color: 5814786
   footer_text: "AI News Summarizer"  # フッターテキスト（空文字列 "" または省略で無効化）
-  post_individual_articles: true  # 個別記事をダイジェストの後に投稿するか（デフォルト: true）
+  # 個別記事をダイジェストの後に1件ずつ投稿するか（デフォルト: false）。
+  # true にすると全記事がカテゴリ別ダイジェストと個別 Embed で二重に届く。
+  #post_individual_articles: true
 
 # ロギング設定
 logging:

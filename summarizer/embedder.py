@@ -1,6 +1,8 @@
 import time
 
 import numpy as np
+from google import genai
+from google.genai import types as genai_types
 from openai import OpenAI
 
 from config import config
@@ -13,7 +15,10 @@ def get_embeddings(texts: list[str], debug: bool = False) -> np.ndarray:
     """テキストのリストをまとめて embedding ベクトルに変換して返す。
 
     llm.embedding_model に設定されたモデルを使用する。
-    base_url / api_key は llm 設定を流用（Ollama 共通エンドポイント）。
+    provider が openai の場合、接続先は llm.embedding_base_url / embedding_api_key を
+    優先し、未設定なら llm.base_url / api_key にフォールバックする（チャット用LLMが
+    embedding未対応のプロバイダ、例: OpenCode Zen の場合に、embeddingだけ
+    OpenRouter 等の別プロバイダへ向けられる）。
 
     Args:
         texts: embedding 対象のテキストリスト
@@ -33,19 +38,30 @@ def get_embeddings(texts: list[str], debug: bool = False) -> np.ndarray:
     if debug:
         logger.debug("Embedding モデル: %s, 入力: %d件", embedding_model, len(texts))
 
-    client = OpenAI(
-        base_url=llm_cfg.base_url,
-        api_key=llm_cfg.api_key,
-    )
-
     start = time.perf_counter()
-    response = client.embeddings.create(
-        model=embedding_model,
-        input=texts,
-    )
+    if llm_cfg.provider == "vertex":
+        client = genai.Client(
+            vertexai=True,
+            project=llm_cfg.project_id,
+            location=llm_cfg.location,
+        )
+        response = client.models.embed_content(
+            model=embedding_model,
+            contents=texts,
+            config=genai_types.EmbedContentConfig(task_type="CLUSTERING"),
+        )
+        embeddings = np.array([item.values for item in response.embeddings])
+    else:
+        client = OpenAI(
+            base_url=llm_cfg.embedding_base_url or llm_cfg.base_url,
+            api_key=llm_cfg.embedding_api_key or llm_cfg.api_key,
+        )
+        response = client.embeddings.create(
+            model=embedding_model,
+            input=texts,
+        )
+        embeddings = np.array([item.embedding for item in response.data])
     elapsed = time.perf_counter() - start
-
-    embeddings = np.array([item.embedding for item in response.data])
 
     if debug:
         logger.debug(

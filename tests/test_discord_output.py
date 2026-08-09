@@ -10,7 +10,7 @@ import pytest
 import config as config_module
 from config import AppConfig, LLMConfig, DiscordConfig
 from models import ArticleSummary, CategoryDigest, DigestResult
-from outputs.discord_output import DiscordOutput
+from outputs.discord_output import DISCORD_DESCRIPTION_LIMIT, DiscordOutput
 
 
 # ---------------------------------------------------------------------------
@@ -40,12 +40,14 @@ def _make_digest(overview: str = "今日のニュース概要") -> DigestResult:
         categories=[
             CategoryDigest(
                 category="テクノロジー",
-                articles=["記事1の要約", "記事2の要約"],
+                summary="テクノロジー分野の本文。",
+                highlights=["記事1の要約", "記事2の要約"],
                 article_count=2,
             ),
             CategoryDigest(
-                category="ビジネス",
-                articles=["ビジネス記事1"],
+                category="経済・ビジネス",
+                summary="経済・ビジネス分野の本文。",
+                highlights=["経済・ビジネス記事1"],
                 article_count=1,
             ),
         ],
@@ -95,7 +97,7 @@ class TestCreateDigestEmbed:
         digest = _make_digest()
         embed = self.output._create_digest_embed(digest)
         assert "テクノロジー" in embed["description"]
-        assert "ビジネス" in embed["description"]
+        assert "経済・ビジネス" in embed["description"]
 
     def test_color_matches_config(self):
         digest = _make_digest()
@@ -121,11 +123,49 @@ class TestCreateDigestEmbed:
         embed = self.output._create_digest_embed(digest)
         assert "Test Footer" not in embed["footer"]["text"]
 
+    def test_description_truncated_at_discord_limit(self):
+        """上限超過時は投稿が400で落ちないよう切り詰め、footer に注記する。"""
+        digest = DigestResult(
+            overview="概要",
+            categories=[
+                CategoryDigest(category="テクノロジー", summary="あ" * 3000, highlights=["い" * 3000], article_count=2),
+            ],
+            total_articles=2,
+            generated_at=datetime(2026, 4, 14, 12, 0, 0),
+        )
+        embed = self.output._create_digest_embed(digest)
+
+        assert len(embed["description"]) == DISCORD_DESCRIPTION_LIMIT
+        assert embed["description"].endswith("…")
+        assert "※文字数超過のため末尾を省略" in embed["footer"]["text"]
+
+    def test_truncation_is_not_reported_as_generation_failure(self):
+        """生成は全件成功しているので「生成に失敗」とは表示しない。"""
+        digest = DigestResult(
+            overview="概要",
+            categories=[
+                CategoryDigest(category="テクノロジー", summary="あ" * 3000, highlights=["い" * 3000], article_count=2),
+            ],
+            total_articles=2,
+            generated_at=datetime(2026, 4, 14, 12, 0, 0),
+        )
+        embed = self.output._create_digest_embed(digest)
+
+        assert "※一部の生成に失敗" not in embed["footer"]["text"]
+
+    def test_description_not_truncated_when_within_limit(self):
+        digest = _make_digest()
+        embed = self.output._create_digest_embed(digest)
+        assert len(embed["description"]) < DISCORD_DESCRIPTION_LIMIT
+        assert not embed["description"].endswith("…")
+        assert "※一部の生成に失敗" not in embed["footer"]["text"]
+        assert "※文字数超過のため末尾を省略" not in embed["footer"]["text"]
+
     def test_overview_omitted_when_empty(self):
         # overview 失敗時は太字 overview 行を出さない（カテゴリは表示）
         digest = DigestResult(
             overview="",
-            categories=[CategoryDigest(category="テクノロジー", articles=["x"], article_count=3)],
+            categories=[CategoryDigest(category="テクノロジー", summary="本文", highlights=["x"], article_count=3)],
             total_articles=3,
             generated_at=datetime(2026, 4, 14, 12, 0, 0),
         )
@@ -138,7 +178,7 @@ class TestCreateDigestEmbed:
         digest = _make_digest()  # categories合計3, total_articles=3
         digest = DigestResult(
             overview="概要",
-            categories=[CategoryDigest(category="テクノロジー", articles=["x"], article_count=1)],
+            categories=[CategoryDigest(category="テクノロジー", summary="本文", highlights=["x"], article_count=1)],
             total_articles=3,  # 2件分のカテゴリが除外された状態
             generated_at=datetime(2026, 4, 14, 12, 0, 0),
         )
@@ -166,7 +206,7 @@ class TestCreateSummaryEmbed:
 
     def test_title_matches_summary_title(self):
         summary = ArticleSummary(
-            title="テスト記事", summary="要約文", keywords=["a"], category="科学"
+            title="テスト記事", summary="要約文", keywords=["a"], category="科学・環境"
         )
         embed = self.output._create_summary_embed(summary)
         assert embed["title"] == "テスト記事"
@@ -180,7 +220,7 @@ class TestCreateSummaryEmbed:
 
     def test_fields_include_category(self):
         summary = ArticleSummary(
-            title="t", summary="s", keywords=["k"], category="セキュリティ"
+            title="t", summary="s", keywords=["k"], category="テクノロジー"
         )
         embed = self.output._create_summary_embed(summary)
         field_names = [f["name"] for f in embed["fields"]]
@@ -188,7 +228,7 @@ class TestCreateSummaryEmbed:
 
     def test_fields_include_keywords(self):
         summary = ArticleSummary(
-            title="t", summary="s", keywords=["key1", "key2"], category="その他"
+            title="t", summary="s", keywords=["key1", "key2"], category="未分類"
         )
         embed = self.output._create_summary_embed(summary)
         fields = {f["name"]: f["value"] for f in embed["fields"]}
@@ -288,3 +328,55 @@ class TestPost:
             out.post(digest, summaries)
 
         mock_post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 散文＋ハイライトのレンダリング
+# ---------------------------------------------------------------------------
+
+class TestProseRendering:
+    def setup_method(self):
+        cfg = _make_app_config()
+        self.output = DiscordOutput.__new__(DiscordOutput)
+        self.output.webhook_url = cfg.discord.webhook_url
+        self.output.embed_color = cfg.discord.embed_color
+        self.output.footer_text = cfg.discord.footer_text
+        self.output.post_individual_articles = cfg.discord.post_individual_articles
+
+    def _digest(self, summary: str, highlights: list[str]) -> DigestResult:
+        return DigestResult(
+            overview="全体概要",
+            categories=[
+                CategoryDigest(
+                    category="テクノロジー",
+                    summary=summary,
+                    highlights=highlights,
+                    article_count=5,
+                ),
+            ],
+            total_articles=5,
+            generated_at=datetime(2026, 4, 14, 12, 0, 0),
+        )
+
+    def test_summary_is_rendered_as_prose_without_bullet(self):
+        digest = self._digest("推論コスト競争が本格化した。", [])
+        description = self.output._create_digest_embed(digest)["description"]
+
+        assert "**テクノロジー (5件)**\n推論コスト競争が本格化した。" in description
+        assert "• " not in description
+
+    def test_highlights_are_rendered_as_bullets_below_the_prose(self):
+        digest = self._digest("推論コスト競争が本格化した。", ["A社が値下げ", "B社が新モデル発表"])
+        description = self.output._create_digest_embed(digest)["description"]
+
+        assert "推論コスト競争が本格化した。\n• A社が値下げ\n• B社が新モデル発表" in description
+
+    def test_no_bullet_section_when_highlights_empty(self):
+        digest = self._digest("本文のみ。", [])
+        description = self.output._create_digest_embed(digest)["description"]
+
+        assert description.count("•") == 0
+
+    def test_default_config_does_not_post_individual_articles(self):
+        """既定ではダイジェストのみを投稿する（全記事の二重配信を避ける）。"""
+        assert DiscordConfig().post_individual_articles is False

@@ -8,6 +8,10 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 
+# Discord API の embed description 文字数上限
+DISCORD_DESCRIPTION_LIMIT = 4096
+
+
 class DiscordOutput:
     def __init__(self):
         discord_cfg = config.discord
@@ -54,17 +58,38 @@ class DiscordOutput:
         description = f"**{digest.overview}**\n\n" if digest.overview else ""
 
         for cat in digest.categories:
-            bullets = "\n".join(f"• {a}" for a in cat.articles)
-            description += f"**{cat.category} ({cat.article_count}件)**\n{bullets}\n\n"
+            description += f"**{cat.category} ({cat.article_count}件)**\n{cat.summary}\n"
+            if cat.highlights:
+                description += "".join(f"• {h}\n" for h in cat.highlights)
+            description += "\n"
 
-        # 退化（カテゴリ除外・overview失敗）を検知して footer に注記する
+        # Discord の embed description 上限は 4096 文字。
+        # 超過すると投稿自体が 400 で失敗するため、末尾を切り詰めて必ず投稿を通す。
+        description = description.strip()
+        truncated = len(description) > DISCORD_DESCRIPTION_LIMIT
+        if truncated:
+            logger.warning(
+                "ダイジェストがDiscordの上限(%d文字)を超えたため末尾を切り詰めました: %d文字",
+                DISCORD_DESCRIPTION_LIMIT,
+                len(description),
+            )
+            description = description[: DISCORD_DESCRIPTION_LIMIT - 1] + "…"
+
+        # 退化を footer に注記する。生成の失敗（カテゴリ除外・overview失敗）と、
+        # 生成は成功したが Discord の上限に収まらなかった切り詰めは原因が別なので
+        # 区別する。切り詰めだけを「生成に失敗」と表示すると誤解を招く。
         shown_articles = sum(cat.article_count for cat in digest.categories)
-        degraded = shown_articles < digest.total_articles or not digest.overview
-        degraded_note = " | ※一部の生成に失敗" if degraded else ""
+        generation_failed = shown_articles < digest.total_articles or not digest.overview
+        notes = []
+        if generation_failed:
+            notes.append("※一部の生成に失敗")
+        if truncated:
+            notes.append("※文字数超過のため末尾を省略")
+        degraded_note = "".join(f" | {note}" for note in notes)
 
         return {
             "title": "📰 ニュースダイジェスト",
-            "description": description.strip(),
+            "description": description,
             "color": self.embed_color,
             "footer": {
                 "text": f"{self.footer_text + ' | ' if self.footer_text else ''}全{digest.total_articles}件の記事 | {now_str}{degraded_note}"

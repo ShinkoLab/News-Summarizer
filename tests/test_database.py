@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from models import Article, ArticleSummary
+from models import Article, ArticleSummary, DigestResult
 from outputs.database import Database
 
 
@@ -204,3 +204,23 @@ class TestEmailArticleStorage:
             ).fetchone()
 
         assert row["source_type"] == "email"
+
+
+class TestAtomicBatchStorage:
+    def test_save_batch_persists_result_and_processed_email(self, db):
+        article = _make_article(source_id="mail-001", source_type="email")
+
+        batch_id = db.save_batch(
+            [(article, _make_summary(), 7, "テストトピック")],
+            DigestResult(overview="全体概要", categories=[], total_articles=1),
+        )
+
+        with db.get_connection() as conn:
+            batch = conn.execute("SELECT * FROM batches WHERE id = ?", (batch_id,)).fetchone()
+            saved = conn.execute(
+                "SELECT * FROM article_summaries WHERE batch_id = ?", (batch_id,)
+            ).fetchone()
+        assert batch["digest_text"] == "全体概要"
+        assert saved["group_id"] == 7
+        assert db.is_article_processed("email", "mail-001") is True
+        assert db.is_email_processed("mail-001") is True

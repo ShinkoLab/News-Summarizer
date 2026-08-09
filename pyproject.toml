@@ -1,9 +1,11 @@
 [project]
 name = "news-summarizer"
-version = "1.0.0"
+version = "2.0.0"
 description = "AI-powered news summarization pipeline: fetches articles from RSS/email, summarizes with LLM, and delivers digests via Discord"
 requires-python = ">=3.12"
 dependencies = [
+    "google-cloud-firestore>=2.28.0",
+    "google-genai>=2.12.1",
     "httpx>=0.28.1",
     "numpy>=2.0",
     "openai>=2.29.0",

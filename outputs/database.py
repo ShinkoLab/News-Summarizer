@@ -1,14 +1,17 @@
 import sqlite3
 import json
+from contextlib import contextmanager
 from pathlib import Path
-from datetime import datetime
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from config import config
 from models import Article, ArticleSummary
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from models import DigestResult
 
 class Database:
     def __init__(self, db_path: str | None = None):
@@ -62,6 +65,9 @@ class Database:
         CREATE INDEX IF NOT EXISTS idx_summaries_batch ON article_summaries(batch_id);
         CREATE INDEX IF NOT EXISTS idx_summaries_category ON article_summaries(category);
         CREATE INDEX IF NOT EXISTS idx_summaries_created ON article_summaries(created_at);
+        -- is_article_processed() is called once per fetched article on every run.
+        CREATE INDEX IF NOT EXISTS idx_summaries_source
+            ON article_summaries(source_type, source_id);
         """
         with self.get_connection() as conn:
             conn.executescript(schema)
@@ -154,6 +160,16 @@ class Database:
             cursor.execute("SELECT 1 FROM processed_emails WHERE uidl = ?", (uidl,))
             return cursor.fetchone() is not None
 
+    def is_article_processed(self, source_type: str, source_id: str) -> bool:
+        """Return whether an article has already been persisted."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM article_summaries WHERE source_type = ? AND source_id = ? LIMIT 1",
+                (source_type, source_id),
+            )
+            return cursor.fetchone() is not None
+
     def mark_email_processed(self, uidl: str):
         """
         指定したメールUIDLを処理済みとしてマークする。
@@ -166,3 +182,76 @@ class Database:
             )
             conn.commit()
             logger.debug("メールを処理済みとしてマークしました (uidl: %s)", uidl)
+
+    def save_batch(
+        self,
+        summaries: list[tuple[Article, ArticleSummary, int | None, str | None]],
+        digest: "DigestResult",
+        embeddings=None,
+    ) -> int:
+        """Persist a completed pipeline result in a single SQLite transaction."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO batches (total_articles, digest_text) VALUES (?, ?)",
+                (len(summaries), digest.overview),
+            )
+            batch_id = cursor.lastrowid
+
+            for i, (article, summary, group_id, group_topic) in enumerate(summaries):
+                published_val = (
+                    article.published_at.isoformat()
+                    if hasattr(article.published_at, "isoformat")
+                    else article.published_at
+                )
+                embedding = embeddings[i].tolist() if embeddings is not None else None
+                cursor.execute(
+                    """
+                    INSERT INTO article_summaries (
+                        batch_id, source_type, source_id, original_title, original_url,
+                        summary_title, summary_text, keywords, category,
+                        group_id, group_topic, published_at, embedding
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        batch_id,
+                        article.source_type,
+                        article.source_id,
+                        article.title,
+                        article.url,
+                        summary.title,
+                        summary.summary,
+                        json.dumps(summary.keywords, ensure_ascii=False),
+                        summary.category,
+                        group_id,
+                        group_topic,
+                        published_val,
+                        json.dumps(embedding) if embedding is not None else None,
+                    ),
+                )
+                if article.source_type == "email":
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO processed_emails (uidl) VALUES (?)",
+                        (article.source_id,),
+                    )
+
+            conn.commit()
+            logger.debug("バッチを一括保存しました (batch_id: %d)", batch_id)
+            return int(batch_id)
+
+    @contextmanager
+    def execution_lock(self):
+        """SQLite runs remain single-process; keep a common backend interface."""
+        yield
+
+
+def create_database():
+    """Create the configured persistence backend."""
+    if config.database.backend == "firestore":
+        from outputs.firestore_database import FirestoreDatabase
+
+        return FirestoreDatabase(
+            project_id=config.database.project_id,
+            database=config.database.firestore_database,
+        )
+    return Database()

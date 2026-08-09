@@ -16,6 +16,24 @@ MIN_CHARS_PER_CATEGORY = 120
 # カテゴリごとに添える特筆トピックの最大件数
 MAX_HIGHLIGHTS = 3
 
+# ハイライトを添え始める記事数の下限。これ未満のカテゴリは散文だけにする
+MIN_ARTICLES_FOR_HIGHLIGHTS = 5
+
+# ハイライト1件あたりに必要な記事数。ハイライトが記事の1/3を超えると
+# 散文の言い換えに近づくため、この比率で頭打ちにする
+ARTICLES_PER_HIGHLIGHT = 3
+
+
+def _highlight_quota(article_count: int) -> int:
+    """記事数に応じたハイライトの上限件数を返す。
+
+    記事が少ないカテゴリでは散文が全記事を言い切ってしまうため、
+    ハイライトを添えると同じ内容の言い換えにしかならない。
+    """
+    if article_count < MIN_ARTICLES_FOR_HIGHLIGHTS:
+        return 0
+    return min(MAX_HIGHLIGHTS, max(1, article_count // ARTICLES_PER_HIGHLIGHT))
+
 
 def _count_articles(bucket: dict) -> int:
     """カテゴリ配下（グループ記事＋単独記事）の記事数を数える。"""
@@ -70,6 +88,24 @@ def _normalize_bullets(items: list[str]) -> list[str]:
     return result
 
 
+def _highlights_instruction(quota: int) -> str:
+    """ハイライトに関するプロンプト断片を、許可件数に応じて組み立てる。"""
+    if quota == 0:
+        return (
+            "【highlights（特筆すべきトピック）】\n"
+            "- このカテゴリは記事数が少ないため、highlights は空の配列にしてください。\n"
+            "- 要点はすべて本文に含めてください。\n"
+        )
+    return (
+        "【highlights（特筆すべきトピック）】\n"
+        f"- 本文で触れた中から特に重要なものを最大{quota}件、各1文で挙げてください。\n"
+        f"- 重要なものが少なければ{quota}件に満たなくて構いません。該当が無ければ空の配列にしてください。\n"
+        "- 本文の要約の繰り返しにはせず、具体的な事実（企業名・数字・固有名詞）を含めてください。\n"
+        "- 各要素の先頭に「・」「-」「*」「•」「1.」などの記号や番号を含めないでください。\n"
+        "- 各要素に改行を含めないでください。\n"
+    )
+
+
 class _CategoryDigestLLMOutput(BaseModel):
     """カテゴリ別LLM出力（散文の本文＋特筆トピック）"""
     summary: str
@@ -92,6 +128,7 @@ def _generate_category_digest(
     stream: bool,
 ) -> CategoryDigest:
     total_articles = sum(len(g_summaries) for _, g_summaries in groups)
+    highlight_quota = _highlight_quota(total_articles)
 
     groups_info = ""
     for i, (topic, g_summaries) in enumerate(groups, start=1):
@@ -108,13 +145,7 @@ def _generate_category_digest(
 - 個々の記事を機械的に並べるのではなく、共通する動きや対立軸、全体の流れが分かるように束ねてください。
 - 文と文が自然につながるようにし、「〜という記事があった」のような列挙調は避けてください。
 
-【highlights（特筆すべきトピック）】
-- 本文で触れた中から特に重要なものを最大{MAX_HIGHLIGHTS}件、各1文で挙げてください。
-- 重要なものが少なければ{MAX_HIGHLIGHTS}件に満たなくて構いません。該当が無ければ空の配列にしてください。
-- 本文の要約の繰り返しにはせず、具体的な事実（企業名・数字・固有名詞）を含めてください。
-- 各要素の先頭に「・」「-」「*」「•」「1.」などの記号や番号を含めないでください。
-- 各要素に改行を含めないでください。
-
+{_highlights_instruction(highlight_quota)}
 【共通】
 - summary と highlights を合わせて全体で{max_chars}文字以内としてください。
 - 出力は日本語に統一してください。
@@ -142,7 +173,7 @@ def _generate_category_digest(
         category=category,
         summary=llm_result.summary.strip(),
         # LLM は指示しても記号や余分な件数を混ぜてくるので、ここで正規化・件数制限する
-        highlights=_normalize_bullets(llm_result.highlights)[:MAX_HIGHLIGHTS],
+        highlights=_normalize_bullets(llm_result.highlights)[:highlight_quota],
         article_count=total_articles,
     )
 

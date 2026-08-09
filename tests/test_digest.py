@@ -11,6 +11,7 @@ from summarizer.digest import (
     MIN_CHARS_PER_CATEGORY,
     _CategoryDigestLLMOutput,
     _generate_category_digest,
+    _highlight_quota,
     _normalize_bullets,
     generate_digest,
 )
@@ -262,57 +263,95 @@ def test_all_categories_failing_yields_empty_digest():
 # _generate_category_digest（全テストでモックされていた部分）
 # ---------------------------------------------------------------------------
 
-def test_category_prompt_carries_char_budget_and_highlight_cap():
-    """max_chars と highlights の上限件数が実際にプロンプトへ埋め込まれる。"""
-    captured: dict = {}
-
+def _run_category_digest(groups, max_chars=500, llm_output=None, captured=None):
+    """_generate_category_digest を LLM 呼び出しだけモックして実行する。"""
     def fake_call(_client, completion_kwargs, _stream):
-        captured["kwargs"] = completion_kwargs
-        return _CategoryDigestLLMOutput(summary="本文です。", highlights=["トピック"])
+        if captured is not None:
+            captured["kwargs"] = completion_kwargs
+        return llm_output or _CategoryDigestLLMOutput(summary="本文です。", highlights=["トピック"])
 
     with patch("summarizer.digest.call_with_retry", side_effect=fake_call):
-        result = _generate_category_digest(
+        return _generate_category_digest(
             category="テクノロジー",
-            groups=[("トピックA", [_summary("テクノロジー")])],
+            groups=groups,
             client=MagicMock(),
             model="test-model",
             parameters={},
             extra_body=None,
-            max_chars=777,
+            max_chars=max_chars,
             stream=False,
         )
+
+
+def test_category_prompt_carries_char_budget_and_highlight_cap():
+    """max_chars と highlights の上限件数が実際にプロンプトへ埋め込まれる。"""
+    captured: dict = {}
+    # ハイライトが最大件数になる規模（30件）
+    groups = [("トピックA", [_summary("テクノロジー") for _ in range(30)])]
+
+    result = _run_category_digest(groups, max_chars=777, captured=captured)
 
     prompt = captured["kwargs"]["messages"][1]["content"]
     assert "777文字以内" in prompt
     assert f"最大{MAX_HIGHLIGHTS}件" in prompt
     assert "トピックA" in prompt
     assert result.summary == "本文です。"
-    assert result.article_count == 1
+    assert result.article_count == 30
 
 
 def test_highlights_are_capped_and_normalized():
     """LLM が上限を超える件数や記号付きで返しても、件数制限と記号除去を行う。"""
-    def fake_call(_client, _kwargs, _stream):
-        return _CategoryDigestLLMOutput(
-            summary="  本文です。  ",
-            highlights=["・1件目", "2. 2件目", "• 3件目", "4件目", "5件目"],
-        )
+    noisy = _CategoryDigestLLMOutput(
+        summary="  本文です。  ",
+        highlights=["・1件目", "2. 2件目", "• 3件目", "4件目", "5件目"],
+    )
+    groups = [(None, [_summary("テクノロジー") for _ in range(30)])]
 
-    with patch("summarizer.digest.call_with_retry", side_effect=fake_call):
-        result = _generate_category_digest(
-            category="テクノロジー",
-            groups=[(None, [_summary("テクノロジー")])],
-            client=MagicMock(),
-            model="test-model",
-            parameters={},
-            extra_body=None,
-            max_chars=500,
-            stream=False,
-        )
+    result = _run_category_digest(groups, llm_output=noisy)
 
     assert result.summary == "本文です。"
-    assert len(result.highlights) == MAX_HIGHLIGHTS
     assert result.highlights == ["1件目", "2件目", "3件目"]
+
+
+class TestHighlightQuota:
+    """記事数が少ないカテゴリでは散文が全記事を言い切るため、ハイライトを絞る。"""
+
+    def test_quota_scales_with_article_count(self):
+        # 5件未満は散文のみ
+        assert _highlight_quota(1) == 0
+        assert _highlight_quota(4) == 0
+        # 記事の1/3を超えないよう頭打ちにする
+        assert _highlight_quota(5) == 1
+        assert _highlight_quota(6) == 2
+        assert _highlight_quota(9) == 3
+        assert _highlight_quota(29) == MAX_HIGHLIGHTS
+        assert _highlight_quota(100) == MAX_HIGHLIGHTS
+
+    def test_small_category_drops_highlights_even_if_llm_returns_them(self):
+        noisy = _CategoryDigestLLMOutput(summary="本文。", highlights=["余計な1件", "余計な2件"])
+        groups = [(None, [_summary("テクノロジー") for _ in range(2)])]
+
+        result = _run_category_digest(groups, llm_output=noisy)
+
+        assert result.highlights == []
+
+    def test_small_category_prompt_asks_for_empty_highlights(self):
+        captured: dict = {}
+        groups = [(None, [_summary("テクノロジー") for _ in range(2)])]
+
+        _run_category_digest(groups, captured=captured)
+
+        prompt = captured["kwargs"]["messages"][1]["content"]
+        assert "highlights は空の配列にしてください" in prompt
+        assert "最大" not in prompt
+
+    def test_medium_category_is_capped_at_a_third_of_articles(self):
+        noisy = _CategoryDigestLLMOutput(summary="本文。", highlights=["1件目", "2件目", "3件目"])
+        groups = [(None, [_summary("テクノロジー") for _ in range(5)])]
+
+        result = _run_category_digest(groups, llm_output=noisy)
+
+        assert result.highlights == ["1件目"]
 
 
 # ---------------------------------------------------------------------------

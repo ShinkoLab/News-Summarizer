@@ -10,7 +10,7 @@ import pytest
 import config as config_module
 from config import AppConfig, LLMConfig, DiscordConfig
 from models import ArticleSummary, CategoryDigest, DigestResult
-from outputs.discord_output import DiscordOutput
+from outputs.discord_output import DISCORD_DESCRIPTION_LIMIT, DiscordOutput
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +120,29 @@ class TestCreateDigestEmbed:
         digest = _make_digest()
         embed = self.output._create_digest_embed(digest)
         assert "Test Footer" not in embed["footer"]["text"]
+
+    def test_description_truncated_at_discord_limit(self):
+        """上限超過時は投稿が400で落ちないよう切り詰め、footer に注記する。"""
+        digest = DigestResult(
+            overview="概要",
+            categories=[
+                CategoryDigest(category="テクノロジー", articles=["あ" * 3000, "い" * 3000], article_count=2),
+            ],
+            total_articles=2,
+            generated_at=datetime(2026, 4, 14, 12, 0, 0),
+        )
+        embed = self.output._create_digest_embed(digest)
+
+        assert len(embed["description"]) == DISCORD_DESCRIPTION_LIMIT
+        assert embed["description"].endswith("…")
+        assert "※一部の生成に失敗" in embed["footer"]["text"]
+
+    def test_description_not_truncated_when_within_limit(self):
+        digest = _make_digest()
+        embed = self.output._create_digest_embed(digest)
+        assert len(embed["description"]) < DISCORD_DESCRIPTION_LIMIT
+        assert not embed["description"].endswith("…")
+        assert "※一部の生成に失敗" not in embed["footer"]["text"]
 
     def test_overview_omitted_when_empty(self):
         # overview 失敗時は太字 overview 行を出さない（カテゴリは表示）

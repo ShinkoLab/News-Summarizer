@@ -64,7 +64,8 @@ summarizer:
   # 個別要約の最大文字数
   individual_max_length: 200
   # ダイジェストの最大文字数
-  digest_max_length: 1500
+  # カテゴリごとの割り当ては記事数に比例配分される（下限120字）
+  digest_max_length: 3000
   # カテゴリ一覧・各カテゴリの定義文・判定のタイブレーク規則、および
   # 定義外カテゴリが返され続けた場合のフォールバックは、リポジトリ直下の
   # categories.yaml で一元管理する（ローカル実行・Cloud Run 実行で共通）。

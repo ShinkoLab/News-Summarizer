@@ -302,7 +302,7 @@ database:
 # 要約設定
 summarizer:
   individual_max_length: 200
-  digest_max_length: 1500
+  digest_max_length: 3000
   # 1回の実行で処理する記事数の上限（デフォルト: 100）。超過分は次回に繰り越す
   # max_articles_per_run: 100
   # カテゴリ一覧・定義文・フォールバックは categories.yaml で管理する（後述）

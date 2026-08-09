@@ -54,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ダイジェストの文字数配分がカテゴリ数の均等割りだったため、記事が集中した
+  カテゴリで1件あたり数文字まで潰れ、収まらない記事が黙って欠落していた問題。
+  記事数に比例配分し、記事の少ないカテゴリには下限120字を確保する
+- `digest_max_length` のコード既定値が 1500 で、環境変数マッピングもないため
+  Cloud Run だけがローカル（3000）より短いダイジェストになっていた問題。
+  既定値を 3000 に揃えた
+- Discord の embed description 上限(4096字)を超えると投稿全体が失敗する
+  可能性があった問題。超過分を切り詰めて投稿を通し、footer に注記する
 - `--dry-run` が Firestore の実行ロックを取得・書き込みしていた問題
 - ロックドキュメントに `expires_at` が欠けている場合に `KeyError` で
   以降の全実行が停止する問題

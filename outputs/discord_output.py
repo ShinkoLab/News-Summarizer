@@ -8,6 +8,10 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 
+# Discord API の embed description 文字数上限
+DISCORD_DESCRIPTION_LIMIT = 4096
+
+
 class DiscordOutput:
     def __init__(self):
         discord_cfg = config.discord
@@ -57,14 +61,26 @@ class DiscordOutput:
             bullets = "\n".join(f"• {a}" for a in cat.articles)
             description += f"**{cat.category} ({cat.article_count}件)**\n{bullets}\n\n"
 
-        # 退化（カテゴリ除外・overview失敗）を検知して footer に注記する
+        # Discord の embed description 上限は 4096 文字。
+        # 超過すると投稿自体が 400 で失敗するため、末尾を切り詰めて必ず投稿を通す。
+        description = description.strip()
+        truncated = len(description) > DISCORD_DESCRIPTION_LIMIT
+        if truncated:
+            logger.warning(
+                "ダイジェストがDiscordの上限(%d文字)を超えたため末尾を切り詰めました: %d文字",
+                DISCORD_DESCRIPTION_LIMIT,
+                len(description),
+            )
+            description = description[: DISCORD_DESCRIPTION_LIMIT - 1] + "…"
+
+        # 退化（カテゴリ除外・overview失敗・文字数超過による切り詰め）を footer に注記する
         shown_articles = sum(cat.article_count for cat in digest.categories)
-        degraded = shown_articles < digest.total_articles or not digest.overview
+        degraded = shown_articles < digest.total_articles or not digest.overview or truncated
         degraded_note = " | ※一部の生成に失敗" if degraded else ""
 
         return {
             "title": "📰 ニュースダイジェスト",
-            "description": description.strip(),
+            "description": description,
             "color": self.embed_color,
             "footer": {
                 "text": f"{self.footer_text + ' | ' if self.footer_text else ''}全{digest.total_articles}件の記事 | {now_str}{degraded_note}"

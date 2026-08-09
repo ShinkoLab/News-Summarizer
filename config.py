@@ -47,7 +47,7 @@ class SummarizerConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
     individual_max_length: int = 200
-    digest_max_length: int = 1500
+    digest_max_length: int = 3000
     category_max_retries: int = 3
     max_articles_per_run: int = Field(default=100, ge=1, le=200)
     steps: dict[str, SummarizerStepConfig] = Field(default_factory=dict)

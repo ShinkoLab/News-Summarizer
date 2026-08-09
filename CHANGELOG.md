@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- 記事数が増えると Firestore への一括保存が
+  `400 Transaction too big` で失敗していた問題（80記事で発生）。
+  `embedding`（1536要素の配列）の各要素が Firestore に自動インデックスされ、
+  1ドキュメントあたり約1536のインデックスエントリがトランザクションサイズに
+  算入されていた。ドキュメント本体は80件でも 1.37 MiB しかなく、超過分はすべて
+  インデックス書き込み。`infra/main.tf` の `google_firestore_field` で
+  `embedding` をインデックス対象から除外して解消。
+  類似記事の統合はアプリ側でコサイン類似度を計算しており Firestore の
+  インデックスは使わないため機能影響はなく、ベクトルデータも保持される。
+  **インフラのみの変更で、コード変更・イメージ再ビルドは不要**（`terraform apply` で反映）
+
 ## [2.0.1] - 2026-08-09
 
 ### Fixed

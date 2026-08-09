@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-09
+
+Google Cloud（Cloud Run Job + Firestore）での実行に対応し、カテゴリ分類を
+`categories.yaml` に一本化、ダイジェストを散文形式へ刷新したメジャーリリース。
+
+### Breaking
+
+既存の設定はそのままでは動作しない。アップグレード時に以下の対応が必要。
+
+| 対象 | 変更 | 必要な対応 |
+|---|---|---|
+| `config.yaml` | `summarizer.categories` を削除 | 手元の `config.yaml` から削除する。残っていると `extra="forbid"` により**起動時に `ValidationError` で失敗する** |
+| `config.yaml` | `summarizer.fallback_category` を削除 | 同上。フォールバック値は `categories.yaml` の `fallback` へ移設 |
+| 環境変数 | `SUMMARIZER_CATEGORIES` を廃止 | Cloud Run Job の env から削除する |
+| Terraform | 変数 `summarizer_categories` を削除 | `terraform.tfvars` から削除する。残っていると `apply` が "Value for undeclared variable" で失敗する |
+| 設定の優先順位 | YAML が存在する場合、環境変数による上書きを行わなくなった | 環境変数で値を注入していた場合は `config.yaml` 側に書く。環境変数のみでの構成は YAML 不在時（＝Cloud Run）でのみ有効 |
+| 既定値 | `discord.post_individual_articles` が `true` → `false` | 個別記事の投稿を続けたい場合は明示的に `true` を設定する |
+| 既定値 | `summarizer.digest_max_length` が `1500` → `3000` | 従来の長さに戻す場合は明示的に `1500` を設定する |
+
+カテゴリ定義の変更手順も変わった。`terraform apply` ではなく、`categories.yaml` を
+編集して**イメージを再ビルド・デプロイ**する。初回移行時は「イメージを push →
+`summarizer_image` を更新して apply」の順で行うこと（順序を誤ると旧イメージが
+カテゴリ一覧を空のまま起動し、全記事が未分類になる）。詳細は `infra/DEPLOYMENT.md`。
+
 ### Added
 
 - Firestore バックエンド（`outputs/firestore_database.py`）と `database.backend` による切り替え
@@ -40,9 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   （記事が少ないと散文が全記事を言い切ってしまい、箇条書きが本文の言い換えになるため）
 - `discord.post_individual_articles` の既定を `true` → `false` に変更。
   有効時は全記事がカテゴリ別ダイジェストと個別 Embed で二重に配信されていた
-- ダイジェストの文字数配分を、下限を先に確保してから残りを比例配分する方式に変更。
-  従来は比例配分の結果に下限を後掛けしていたため、合計が `digest_max_length` を
-  超えることがあった
 - `AGENTS.md` をエージェント向けガイドの正とし、`CLAUDE.md` は参照のみに変更
 - Discord のダイジェスト本文を 4096 文字で切り詰め、投稿全体の失敗を回避
 - 設定ファイルが見つからない場合に警告ログを出力（環境変数のみでの起動が
@@ -66,7 +87,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - ダイジェストの文字数配分がカテゴリ数の均等割りだったため、記事が集中した
   カテゴリで1件あたり数文字まで潰れ、収まらない記事が黙って欠落していた問題。
-  記事数に比例配分し、記事の少ないカテゴリには下限120字を確保する
+  全カテゴリぶんの下限120字を先に確保したうえで、残りを記事数に比例配分する
+  （合計が `digest_max_length` を超えない）
 - `digest_max_length` のコード既定値が 1500 で、環境変数マッピングもないため
   Cloud Run だけがローカル（3000）より短いダイジェストになっていた問題。
   既定値を 3000 に揃えた
@@ -136,6 +158,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - プロジェクト初期セットアップ
 
-[Unreleased]: https://github.com/ShinkoLab/News-Summarizer/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/ShinkoLab/News-Summarizer/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/ShinkoLab/News-Summarizer/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/ShinkoLab/News-Summarizer/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/ShinkoLab/News-Summarizer/releases/tag/v0.1.0

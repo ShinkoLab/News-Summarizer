@@ -158,8 +158,10 @@ Controlled by `summarizer.steps.grouper.use_embeddings` in config:
   **multiple commits**, bounded by both write count (`_MAX_BATCH_WRITES`) and estimated size
   (`_MAX_CHUNK_BYTES`), because a single `Transaction too big` failure used to throw away every
   LLM call of the run. A failed chunk is logged and skipped rather than raised, and the batch
-  document is committed **last** so articles are never left pointing at a batch that does not
-  exist (the Viewer queries articles by `batch_id`)
+  document is committed **last**, so a failing article chunk can no longer leave articles
+  pointing at a batch that does not exist (the Viewer queries articles by `batch_id`). The one
+  case that still can is the final batch-document write itself failing — `save_batch()` then
+  returns `batch_id=None` with a non-empty `saved`, and logs the `batch_id` for manual recovery
 
 Both backends return a `SaveResult` (`models.py`) — `batch_id`, the `(source_type, source_id)`
 pairs actually persisted, and a failure count — so mark-as-read and email bookkeeping only ever

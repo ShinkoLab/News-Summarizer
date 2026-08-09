@@ -36,9 +36,10 @@ class ArticleSummary(BaseModel):
 
 class CategoryDigest(BaseModel):
     """カテゴリ別ダイジェスト"""
-    category: str           # カテゴリ名
-    articles: list[str]     # 記事の箇条書き（各1〜2文）
-    article_count: int      # 記事数
+    category: str            # カテゴリ名
+    summary: str             # カテゴリ全体を散文でまとめた本文（1〜2段落）
+    highlights: list[str]    # 特筆すべきトピック（各1文、最大 MAX_HIGHLIGHTS 件）
+    article_count: int       # 記事数（highlights の件数とは一致しない）
 
 class TopicLabel(BaseModel):
     """クラスタへのトピック名付与結果"""

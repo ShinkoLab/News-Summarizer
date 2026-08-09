@@ -40,12 +40,14 @@ def _make_digest(overview: str = "今日のニュース概要") -> DigestResult:
         categories=[
             CategoryDigest(
                 category="テクノロジー",
-                articles=["記事1の要約", "記事2の要約"],
+                summary="テクノロジー分野の本文。",
+                highlights=["記事1の要約", "記事2の要約"],
                 article_count=2,
             ),
             CategoryDigest(
                 category="経済・ビジネス",
-                articles=["経済・ビジネス記事1"],
+                summary="経済・ビジネス分野の本文。",
+                highlights=["経済・ビジネス記事1"],
                 article_count=1,
             ),
         ],
@@ -126,7 +128,7 @@ class TestCreateDigestEmbed:
         digest = DigestResult(
             overview="概要",
             categories=[
-                CategoryDigest(category="テクノロジー", articles=["あ" * 3000, "い" * 3000], article_count=2),
+                CategoryDigest(category="テクノロジー", summary="あ" * 3000, highlights=["い" * 3000], article_count=2),
             ],
             total_articles=2,
             generated_at=datetime(2026, 4, 14, 12, 0, 0),
@@ -142,7 +144,7 @@ class TestCreateDigestEmbed:
         digest = DigestResult(
             overview="概要",
             categories=[
-                CategoryDigest(category="テクノロジー", articles=["あ" * 3000, "い" * 3000], article_count=2),
+                CategoryDigest(category="テクノロジー", summary="あ" * 3000, highlights=["い" * 3000], article_count=2),
             ],
             total_articles=2,
             generated_at=datetime(2026, 4, 14, 12, 0, 0),
@@ -163,7 +165,7 @@ class TestCreateDigestEmbed:
         # overview 失敗時は太字 overview 行を出さない（カテゴリは表示）
         digest = DigestResult(
             overview="",
-            categories=[CategoryDigest(category="テクノロジー", articles=["x"], article_count=3)],
+            categories=[CategoryDigest(category="テクノロジー", summary="本文", highlights=["x"], article_count=3)],
             total_articles=3,
             generated_at=datetime(2026, 4, 14, 12, 0, 0),
         )
@@ -176,7 +178,7 @@ class TestCreateDigestEmbed:
         digest = _make_digest()  # categories合計3, total_articles=3
         digest = DigestResult(
             overview="概要",
-            categories=[CategoryDigest(category="テクノロジー", articles=["x"], article_count=1)],
+            categories=[CategoryDigest(category="テクノロジー", summary="本文", highlights=["x"], article_count=1)],
             total_articles=3,  # 2件分のカテゴリが除外された状態
             generated_at=datetime(2026, 4, 14, 12, 0, 0),
         )
@@ -326,3 +328,55 @@ class TestPost:
             out.post(digest, summaries)
 
         mock_post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 散文＋ハイライトのレンダリング
+# ---------------------------------------------------------------------------
+
+class TestProseRendering:
+    def setup_method(self):
+        cfg = _make_app_config()
+        self.output = DiscordOutput.__new__(DiscordOutput)
+        self.output.webhook_url = cfg.discord.webhook_url
+        self.output.embed_color = cfg.discord.embed_color
+        self.output.footer_text = cfg.discord.footer_text
+        self.output.post_individual_articles = cfg.discord.post_individual_articles
+
+    def _digest(self, summary: str, highlights: list[str]) -> DigestResult:
+        return DigestResult(
+            overview="全体概要",
+            categories=[
+                CategoryDigest(
+                    category="テクノロジー",
+                    summary=summary,
+                    highlights=highlights,
+                    article_count=5,
+                ),
+            ],
+            total_articles=5,
+            generated_at=datetime(2026, 4, 14, 12, 0, 0),
+        )
+
+    def test_summary_is_rendered_as_prose_without_bullet(self):
+        digest = self._digest("推論コスト競争が本格化した。", [])
+        description = self.output._create_digest_embed(digest)["description"]
+
+        assert "**テクノロジー (5件)**\n推論コスト競争が本格化した。" in description
+        assert "• " not in description
+
+    def test_highlights_are_rendered_as_bullets_below_the_prose(self):
+        digest = self._digest("推論コスト競争が本格化した。", ["A社が値下げ", "B社が新モデル発表"])
+        description = self.output._create_digest_embed(digest)["description"]
+
+        assert "推論コスト競争が本格化した。\n• A社が値下げ\n• B社が新モデル発表" in description
+
+    def test_no_bullet_section_when_highlights_empty(self):
+        digest = self._digest("本文のみ。", [])
+        description = self.output._create_digest_embed(digest)["description"]
+
+        assert description.count("•") == 0
+
+    def test_default_config_does_not_post_individual_articles(self):
+        """既定ではダイジェストのみを投稿する（全記事の二重配信を避ける）。"""
+        assert DiscordConfig().post_individual_articles is False

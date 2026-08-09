@@ -202,10 +202,10 @@ env-var → config-key mapping is the Cloud Run Job definition in `infra/main.tf
 Notable optional keys (see `config.yaml.example` for full comments):
 - `database.backend` — `sqlite` (default) or `firestore`; `database.path` (SQLite file, default `data/news_summarizer.db`), `database.project_id` / `database.firestore_database` (Firestore)
 - `summarizer.category_max_retries` — retry count when the LLM returns a category outside the defined list (default: `3`)
-- `summarizer.individual_max_length` / `digest_max_length` — character limits for per-article summaries and the digest. `digest_max_length` (default `3000`) is split across categories **in proportion to article count**, with a `MIN_CHARS_PER_CATEGORY` floor of 120 (`summarizer/digest.py`) — so the floor can push the total slightly above the limit; the Discord output truncates at 4096 regardless
+- `summarizer.individual_max_length` / `digest_max_length` — character limits for per-article summaries and the digest. `digest_max_length` (default `3000`) is split across categories by `_allocate_chars()` (`summarizer/digest.py`): the `MIN_CHARS_PER_CATEGORY` floor of 120 is reserved for every category first, then the remainder is distributed **in proportion to article count**, so the total never exceeds the limit
 - `summarizer.max_articles_per_run` — cap on articles processed in one run (default: `100`); the remainder is carried over
 - `summarizer.steps.<step>.thinking` — per-step thinking toggle
-- `discord.post_individual_articles` / `embed_color` / `footer_text` — Discord embed tuning (default: post individual articles = `true`)
+- `discord.post_individual_articles` / `embed_color` / `footer_text` — Discord embed tuning. `post_individual_articles` defaults to **`false`**; enabling it re-posts every article as its own embed, duplicating what the category digest already covers
 - `llm.provider` / `project_id` / `location` — provider selection and Vertex AI target
 - `llm.embedding_model` / `embedding_base_url` / `embedding_api_key` — embedding endpoint, independent of the chat LLM
 - `llm.max_retries` / `structured_output` / `extra_body` — LLM behavior tuning

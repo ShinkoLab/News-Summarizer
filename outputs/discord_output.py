@@ -58,8 +58,10 @@ class DiscordOutput:
         description = f"**{digest.overview}**\n\n" if digest.overview else ""
 
         for cat in digest.categories:
-            bullets = "\n".join(f"• {a}" for a in cat.articles)
-            description += f"**{cat.category} ({cat.article_count}件)**\n{bullets}\n\n"
+            description += f"**{cat.category} ({cat.article_count}件)**\n{cat.summary}\n"
+            if cat.highlights:
+                description += "".join(f"• {h}\n" for h in cat.highlights)
+            description += "\n"
 
         # Discord の embed description 上限は 4096 文字。
         # 超過すると投稿自体が 400 で失敗するため、末尾を切り詰めて必ず投稿を通す。

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +61,38 @@ class SummarizerConfig(BaseModel):
         if isinstance(v, dict):
             return {k: (val if val is not None else {}) for k, val in v.items()}
         return v
+
+
+class CategoryDef(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: str
+    description: str
+
+
+class CategoryTaxonomy(BaseModel):
+    """カテゴリ分類の定義。`categories.yaml` から読み込む。"""
+
+    model_config = {"extra": "forbid"}
+
+    categories: list[CategoryDef]
+    principles: list[str] = Field(default_factory=list)
+    tiebreak_rules: list[str] = Field(default_factory=list)
+    fallback: str = "未分類"
+
+    @model_validator(mode="after")
+    def _validate_categories(self) -> "CategoryTaxonomy":
+        if not self.categories:
+            raise ValueError("categories must not be empty")
+        names = [c.name for c in self.categories]
+        duplicates = {name for name in names if names.count(name) > 1}
+        if duplicates:
+            raise ValueError(f"category names must be unique; duplicated: {sorted(duplicates)}")
+        return self
+
+    @property
+    def names(self) -> list[str]:
+        return [c.name for c in self.categories]
 
 
 class DatabaseConfig(BaseModel):
@@ -120,11 +152,32 @@ class AppConfig(BaseModel):
     email: EmailConfig | None = None
     discord: DiscordConfig = Field(default_factory=DiscordConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    # config.yaml には含まれず、categories.yaml から別途読み込んで load_config() /
+    # load_runtime_config() が設定する。None のままアプリケーションが動作することはない。
+    taxonomy: CategoryTaxonomy | None = None
 
 
 # ---------------------------------------------------------------------------
 # Loader
 # ---------------------------------------------------------------------------
+
+def load_taxonomy(path: str | None = None) -> CategoryTaxonomy:
+    """カテゴリ定義を `categories.yaml` から読み込む。
+
+    パスは `CATEGORIES_PATH` 環境変数（既定 `categories.yaml`）で差し替え可能。
+    ローカル実行・Cloud Run 実行のいずれでも同じファイルを読ませ、
+    カテゴリ一覧の二重管理を避けるためのもの。
+    """
+    taxonomy_path = path or os.getenv("CATEGORIES_PATH", "categories.yaml")
+    file = Path(taxonomy_path)
+    if not file.exists():
+        raise FileNotFoundError(f"Categories file '{taxonomy_path}' not found.")
+
+    with open(file, "r", encoding="utf-8") as f:
+        raw: dict = yaml.safe_load(f) or {}
+
+    return CategoryTaxonomy.model_validate(raw)
+
 
 def load_config(config_path: str = "config.yaml") -> AppConfig:
     """Load and validate configuration from a YAML file.

@@ -169,9 +169,13 @@ def generate_digest(
     n_categories = len(by_category)
     max_chars_per_category = max_length // max(1, n_categories)
 
+    # categories.yaml の定義順にソートする。未定義カテゴリ（「未分類」等）は末尾に回す。
+    order = {name: i for i, name in enumerate(config.taxonomy.names)}
+    ordered_categories = sorted(by_category.items(), key=lambda kv: (order.get(kv[0], len(order)), kv[0]))
+
     # Pass 1: カテゴリ別にCategoryDigestを生成
     category_digests: List[CategoryDigest] = []
-    for category, bucket in by_category.items():
+    for category, bucket in ordered_categories:
         # グループ記事を先頭、単独記事を後ろに並べる
         groups: list[tuple[str | None, List[ArticleSummary]]] = []
         for g in bucket["groups"].values():

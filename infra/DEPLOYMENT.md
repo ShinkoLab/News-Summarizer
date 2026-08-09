@@ -337,6 +337,12 @@ digest_reasoning_effort     = "medium"
 分類精度を調整したいだけなら、カテゴリ名を変えずに `description` や
 `tiebreak_rules` の文言だけを直せばよい。コード変更は不要。
 
+> **初回移行時の順序に注意**: `SUMMARIZER_CATEGORIES` 環境変数を削除する
+> `terraform apply` は、`categories.yaml` を含むイメージがデプロイされた後に行うこと。
+> 先に apply すると、旧イメージがカテゴリ一覧を空のまま起動し、全記事が
+> カテゴリ検証に失敗して `category_max_retries` 回ぶんの LLM 呼び出しを空振りさせた上、
+> すべて 未分類 になる。「イメージをpush → `summarizer_image` を更新して apply」の順で行う。
+
 ### Minifluxのエンドポイントを変更する
 
 `terraform.tfvars` の `miniflux_base_url` を更新し `terraform apply`。

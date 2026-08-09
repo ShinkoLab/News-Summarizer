@@ -8,6 +8,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+_REPO_ROOT = Path(__file__).resolve().parent
+
 
 # ---------------------------------------------------------------------------
 # Section models
@@ -150,9 +152,11 @@ class AppConfig(BaseModel):
     email: EmailConfig | None = None
     discord: DiscordConfig = Field(default_factory=DiscordConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
-    # config.yaml には含まれず、categories.yaml から別途読み込んで load_config() /
-    # load_runtime_config() が設定する。None のままアプリケーションが動作することはない。
-    taxonomy: CategoryTaxonomy | None = None
+    # config.yaml には含まれず categories.yaml から読み込む。summarizer / digest は
+    # 無条件に参照するため、コード内で AppConfig を組み立てた場合（テストや将来の
+    # 呼び出し元）に None が残ると digest 生成が AttributeError で実行ごと落ちる。
+    # 既定値として実ファイルを読ませ、None になりうる経路をなくしておく。
+    taxonomy: CategoryTaxonomy = Field(default_factory=lambda: load_taxonomy())
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +170,11 @@ def load_taxonomy(path: str | None = None) -> CategoryTaxonomy:
     ローカル実行・Cloud Run 実行のいずれでも同じファイルを読ませ、
     カテゴリ一覧の二重管理を避けるためのもの。
     """
-    taxonomy_path = path or os.getenv("CATEGORIES_PATH", "categories.yaml")
+    # categories.yaml はリポジトリ（＝イメージ）に同梱される固定の資産なので、
+    # プロセスの CWD ではなくこのファイルからの相対で解決する。CWD 相対だと
+    # WorkingDirectory を設定しない cron/systemd や、リポジトリ外からの
+    # `--config /abs/path.yaml` 実行が import 時に落ちる。
+    taxonomy_path = path or os.getenv("CATEGORIES_PATH") or str(_REPO_ROOT / "categories.yaml")
     file = Path(taxonomy_path)
     if not file.exists():
         raise FileNotFoundError(f"Categories file '{taxonomy_path}' not found.")

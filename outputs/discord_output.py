@@ -73,10 +73,17 @@ class DiscordOutput:
             )
             description = description[: DISCORD_DESCRIPTION_LIMIT - 1] + "…"
 
-        # 退化（カテゴリ除外・overview失敗・文字数超過による切り詰め）を footer に注記する
+        # 退化を footer に注記する。生成の失敗（カテゴリ除外・overview失敗）と、
+        # 生成は成功したが Discord の上限に収まらなかった切り詰めは原因が別なので
+        # 区別する。切り詰めだけを「生成に失敗」と表示すると誤解を招く。
         shown_articles = sum(cat.article_count for cat in digest.categories)
-        degraded = shown_articles < digest.total_articles or not digest.overview or truncated
-        degraded_note = " | ※一部の生成に失敗" if degraded else ""
+        generation_failed = shown_articles < digest.total_articles or not digest.overview
+        notes = []
+        if generation_failed:
+            notes.append("※一部の生成に失敗")
+        if truncated:
+            notes.append("※文字数超過のため末尾を省略")
+        degraded_note = "".join(f" | {note}" for note in notes)
 
         return {
             "title": "📰 ニュースダイジェスト",

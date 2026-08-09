@@ -6,23 +6,31 @@ from logger import get_logger
 logger = get_logger(__name__)
 
 
+def _one_line(text: str) -> str:
+    """YAML の折りたたみスカラー（`>`）由来の改行・余分な空白を1行に潰す。
+
+    そのまま埋め込むと各カテゴリの間に空行が入り、折り返し位置に余計な空白が残る。
+    """
+    return " ".join(text.split())
+
+
 def _build_category_block(taxonomy: CategoryTaxonomy) -> str:
     """カテゴリ定義・判定の原則・タイブレーク規則をプロンプト用ブロックとしてレンダリングする。"""
     lines = ["【カテゴリ定義】"]
     for c in taxonomy.categories:
-        lines.append(f"- {c.name}: {c.description}")
+        lines.append(f"- {c.name}: {_one_line(c.description)}")
 
     if taxonomy.principles:
         lines.append("")
         lines.append("【判定の原則】")
         for p in taxonomy.principles:
-            lines.append(f"- {p}")
+            lines.append(f"- {_one_line(p)}")
 
     if taxonomy.tiebreak_rules:
         lines.append("")
         lines.append("【タイブレーク規則】")
         for i, rule in enumerate(taxonomy.tiebreak_rules, start=1):
-            lines.append(f"{i}. {rule}")
+            lines.append(f"{i}. {_one_line(rule)}")
 
     return "\n".join(lines)
 

@@ -368,6 +368,12 @@ fallback: 未分類     # 定義外カテゴリが返され続けた場合の値
 `categories` が空、または名前が重複している場合は設定読み込み時点で
 `ValidationError` になる。
 
+> **既存の `config.yaml` からの移行**: `summarizer.categories` と
+> `summarizer.fallback_category` は `categories.yaml` へ移設され、設定キーとしては
+> 廃止された。`SummarizerConfig` は未知のキーを拒否する（`extra="forbid"`）ため、
+> 手元の `config.yaml` にこれらが残っていると起動時に `ValidationError` で
+> **失敗する**。両キーを削除すること。
+
 ## データモデル
 
 ### 共通記事フォーマット (`Article`)

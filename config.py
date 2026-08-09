@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Literal
@@ -270,6 +271,17 @@ def load_runtime_config(config_path: str | None = None) -> AppConfig:
     path = config_path or os.getenv("CONFIG_PATH", "config.yaml")
     if Path(path).exists():
         return load_config(path)
+
+    # Cloud Run ships no config.yaml and is configured purely through env vars.
+    # Locally this branch almost always means a typo or a forgotten
+    # `cp config.yaml.example config.yaml`, and the resulting config has no
+    # miniflux/email/discord section — which the pipeline reports as "no new
+    # articles" rather than as a failure. Make the fallback visible.
+    logging.getLogger(__name__).warning(
+        "設定ファイル '%s' が見つかりません。環境変数のみで設定を構築します"
+        "（ローカル実行の場合は config.yaml.example をコピーしてください）。",
+        path,
+    )
 
     raw: dict[str, Any] = {
         "llm": {

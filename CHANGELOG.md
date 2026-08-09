@@ -62,6 +62,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   既定値を 3000 に揃えた
 - Discord の embed description 上限(4096字)を超えると投稿全体が失敗する
   可能性があった問題。超過分を切り詰めて投稿を通し、footer に注記する
+- 文字数超過による切り詰めを Discord の footer が「※一部の生成に失敗」と
+  表示していた問題。生成が全件成功していても失敗表示になるため、注記を分離する
+- `categories.yaml` をプロセスの CWD 相対で解決していたため、リポジトリ外から
+  実行すると import 時点で `FileNotFoundError` になっていた問題
+- `AppConfig.taxonomy` が未設定のままだと digest 生成が `AttributeError` で
+  実行ごと停止しうる問題
+- YAML の折りたたみスカラー由来の改行が要約プロンプトのカテゴリ定義に
+  そのまま入り、各行の間に空行が生じていた問題
 - `--dry-run` が Firestore の実行ロックを取得・書き込みしていた問題
 - ロックドキュメントに `expires_at` が欠けている場合に `KeyError` で
   以降の全実行が停止する問題

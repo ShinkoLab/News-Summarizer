@@ -2,9 +2,10 @@
 
 家族利用向けの低固定費構成です。Cloud Run Job、Cloud Run Service、Firestore、
 Cloud Scheduler、Secret Manager、直接IAPをTerraformで管理します。
-LLMはOpenAI互換エンドポイント（`llm_base_url`/`llm_model`で指定、APIキーは
-Secret Manager経由）を利用します。Vertex AIを使う場合は`config.py`側の
-`llm.provider: vertex`設定とTerraformのIAM/API有効化を別途追加してください。
+LLMは既定でOpenAI互換エンドポイント（`llm_base_url`/`llm_model`で指定、APIキーは
+Secret Manager経由）を利用します。Vertex AI経路もコード側（`summarizer/llm_client.py`）は
+実装済みで、`LLM_PROVIDER=vertex`と`llm.project_id`/`llm.location`相当の環境変数で
+切り替えられます。その場合のIAM付与とAPI有効化はTerraformに別途追加してください。
 
 ## 前提
 
@@ -25,16 +26,21 @@ terraform apply \
   -target=google_firestore_database.default \
   -target=google_secret_manager_secret.miniflux_api_key \
   -target=google_secret_manager_secret.email_password \
-  -target=google_secret_manager_secret.discord_webhook_url
+  -target=google_secret_manager_secret.discord_webhook_url \
+  -target=google_secret_manager_secret.llm_api_key \
+  -target=google_secret_manager_secret.embedding_api_key
 ```
 
 値をコマンドライン引数に含めず、標準入力から各シークレットの初回バージョンを
-追加します。
+追加します。Cloud Run Jobは5つすべてを`latest`で参照するため、バージョンが
+0件のシークレットが1つでもあると手順3の`terraform apply`が失敗します。
 
 ```bash
 gcloud secrets versions add news-miniflux-api-key --data-file=-
 gcloud secrets versions add news-email-password --data-file=-
 gcloud secrets versions add news-discord-webhook-url --data-file=-
+gcloud secrets versions add news-llm-api-key --data-file=-
+gcloud secrets versions add news-embedding-api-key --data-file=-
 ```
 
 ## 2. コンテナをビルドする

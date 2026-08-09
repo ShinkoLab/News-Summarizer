@@ -114,9 +114,17 @@ class FirestoreDatabase:
         def acquire(txn):
             snapshot = lock_ref.get(transaction=txn)
             if snapshot.exists:
-                expires_at = snapshot.get("expires_at")
+                # DocumentSnapshot.get() raises KeyError on a missing field, which
+                # would wedge every future run on a half-written lock document.
+                existing = snapshot.to_dict() or {}
+                expires_at = existing.get("expires_at")
                 if expires_at and expires_at > now:
-                    raise RuntimeError("別のパイプライン実行が進行中です。")
+                    raise RuntimeError(
+                        "別のパイプライン実行が進行中です "
+                        f"(owner={existing.get('owner')}, expires_at={expires_at})。"
+                        " 前回の実行が強制終了した場合は Firestore の "
+                        "pipelineLocks/current を削除してください。"
+                    )
             txn.set(
                 lock_ref,
                 {"owner": owner, "acquired_at": now, "expires_at": now + ttl},
@@ -131,7 +139,7 @@ class FirestoreDatabase:
             @firestore.transactional
             def release(txn):
                 snapshot = lock_ref.get(transaction=txn)
-                if snapshot.exists and snapshot.get("owner") == owner:
+                if snapshot.exists and (snapshot.to_dict() or {}).get("owner") == owner:
                     txn.delete(lock_ref)
 
             release(release_transaction)

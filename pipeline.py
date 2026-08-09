@@ -6,6 +6,7 @@ Internal steps are broken into small functions for clarity.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -243,7 +244,11 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
 
     db = create_database()
 
-    with db.execution_lock():
+    # The Firestore lock is a real write (and a 2h lease if the run is killed),
+    # so a --dry-run must not take it — --dry-run is documented as skipping DB writes.
+    lock = db.execution_lock() if options.run_db else nullcontext()
+
+    with lock:
         articles, rss_fetcher = fetch_articles(options, db)
         if not articles:
             logger.info("新規記事はありませんでした。処理を終了します。")

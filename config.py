@@ -48,8 +48,6 @@ class SummarizerConfig(BaseModel):
 
     individual_max_length: int = 200
     digest_max_length: int = 1500
-    categories: list[str] = Field(default_factory=list)
-    fallback_category: str = "未分類"
     category_max_retries: int = 3
     max_articles_per_run: int = Field(default=100, ge=1, le=200)
     steps: dict[str, SummarizerStepConfig] = Field(default_factory=dict)
@@ -196,7 +194,9 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     with open(path, "r", encoding="utf-8") as f:
         raw: dict = yaml.safe_load(f) or {}
 
-    return AppConfig.model_validate(raw)
+    app_config = AppConfig.model_validate(raw)
+    app_config.taxonomy = load_taxonomy()
+    return app_config
 
 
 def _env_bool(name: str) -> bool | None:
@@ -255,8 +255,6 @@ def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
 
     if max_articles := os.getenv("MAX_ARTICLES_PER_RUN"):
         section("summarizer")["max_articles_per_run"] = int(max_articles)
-    if categories := os.getenv("SUMMARIZER_CATEGORIES"):
-        section("summarizer")["categories"] = [c.strip() for c in categories.split(",") if c.strip()]
 
     steps = section("summarizer").setdefault("steps", {})
 
@@ -350,7 +348,9 @@ def load_runtime_config(config_path: str | None = None) -> AppConfig:
             "model": os.getenv("LLM_MODEL", "gemini-3.1-flash-lite"),
         }
     }
-    return AppConfig.model_validate(_apply_environment_overrides(raw))
+    app_config = AppConfig.model_validate(_apply_environment_overrides(raw))
+    app_config.taxonomy = load_taxonomy()
+    return app_config
 
 
 # ---------------------------------------------------------------------------

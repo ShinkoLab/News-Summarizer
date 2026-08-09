@@ -158,6 +158,20 @@ class TestEnvironmentOverrides:
 # ---------------------------------------------------------------------------
 
 class TestReloadConfig:
+    @pytest.fixture(autouse=True)
+    def restore_module_config(self):
+        """Snapshot the singleton and put it back in-place after each test.
+
+        Restoring by re-reading config.yaml would fail in a clean checkout,
+        since config.yaml is gitignored.
+        """
+        snapshot = dict(config_module.config.__dict__)
+        try:
+            yield
+        finally:
+            config_module.config.__dict__.clear()
+            config_module.config.__dict__.update(snapshot)
+
     def test_reload_replaces_module_config(self, tmp_path):
         yaml_content = textwrap.dedent("""\
             llm:
@@ -166,14 +180,10 @@ class TestReloadConfig:
         cfg_file = tmp_path / "reload.yaml"
         cfg_file.write_text(yaml_content, encoding="utf-8")
 
-        original_model = config_module.config.llm.model
-        try:
-            new_cfg = reload_config(str(cfg_file))
-            assert config_module.config.llm.model == "reloaded-model"
-            assert new_cfg.llm.model == "reloaded-model"
-        finally:
-            # Restore original config so other tests are not affected
-            reload_config("config.yaml")
+        new_cfg = reload_config(str(cfg_file))
+
+        assert config_module.config.llm.model == "reloaded-model"
+        assert new_cfg.llm.model == "reloaded-model"
 
     def test_reload_returns_appconfig(self, tmp_path):
         yaml_content = textwrap.dedent("""\
@@ -183,8 +193,10 @@ class TestReloadConfig:
         cfg_file = tmp_path / "reload2.yaml"
         cfg_file.write_text(yaml_content, encoding="utf-8")
 
-        try:
-            result = reload_config(str(cfg_file))
-            assert isinstance(result, AppConfig)
-        finally:
-            reload_config("config.yaml")
+        result = reload_config(str(cfg_file))
+
+        assert isinstance(result, AppConfig)
+
+    def test_restores_singleton_after_reload(self):
+        """The autouse fixture must actually put the original object back."""
+        assert config_module.config.llm.model not in ("reloaded-model", "another-model")

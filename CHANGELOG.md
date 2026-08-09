@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-08-09
+
+### Fixed
+
+- `summarizer.individual_max_length` と
+  `summarizer.steps.grouper.similarity_threshold` に環境変数マッピングが無く、
+  Cloud Run だけがコード既定値（それぞれ 200 / 0.85）で動作していた問題。
+  ローカルで調整した値（500 / 0.7）が本番に届かず、個別要約が短いまま
+  カテゴリ別ダイジェストの入力になっていた。
+  `SUMMARIZER_INDIVIDUAL_MAX_LENGTH` / `GROUPER_SIMILARITY_THRESHOLD` を追加し、
+  Terraform 変数 `summarizer_individual_max_length` /
+  `grouper_similarity_threshold` から設定できるようにする
+
 ## [2.0.0] - 2026-08-09
 
 Google Cloud（Cloud Run Job + Firestore）での実行に対応し、カテゴリ分類を
@@ -158,7 +171,8 @@ Google Cloud（Cloud Run Job + Firestore）での実行に対応し、カテゴ�
 
 - プロジェクト初期セットアップ
 
-[Unreleased]: https://github.com/ShinkoLab/News-Summarizer/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/ShinkoLab/News-Summarizer/compare/v2.0.1...HEAD
+[2.0.1]: https://github.com/ShinkoLab/News-Summarizer/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/ShinkoLab/News-Summarizer/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/ShinkoLab/News-Summarizer/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/ShinkoLab/News-Summarizer/releases/tag/v0.1.0

@@ -265,6 +265,8 @@ def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
 
     if max_articles := os.getenv("MAX_ARTICLES_PER_RUN"):
         section("summarizer")["max_articles_per_run"] = int(max_articles)
+    if individual_max_length := os.getenv("SUMMARIZER_INDIVIDUAL_MAX_LENGTH"):
+        section("summarizer")["individual_max_length"] = int(individual_max_length)
 
     steps = section("summarizer").setdefault("steps", {})
 
@@ -275,6 +277,8 @@ def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
 
     if (use_embeddings := _env_bool("GROUPER_USE_EMBEDDINGS")) is not None:
         step_section("grouper")["use_embeddings"] = use_embeddings
+    if similarity_threshold := os.getenv("GROUPER_SIMILARITY_THRESHOLD"):
+        step_section("grouper")["similarity_threshold"] = float(similarity_threshold)
 
     step_param_envs: dict[str, dict[str, str]] = {
         "grouper": {"temperature": "GROUPER_TEMPERATURE", "reasoning_effort": "GROUPER_REASONING_EFFORT"},

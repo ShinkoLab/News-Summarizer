@@ -115,12 +115,14 @@ printf '%s' "unused-placeholder" | gcloud secrets versions add news-email-passwo
 
 ### 6. コンテナイメージのビルド＆プッシュ
 
-各リポジトリのルートで、同一コミットSHAをタグにして実行する。
+各リポジトリのルートで実行する。News-Summarizer は**リリースタグ**（`v2.0.1` 等）を
+イメージタグに使う。Artifact Registry を見ればどのリリースが動いているか分かり、
+CHANGELOG との対応も1対1になる。リリースを切らない検証ビルドはコミット短縮SHAでよい。
 
 ```bash
-# News-Summarizer
+# News-Summarizer（リリース時）
 gcloud builds submit --project=<PROJECT_ID> --config cloudbuild.yaml \
-  --substitutions=_REGION=asia-northeast1,_TAG=$(git rev-parse --short HEAD)
+  --substitutions=_REGION=asia-northeast1,_TAG=v2.0.1
 
 # News-Viewer
 cd ../News-Viewer
@@ -289,6 +291,29 @@ client.collection('pipelineLocks').document('current').delete()
 Ollamaモデル向けの設定でありCloud Runの環境変数マッピング対象外のため、
 これは今後も未対応のままでよい。
 
+### 8. `individual_max_length` / `similarity_threshold` も環境変数から渡せなかった
+
+上記1・2・7と同じ種類の不具合で、v2.0.0 のデプロイ前調査で発覚した。
+ローカル `config.yaml` で調整した以下2つに環境変数マッピングが無く、
+Cloud Run はコード既定値のまま動作していた。
+
+| 設定 | ローカルの調整値 | Cloud Run 実効値 |
+|---|---|---|
+| `summarizer.individual_max_length` | 500 | 200（コード既定） |
+| `summarizer.steps.grouper.similarity_threshold` | 0.7 | 0.85（コード既定） |
+
+`individual_max_length` は個別記事の要約文字数で、それがそのまま
+カテゴリ別ダイジェスト生成の入力になる。つまり Cloud Run のダイジェストは
+ローカルで確認した出力より素材が 2/5 の粒度で生成されていた。
+`similarity_threshold` はコサイン類似度の閾値で、0.85 では 0.7 よりさらに
+クラスタリングが効かなくなる。
+`SUMMARIZER_INDIVIDUAL_MAX_LENGTH` / `GROUPER_SIMILARITY_THRESHOLD` を追加して解消。
+
+同じ取りこぼしが4回起きているのは、`config.py` にフィールドを足しても
+`_apply_environment_overrides()` を更新しなければローカルでは何も壊れず、
+Cloud Run 上でだけ静かに既定値へ落ちるため。**設定フィールドを追加・調整したら、
+環境変数マッピングと `infra/main.tf` の `env` ブロックまでセットで対応すること。**
+
 ## 設定変更手順
 
 ### LLM設定を変更する（プロバイダ・モデル・エンドポイント）
@@ -326,6 +351,18 @@ digest_reasoning_effort     = "medium"
 非対応モデルに切り替えた場合は空文字や未設定にする（`infra/main.tf` の
 該当 `env` ブロックを削除するか、値を空文字にして送らないようにする）。
 
+### 要約の長さ・グルーピングの閾値を変更する
+
+同じく `terraform.tfvars` に追記して `terraform apply`:
+
+```hcl
+summarizer_individual_max_length = 500   # 個別記事の要約文字数（ダイジェストの素材）
+grouper_similarity_threshold     = 0.7   # embedding グルーピングのコサイン類似度閾値
+```
+
+`infra/variables.tf` のデフォルトはローカル `config.yaml` の値に揃えてあるため、
+同じ値で運用するなら `terraform.tfvars` への記載は不要。
+
 ### カテゴリ一覧を変更する
 
 リポジトリ直下の `categories.yaml` を編集し、**イメージを再ビルドしてデプロイ**する
@@ -353,8 +390,9 @@ APIキーは `news-miniflux-api-key` シークレットに新バージョンを�
 
 ```bash
 # 変更したリポジトリのルートで
+# News-Summarizer はリリースタグ、それ以外・検証ビルドはコミット短縮SHA
 gcloud builds submit --project=<PROJECT_ID> --config cloudbuild.yaml \
-  --substitutions=_REGION=asia-northeast1,_TAG=$(git rev-parse --short HEAD)
+  --substitutions=_REGION=asia-northeast1,_TAG=$(git describe --exact-match --tags 2>/dev/null || git rev-parse --short HEAD)
 ```
 
 `infra/terraform.tfvars` の `summarizer_image` / `viewer_image` を新しいタグに

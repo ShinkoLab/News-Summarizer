@@ -230,12 +230,17 @@ class TestEnvironmentOverrides:
         """
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text(
-            "llm:\n  model: local-model\nminiflux:\n  base_url: https://example.com\n  api_key: local-secret\n",
+            "llm:\n  model: local-model\n"
+            "summarizer:\n  individual_max_length: 500\n"
+            "  steps:\n    grouper:\n      similarity_threshold: 0.7\n"
+            "miniflux:\n  base_url: https://example.com\n  api_key: local-secret\n",
             encoding="utf-8",
         )
         monkeypatch.setenv("MINIFLUX_API_KEY", "secret-manager-value")
         monkeypatch.setenv("LLM_MODEL", "env-model")
         monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "some-ambient-project")
+        monkeypatch.setenv("SUMMARIZER_INDIVIDUAL_MAX_LENGTH", "999")
+        monkeypatch.setenv("GROUPER_SIMILARITY_THRESHOLD", "0.99")
 
         cfg = load_config(str(cfg_file))
 
@@ -243,6 +248,8 @@ class TestEnvironmentOverrides:
         assert cfg.miniflux.api_key == "local-secret"
         assert cfg.llm.model == "local-model"
         assert cfg.llm.project_id is None
+        assert cfg.summarizer.individual_max_length == 500
+        assert cfg.summarizer.steps["grouper"].similarity_threshold == 0.7
 
     def test_environment_still_applies_when_yaml_is_absent(self, tmp_path, monkeypatch):
         """Cloud Run 相当（YAML 不在）では従来どおり環境変数だけで構成する。"""
@@ -255,6 +262,24 @@ class TestEnvironmentOverrides:
         assert cfg.llm.model == "env-model"
         assert cfg.miniflux is not None
         assert cfg.miniflux.api_key == "secret-manager-value"
+
+    def test_summary_length_and_threshold_from_environment(self, tmp_path, monkeypatch):
+        """Cloud Run でチューニング値が反映されること。
+
+        この2つは環境変数マッピングが無く、Cloud Run だけがコード既定値
+        （200字 / 0.85）で動いていた。ローカルで調整した値が本番に届かないため、
+        マッピングの有無をテストで固定する。
+        """
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("SUMMARIZER_INDIVIDUAL_MAX_LENGTH", "500")
+        monkeypatch.setenv("GROUPER_USE_EMBEDDINGS", "true")
+        monkeypatch.setenv("GROUPER_SIMILARITY_THRESHOLD", "0.7")
+
+        cfg = load_runtime_config(str(tmp_path / "missing.yaml"))
+
+        assert cfg.summarizer.individual_max_length == 500
+        assert cfg.summarizer.steps["grouper"].use_embeddings is True
+        assert cfg.summarizer.steps["grouper"].similarity_threshold == 0.7
 
 
 # ---------------------------------------------------------------------------

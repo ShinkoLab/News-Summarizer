@@ -43,7 +43,7 @@ def _make_digest(total: int = 1) -> DigestResult:
     return DigestResult(
         overview="テスト概要",
         categories=[
-            CategoryDigest(category="テクノロジー", articles=["記事1"], article_count=1)
+            CategoryDigest(category="テクノロジー", summary="本文", highlights=["記事1"], article_count=1)
         ],
         total_articles=total,
         generated_at=datetime.now(),

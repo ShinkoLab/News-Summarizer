@@ -6,7 +6,14 @@ from unittest.mock import MagicMock, patch
 
 from config import AppConfig, CategoryDef, CategoryTaxonomy, LLMConfig, SummarizerConfig
 from models import ArticleSummary, CategoryDigest
-from summarizer.digest import MIN_CHARS_PER_CATEGORY, generate_digest
+from summarizer.digest import (
+    MAX_HIGHLIGHTS,
+    MIN_CHARS_PER_CATEGORY,
+    _CategoryDigestLLMOutput,
+    _generate_category_digest,
+    _normalize_bullets,
+    generate_digest,
+)
 
 
 def _summary(category: str) -> ArticleSummary:
@@ -34,7 +41,7 @@ def test_pass1_category_failure_is_excluded():
     def fake_category(category, **_kwargs):
         if category == "A":
             raise RuntimeError("context overflow")
-        return CategoryDigest(category=category, articles=["x"], article_count=1)
+        return CategoryDigest(category=category, summary="本文", highlights=["x"], article_count=1)
 
     c1, c2, c3 = _patch_common()
     with c1, c2, c3, \
@@ -56,7 +63,7 @@ def test_pass2_overview_failure_keeps_categories():
     with c1, c2, c3, \
         patch(
             "summarizer.digest._generate_category_digest",
-            return_value=CategoryDigest(category="A", articles=["x"], article_count=1),
+            return_value=CategoryDigest(category="A", summary="本文", highlights=["x"], article_count=1),
         ), \
         patch("summarizer.digest._generate_overview", side_effect=RuntimeError("boom")):
         result = generate_digest(grouped)
@@ -93,7 +100,7 @@ def test_categories_follow_taxonomy_order():
         patch(
             "summarizer.digest._generate_category_digest",
             side_effect=lambda category, **_kw: CategoryDigest(
-                category=category, articles=["x"], article_count=1
+                category=category, summary="本文", highlights=["x"], article_count=1
             ),
         ), \
         patch("summarizer.digest._generate_overview", return_value="概要"):
@@ -122,7 +129,7 @@ def test_char_budget_is_proportional_to_article_count():
 
     def capture(category, max_chars, **_kw):
         received[category] = max_chars
-        return CategoryDigest(category=category, articles=["x"], article_count=1)
+        return CategoryDigest(category=category, summary="本文", highlights=["x"], article_count=1)
 
     c1, c2, c3 = _patch_common()
     with c1, c2, c3, \
@@ -131,9 +138,10 @@ def test_char_budget_is_proportional_to_article_count():
         patch("summarizer.digest._generate_overview", return_value="概要"):
         generate_digest(grouped)
 
-    # 均等割りなら両方 1500 になるが、比例配分では 90:10 に分かれる
-    assert received["多"] == 2700
-    assert received["少"] == 300
+    # 均等割りなら両方 1500。下限120を先に確保し、残り2760を90:10で配分する
+    assert received["多"] == MIN_CHARS_PER_CATEGORY + 2760 * 90 // 100  # 2604
+    assert received["少"] == MIN_CHARS_PER_CATEGORY + 2760 * 10 // 100  # 396
+    assert sum(received.values()) == 3000
 
 
 def test_small_category_gets_minimum_char_budget():
@@ -156,7 +164,7 @@ def test_small_category_gets_minimum_char_budget():
 
     def capture(category, max_chars, **_kw):
         received[category] = max_chars
-        return CategoryDigest(category=category, articles=["x"], article_count=1)
+        return CategoryDigest(category=category, summary="本文", highlights=["x"], article_count=1)
 
     c1, c2, c3 = _patch_common()
     with c1, c2, c3, \
@@ -165,7 +173,74 @@ def test_small_category_gets_minimum_char_budget():
         patch("summarizer.digest._generate_overview", return_value="概要"):
         generate_digest(grouped)
 
-    assert received["少"] == MIN_CHARS_PER_CATEGORY
+    assert received["少"] >= MIN_CHARS_PER_CATEGORY
+    assert sum(received.values()) <= 3000
+
+
+def test_char_budget_never_exceeds_digest_max_length():
+    """下限を確保しても合計が digest_max_length を超えない。
+
+    下限を後から max() で被せる実装では、記事が1カテゴリに集中したときに
+    合計が上限を超え、Discord 側の4096字切り詰めを誘発していた。
+    """
+    names = ["c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8"]
+    cfg = AppConfig(
+        llm=LLMConfig(model="test-model"),
+        summarizer=SummarizerConfig(digest_max_length=3000),
+        taxonomy=CategoryTaxonomy(
+            categories=[CategoryDef(name=n, description=f"{n}の説明。") for n in names],
+        ),
+    )
+    # 1カテゴリに93件、残り7カテゴリに1件ずつ（計100件）
+    grouped = [(_summary("c1"), None, None) for _ in range(93)]
+    grouped += [(_summary(n), None, None) for n in names[1:]]
+
+    received: dict[str, int] = {}
+
+    def capture(category, max_chars, **_kw):
+        received[category] = max_chars
+        return CategoryDigest(category=category, summary="本文", highlights=["x"], article_count=1)
+
+    c1, c2, c3 = _patch_common()
+    with c1, c2, c3, \
+        patch("summarizer.digest.config", cfg), \
+        patch("summarizer.digest._generate_category_digest", side_effect=capture), \
+        patch("summarizer.digest._generate_overview", return_value="概要"):
+        generate_digest(grouped)
+
+    assert len(received) == 8
+    assert sum(received.values()) <= 3000
+    assert all(v >= MIN_CHARS_PER_CATEGORY for v in received.values())
+
+
+def test_char_budget_falls_back_to_even_split_when_floors_do_not_fit():
+    """カテゴリ数 × 下限 が上限を超える場合は均等割りに退避する。"""
+    names = [f"c{i}" for i in range(10)]
+    cfg = AppConfig(
+        llm=LLMConfig(model="test-model"),
+        # 10カテゴリ × 下限120 = 1200 > 500
+        summarizer=SummarizerConfig(digest_max_length=500),
+        taxonomy=CategoryTaxonomy(
+            categories=[CategoryDef(name=n, description=f"{n}の説明。") for n in names],
+        ),
+    )
+    grouped = [(_summary(n), None, None) for n in names]
+
+    received: dict[str, int] = {}
+
+    def capture(category, max_chars, **_kw):
+        received[category] = max_chars
+        return CategoryDigest(category=category, summary="本文", highlights=["x"], article_count=1)
+
+    c1, c2, c3 = _patch_common()
+    with c1, c2, c3, \
+        patch("summarizer.digest.config", cfg), \
+        patch("summarizer.digest._generate_category_digest", side_effect=capture), \
+        patch("summarizer.digest._generate_overview", return_value="概要"):
+        generate_digest(grouped)
+
+    assert set(received.values()) == {50}
+    assert sum(received.values()) <= 500
 
 
 def test_all_categories_failing_yields_empty_digest():
@@ -181,3 +256,80 @@ def test_all_categories_failing_yields_empty_digest():
     assert result.categories == []
     assert result.overview == ""
     assert result.total_articles == 1
+
+
+# ---------------------------------------------------------------------------
+# _generate_category_digest（全テストでモックされていた部分）
+# ---------------------------------------------------------------------------
+
+def test_category_prompt_carries_char_budget_and_highlight_cap():
+    """max_chars と highlights の上限件数が実際にプロンプトへ埋め込まれる。"""
+    captured: dict = {}
+
+    def fake_call(_client, completion_kwargs, _stream):
+        captured["kwargs"] = completion_kwargs
+        return _CategoryDigestLLMOutput(summary="本文です。", highlights=["トピック"])
+
+    with patch("summarizer.digest.call_with_retry", side_effect=fake_call):
+        result = _generate_category_digest(
+            category="テクノロジー",
+            groups=[("トピックA", [_summary("テクノロジー")])],
+            client=MagicMock(),
+            model="test-model",
+            parameters={},
+            extra_body=None,
+            max_chars=777,
+            stream=False,
+        )
+
+    prompt = captured["kwargs"]["messages"][1]["content"]
+    assert "777文字以内" in prompt
+    assert f"最大{MAX_HIGHLIGHTS}件" in prompt
+    assert "トピックA" in prompt
+    assert result.summary == "本文です。"
+    assert result.article_count == 1
+
+
+def test_highlights_are_capped_and_normalized():
+    """LLM が上限を超える件数や記号付きで返しても、件数制限と記号除去を行う。"""
+    def fake_call(_client, _kwargs, _stream):
+        return _CategoryDigestLLMOutput(
+            summary="  本文です。  ",
+            highlights=["・1件目", "2. 2件目", "• 3件目", "4件目", "5件目"],
+        )
+
+    with patch("summarizer.digest.call_with_retry", side_effect=fake_call):
+        result = _generate_category_digest(
+            category="テクノロジー",
+            groups=[(None, [_summary("テクノロジー")])],
+            client=MagicMock(),
+            model="test-model",
+            parameters={},
+            extra_body=None,
+            max_chars=500,
+            stream=False,
+        )
+
+    assert result.summary == "本文です。"
+    assert len(result.highlights) == MAX_HIGHLIGHTS
+    assert result.highlights == ["1件目", "2件目", "3件目"]
+
+
+# ---------------------------------------------------------------------------
+# _normalize_bullets
+# ---------------------------------------------------------------------------
+
+class TestNormalizeBullets:
+    def test_strips_leading_markers(self):
+        assert _normalize_bullets(["・あ", "- い", "* う", "• え", "1. お", "2) か"]) == [
+            "あ", "い", "う", "え", "お", "か",
+        ]
+
+    def test_splits_embedded_newlines(self):
+        assert _normalize_bullets(["あ\n・い\nう"]) == ["あ", "い", "う"]
+
+    def test_drops_empty_entries(self):
+        assert _normalize_bullets(["", "   ", "・", "あ"]) == ["あ"]
+
+    def test_keeps_inner_punctuation(self):
+        assert _normalize_bullets(["A社とB社が提携・統合を発表"]) == ["A社とB社が提携・統合を発表"]

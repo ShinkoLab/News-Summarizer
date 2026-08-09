@@ -127,7 +127,9 @@ class DiscordConfig(BaseModel):
     webhook_url: str | None = None
     embed_color: int = 0x58B9C2
     footer_text: str = ""
-    post_individual_articles: bool = True
+    # 既定で無効。有効にすると全記事が個別 Embed でも配信され、
+    # カテゴリ別ダイジェストと同じ内容が二重に届く。
+    post_individual_articles: bool = False
 
 
 class LoggingConfig(BaseModel):

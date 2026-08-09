@@ -230,8 +230,9 @@ def persist_and_publish(
         print("\n=== ダイジェスト結果 ===")
         print(digest.overview)
         for c in digest.categories:
-            bullets = "\n".join(f"  • {a}" for a in c.articles)
-            print(f"\n[{c.category}] ({c.article_count}件)\n{bullets}")
+            print(f"\n[{c.category}] ({c.article_count}件)\n{c.summary}")
+            for highlight in c.highlights:
+                print(f"  • {highlight}")
 
 
 # ---------------------------------------------------------------------------

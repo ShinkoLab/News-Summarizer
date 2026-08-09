@@ -127,7 +127,9 @@ discord:
   webhook_url: "https://discord.com/api/webhooks/your-webhook-url"
   embed_color: 5814786
   footer_text: "AI News Summarizer"  # フッターテキスト（空文字列 "" または省略で無効化）
-  post_individual_articles: true  # 個別記事をダイジェストの後に投稿するか（デフォルト: true）
+  # 個別記事をダイジェストの後に1件ずつ投稿するか（デフォルト: false）。
+  # true にすると全記事がカテゴリ別ダイジェストと個別 Embed で二重に届く。
+  #post_individual_articles: true
 
 # ロギング設定
 logging:

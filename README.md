@@ -237,12 +237,20 @@ LLM を使用した記事の分析・要約処理を担当する。
 `config.yaml.example` をコピーして使用する。主要な設定項目は以下の通り。
 
 ```yaml
-# LLM (OpenAI 互換 API) の設定
+# LLM の設定
 llm:
+  # provider: "openai"  # "openai"（OpenAI互換エンドポイント、デフォルト） | "vertex"（Vertex AI）
   base_url: "http://127.0.0.1:11434/v1"
   model: "your-model-name"
   # api_key: "your-api-key"  # 省略時は "ollama"
+  # provider: "vertex" の場合に指定
+  # project_id: "your-gcp-project"
+  # location: "asia-northeast1"
+
   # embedding_model: "bge-m3"  # Embeddingグルーピングを使う場合
+  # Embedding だけ別プロバイダに向ける場合（未指定時は上の base_url / api_key を使用）
+  # embedding_base_url: "https://openrouter.ai/api/v1"
+  # embedding_api_key: "your-embedding-api-key"
 
   # 全ステップ共通の LLM パラメータ（ステップ別設定で上書き可）
   # parameters:
@@ -285,12 +293,18 @@ discord:
 
 # データベースの設定
 database:
+  # backend: "sqlite"  # "sqlite"（デフォルト） | "firestore"（Cloud Run 実行時）
   path: "data/news_summarizer.db"
+  # backend: "firestore" の場合に指定
+  # project_id: "your-gcp-project"
+  # firestore_database: "(default)"
 
 # 要約設定
 summarizer:
   individual_max_length: 200
   digest_max_length: 1500
+  # 1回の実行で処理する記事数の上限（デフォルト: 100）。超過分は次回に繰り越す
+  # max_articles_per_run: 100
   categories:
     - "テクノロジー"
     - "ビジネス"
@@ -592,12 +606,15 @@ uv run python main.py --debug
 ```
 News-Summarizer/
 ├── README.md                  # 本ドキュメント
-├── CLAUDE.md                  # Claude Code 向けガイド
+├── AGENTS.md                  # コーディングエージェント向けガイド（実体）
+├── CLAUDE.md                  # AGENTS.md への参照のみ
+├── CHANGELOG.md               # 変更履歴（Keep a Changelog 準拠）
+├── LICENSE
 ├── config.yaml.example        # 設定ファイルテンプレート
 ├── config.yaml                # 設定ファイル（gitignore）
 ├── pyproject.toml             # Python プロジェクト定義
 ├── uv.lock                    # 依存ロックファイル
-├── mise.toml                  # ランタイム（Python 3.12）指定
+├── mise.toml                  # ランタイム（Python 3.12 / Terraform）指定
 ├── main.py                    # CLIエントリポイント
 ├── pipeline.py                # パイプライン本体（RunOptions + run_pipeline）
 ├── config.py                  # 設定読み込み・バリデーション
@@ -624,6 +641,7 @@ News-Summarizer/
 │   └── migrate_sqlite_to_firestore.py # 既存履歴の移行
 ├── infra/                    # Google Cloud Terraform構成
 ├── Dockerfile                # Cloud Run Job用イメージ
+├── .dockerignore             # イメージから除外するファイル
 ├── cloudbuild.yaml           # Artifact Registryへのビルド
 ├── tests/                     # pytest テストスイート
 └── data/                      # データディレクトリ（自動生成）

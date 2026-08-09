@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-09
+
 ### Added
 
 - `email.max_fetch_attempts`（環境変数 `EMAIL_MAX_FETCH_ATTEMPTS`、既定 `3`）。
@@ -204,7 +206,8 @@ Google Cloud（Cloud Run Job + Firestore）での実行に対応し、カテゴ�
 
 - プロジェクト初期セットアップ
 
-[Unreleased]: https://github.com/ShinkoLab/News-Summarizer/compare/v2.0.1...HEAD
+[Unreleased]: https://github.com/ShinkoLab/News-Summarizer/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/ShinkoLab/News-Summarizer/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/ShinkoLab/News-Summarizer/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/ShinkoLab/News-Summarizer/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/ShinkoLab/News-Summarizer/compare/v0.1.0...v1.0.0

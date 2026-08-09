@@ -59,8 +59,9 @@ class TestCategoryTaxonomy:
     """カテゴリ定義は categories.yaml の1箇所のみを正とする。"""
 
     def test_loads_repository_categories_yaml(self):
+        """定義順は運用上の好みで変わるため、順序ではなく集合として検証する。"""
         taxonomy = load_taxonomy()
-        assert taxonomy.names == [
+        assert set(taxonomy.names) == {
             "政治・社会",
             "経済・ビジネス",
             "テクノロジー",
@@ -68,7 +69,8 @@ class TestCategoryTaxonomy:
             "科学・環境",
             "健康・ライフ",
             "カルチャー",
-        ]
+        }
+        assert len(taxonomy.names) == 7
 
     def test_fallback_is_outside_the_category_list(self):
         """フォールバックは分類失敗のシグナルなので、意図的に categories 外の値。"""

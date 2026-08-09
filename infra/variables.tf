@@ -73,15 +73,6 @@ variable "digest_reasoning_effort" {
   default     = "medium"
 }
 
-variable "summarizer_categories" {
-  description = "Category list the summarizer LLM classifies articles into"
-  type        = list(string)
-  default = [
-    "国際", "政治", "経済", "ビジネス", "市場", "テクノロジー", "AI", "科学",
-    "健康", "社会", "環境", "スポーツ", "文化", "エンタメ", "ライフスタイル", "話題",
-  ]
-}
-
 variable "summarizer_image" {
   description = "Digest-pinned or commit-tagged Summarizer container image"
   type        = string

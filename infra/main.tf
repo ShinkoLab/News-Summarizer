@@ -199,10 +199,6 @@ resource "google_cloud_run_v2_job" "summarizer" {
           value = "100"
         }
         env {
-          name  = "SUMMARIZER_CATEGORIES"
-          value = join(",", var.summarizer_categories)
-        }
-        env {
           name  = "EMBEDDING_BASE_URL"
           value = var.embedding_base_url
         }

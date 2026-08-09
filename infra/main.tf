@@ -56,6 +56,22 @@ resource "google_firestore_database" "default" {
   depends_on = [google_project_service.required]
 }
 
+// embedding は1536要素の配列で、Firestore は配列要素を1件ずつ自動インデックスする。
+// 1ドキュメントあたり約1536のインデックスエントリが生まれ、80記事の一括コミットが
+// 「Transaction too big」（上限10MiB）で失敗した。ドキュメント本体は80件でも1.37MiBしか
+// 無く、超過分はすべてインデックス書き込み。類似記事の統合はアプリ側がベクトルを
+// 取り出してコサイン類似度を計算しており、Firestore のインデックスは一切使わないため、
+// このフィールドはインデックス対象から外す。
+resource "google_firestore_field" "article_summary_embedding" {
+  project    = var.project_id
+  database   = google_firestore_database.default.name
+  collection = "articleSummaries"
+  field      = "embedding"
+
+  // 空の index_config は「単一フィールドインデックスを作らない」を意味する
+  index_config {}
+}
+
 resource "google_service_account" "summarizer" {
   account_id   = "news-summarizer-job"
   display_name = "News Summarizer Cloud Run Job"

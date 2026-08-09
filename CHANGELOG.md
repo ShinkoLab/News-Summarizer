@@ -45,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `infra/README.md` のシークレット作成手順に `llm_api_key` /
   `embedding_api_key` が含まれておらず、手順どおりでは `terraform apply` が
   失敗していた問題
+- 環境変数が `config.yaml` や `--config` で指定した YAML を上書きしていた問題。
+  YAML が存在する場合は YAML を唯一の正とし、環境変数による構成は YAML 不在時
+  （＝Cloud Run）のみに限定する。`GOOGLE_CLOUD_PROJECT` など gcloud/ADC 系ツールが
+  設定する変数が、明示した設定を黙って上書きしていた
 
 ## [1.0.0] - 2026-05-01
 

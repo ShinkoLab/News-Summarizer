@@ -129,6 +129,9 @@ class AppConfig(BaseModel):
 def load_config(config_path: str = "config.yaml") -> AppConfig:
     """Load and validate configuration from a YAML file.
 
+    YAML の内容がそのまま設定になる。環境変数による上書きは意図的に行わない
+    （`_apply_environment_overrides()` を参照）。
+
     Raises FileNotFoundError if the file does not exist, and
     pydantic.ValidationError (with clear field-level messages) if the
     content does not match the expected schema.
@@ -140,7 +143,7 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     with open(path, "r", encoding="utf-8") as f:
         raw: dict = yaml.safe_load(f) or {}
 
-    return AppConfig.model_validate(_apply_environment_overrides(raw))
+    return AppConfig.model_validate(raw)
 
 
 def _env_bool(name: str) -> bool | None:
@@ -151,11 +154,16 @@ def _env_bool(name: str) -> bool | None:
 
 
 def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
-    """Apply Cloud Run-friendly environment variables over YAML values.
+    """設定ファイルが無い環境（Cloud Run）向けに、環境変数から設定を組み立てる。
 
-    Non-secret defaults can remain in YAML while credentials are injected from
-    Secret Manager. A section is created only when at least one corresponding
-    environment variable is present.
+    Cloud Run Job はイメージに config.yaml を含めない（`.dockerignore`）ため、
+    すべての設定を環境変数で受け取る。シークレットは Secret Manager から注入される。
+
+    **`load_config()` からは呼ばない。** YAML が存在する場合は YAML が唯一の正であり、
+    たまたま export されている環境変数（`GOOGLE_CLOUD_PROJECT` など gcloud/ADC 系の
+    ツールが設定するものを含む）が、明示した設定を黙って上書きしないようにする。
+    A section is created only when at least one corresponding environment variable
+    is present.
     """
     result = dict(raw)
 

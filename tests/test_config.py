@@ -139,16 +139,37 @@ class TestEnvironmentOverrides:
         assert cfg.database.project_id == "family-news-project"
         assert cfg.summarizer.max_articles_per_run == 25
 
-    def test_yaml_secret_is_overridden_by_environment(self, tmp_path, monkeypatch):
+    def test_yaml_wins_over_environment(self, tmp_path, monkeypatch):
+        """YAML が存在する場合、環境変数は一切上書きしない。
+
+        --config で明示したファイルや手元の config.yaml が、たまたま export されている
+        環境変数に黙って上書きされるのを防ぐ。
+        """
         cfg_file = tmp_path / "config.yaml"
         cfg_file.write_text(
             "llm:\n  model: local-model\nminiflux:\n  base_url: https://example.com\n  api_key: local-secret\n",
             encoding="utf-8",
         )
         monkeypatch.setenv("MINIFLUX_API_KEY", "secret-manager-value")
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "some-ambient-project")
 
         cfg = load_config(str(cfg_file))
 
+        assert cfg.miniflux is not None
+        assert cfg.miniflux.api_key == "local-secret"
+        assert cfg.llm.model == "local-model"
+        assert cfg.llm.project_id is None
+
+    def test_environment_still_applies_when_yaml_is_absent(self, tmp_path, monkeypatch):
+        """Cloud Run 相当（YAML 不在）では従来どおり環境変数だけで構成する。"""
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("MINIFLUX_BASE_URL", "https://miniflux.example.com")
+        monkeypatch.setenv("MINIFLUX_API_KEY", "secret-manager-value")
+
+        cfg = load_runtime_config(str(tmp_path / "missing.yaml"))
+
+        assert cfg.llm.model == "env-model"
         assert cfg.miniflux is not None
         assert cfg.miniflux.api_key == "secret-manager-value"
 

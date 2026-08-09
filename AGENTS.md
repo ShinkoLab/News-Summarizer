@@ -167,13 +167,22 @@ Copy `config.yaml.example` → `config.yaml` and fill in:
 `config.yaml.example` is kept in sync with `config.py` and documents every key — treat it as the
 reference, not this file.
 
-### Environment variable overrides
+### Where config comes from
 
-`_apply_environment_overrides()` in `config.py` lets **every** config key be set from the
-environment, which is how the Cloud Run Job is configured (no `config.yaml` in the image).
-`load_runtime_config()` falls back to an env-only config when no YAML file is present.
-The authoritative env-var → config-key mapping is the Cloud Run Job definition in `infra/main.tf`;
-`CONFIG_PATH` overrides the YAML location.
+There are exactly two modes, and they never mix:
+
+| | Source of truth |
+|---|---|
+| A YAML file exists (local runs, `--config path.yaml`) | **The YAML, and only the YAML.** Environment variables are ignored |
+| No YAML file (the Cloud Run Job — `config.yaml` is excluded by `.dockerignore`) | **Environment variables only**, via `_apply_environment_overrides()` |
+
+`load_runtime_config()` picks the mode by testing whether the path exists; `CONFIG_PATH`
+overrides where it looks. This split is deliberate: ambient environment variables
+(`GOOGLE_CLOUD_PROJECT` is set by common `gcloud`/ADC tooling, for instance) must not
+silently override a config file the user pointed at.
+
+`_apply_environment_overrides()` covers **every** config key. The authoritative
+env-var → config-key mapping is the Cloud Run Job definition in `infra/main.tf`.
 
 > Note: with no `config.yaml` present, the env-only defaults target Vertex AI. Local runs should
 > always have a `config.yaml`.

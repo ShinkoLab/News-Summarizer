@@ -10,6 +10,14 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 
+# 記事数の少ないカテゴリに割り当てる文字数の下限
+MIN_CHARS_PER_CATEGORY = 120
+
+
+def _count_articles(bucket: dict) -> int:
+    """カテゴリ配下（グループ記事＋単独記事）の記事数を数える。"""
+    return sum(len(g["summaries"]) for g in bucket["groups"].values()) + len(bucket["singles"])
+
 # LLM が list[str] の各要素に混入させがちな箇条書き記号・番号を除去する
 _BULLET_PREFIX = re.compile(
     r"^(?:"
@@ -166,12 +174,26 @@ def generate_digest(
             g = bucket["groups"].setdefault(group_id, {"topic": group_topic, "summaries": []})
             g["summaries"].append(summary)
 
-    n_categories = len(by_category)
-    max_chars_per_category = max_length // max(1, n_categories)
+    # 文字数はカテゴリ数で均等割りせず、記事数に比例配分する。
+    # 均等割りにすると記事が集中したカテゴリで1件あたり数文字まで潰れ、
+    # 収まらない記事が黙って欠落してしまうため。
+    # 記事数の少ないカテゴリも文章として成立するよう下限を設ける。
+    total_articles = len(grouped_summaries)
+    chars_by_category = {
+        category: max(
+            MIN_CHARS_PER_CATEGORY,
+            max_length * _count_articles(bucket) // total_articles,
+        )
+        for category, bucket in by_category.items()
+    }
+
+    # categories.yaml の定義順にソートする。未定義カテゴリ（「未分類」等）は末尾に回す。
+    order = {name: i for i, name in enumerate(config.taxonomy.names)}
+    ordered_categories = sorted(by_category.items(), key=lambda kv: (order.get(kv[0], len(order)), kv[0]))
 
     # Pass 1: カテゴリ別にCategoryDigestを生成
     category_digests: List[CategoryDigest] = []
-    for category, bucket in by_category.items():
+    for category, bucket in ordered_categories:
         # グループ記事を先頭、単独記事を後ろに並べる
         groups: list[tuple[str | None, List[ArticleSummary]]] = []
         for g in bucket["groups"].values():
@@ -190,7 +212,7 @@ def generate_digest(
                 model=model,
                 parameters=parameters,
                 extra_body=extra_body,
-                max_chars=max_chars_per_category,
+                max_chars=chars_by_category[category],
                 stream=stream,
             )
             category_digests.append(cd)

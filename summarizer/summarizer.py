@@ -1,21 +1,51 @@
+from config import CategoryTaxonomy, config
 from models import Article, ArticleSummary
 from summarizer.llm_client import get_client, get_model_name, build_step_params, call_with_retry
-from config import config
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _one_line(text: str) -> str:
+    """YAML の折りたたみスカラー（`>`）由来の改行・余分な空白を1行に潰す。
+
+    そのまま埋め込むと各カテゴリの間に空行が入り、折り返し位置に余計な空白が残る。
+    """
+    return " ".join(text.split())
+
+
+def _build_category_block(taxonomy: CategoryTaxonomy) -> str:
+    """カテゴリ定義・判定の原則・タイブレーク規則をプロンプト用ブロックとしてレンダリングする。"""
+    lines = ["【カテゴリ定義】"]
+    for c in taxonomy.categories:
+        lines.append(f"- {c.name}: {_one_line(c.description)}")
+
+    if taxonomy.principles:
+        lines.append("")
+        lines.append("【判定の原則】")
+        for p in taxonomy.principles:
+            lines.append(f"- {_one_line(p)}")
+
+    if taxonomy.tiebreak_rules:
+        lines.append("")
+        lines.append("【タイブレーク規則】")
+        for i, rule in enumerate(taxonomy.tiebreak_rules, start=1):
+            lines.append(f"{i}. {_one_line(rule)}")
+
+    return "\n".join(lines)
 
 
 def summarize_article(article: Article, stream: bool = False) -> ArticleSummary:
     """
     記事の内容を読み、要約・キーワード・カテゴリを抽出する。
     LLM による Structured Output を使用して ArticleSummary を生成する。
-    カテゴリが設定ファイルの一覧にない場合は max_retries 回まで再試行し、
-    それでも失敗した場合は fallback_category にフォールバックする。
+    カテゴリが categories.yaml の定義にない場合は category_max_retries 回まで
+    再試行し、それでも失敗した場合は同ファイルの fallback にフォールバックする。
     """
     client = get_client()
     model = get_model_name()
-    categories = config.summarizer.categories
+    taxonomy = config.taxonomy
+    categories = taxonomy.names
     categories_str = ", ".join(categories)
     max_length = config.summarizer.individual_max_length
     category_max_retries = config.summarizer.category_max_retries
@@ -26,8 +56,9 @@ def summarize_article(article: Article, stream: bool = False) -> ArticleSummary:
 - 要約タイトルは必ず日本語で生成してください。元のタイトルが英語の場合も日本語に翻訳・要約してください。
 - 要約は出力言語を「日本語」に統一し、{max_length}文字以内で重要なポイントを端的にまとめてください。
 - キーワードは記事から3個抽出してください。
-- カテゴリは以下のいずれかから最も適切なものを1つ選択してください。
-[{categories_str}]
+- カテゴリは【カテゴリ定義】のいずれかから最も適切なものを1つ選択してください。
+
+{_build_category_block(taxonomy)}
 
 【記事情報】
 タイトル: {article.title}
@@ -82,7 +113,7 @@ def summarize_article(article: Article, stream: bool = False) -> ArticleSummary:
         last_result = result
 
     # 全試行でもカテゴリが定義外のままだった場合はフォールバック
-    fallback = config.summarizer.fallback_category
+    fallback = taxonomy.fallback
     logger.warning(
         "記事「%s」のカテゴリ「%s」が %d 回試行後も未定義のまま。「%s」にフォールバックします。",
         article.title,

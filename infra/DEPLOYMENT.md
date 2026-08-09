@@ -75,8 +75,9 @@ cd infra
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-`project_id`、`viewer_users`、`llm_base_url`、`llm_model`、`miniflux_base_url`、
-`summarizer_categories`（デフォルトで日本語16分類が入っている）などを実際の値に。
+`project_id`、`viewer_users`、`llm_base_url`、`llm_model`、`miniflux_base_url`
+などを実際の値に。カテゴリ一覧はTerraformの管理対象ではなく、リポジトリ直下の
+`categories.yaml`（コンテナイメージに同梱）が唯一の正になっている。
 `summarizer_image` / `viewer_image` は後述のビルド後に設定するので、初回は
 ダミータグ（例: `:PLACEHOLDER`）で構わない。
 
@@ -231,6 +232,11 @@ Outputのレスポンス形式を守らずMarkdown形式のテキストを返す
 LLM呼び出しが最大4倍消費される、コスト面で最も深刻な不具合だった。
 `SUMMARIZER_CATEGORIES`（カンマ区切り文字列）を追加し解消。
 
+その後、カテゴリ定義を `categories.yaml`（イメージ同梱）に一本化した際に
+`SUMMARIZER_CATEGORIES` は廃止した。同種の再発を防ぐため、カテゴリが空の場合は
+設定読み込み時点で `ValidationError` として起動を止めるようにしてある
+（`config.py` の `CategoryTaxonomy`）。
+
 この不具合が直る前に、Cloud Schedulerの初回自動実行（8:00 JST起動想定、
 実際は`schedule = "0 7 * * *"`なので7:00 JST）が走ってしまい、未読記事80件が
 すべて「未分類」でFirestore・Discordに登録され、Minifluxも既読化された。
@@ -322,9 +328,20 @@ digest_reasoning_effort     = "medium"
 
 ### カテゴリ一覧を変更する
 
-`infra/variables.tf` の `summarizer_categories`（デフォルト値）を編集するか、
-`terraform.tfvars` で上書きして `terraform apply`。ローカル動作確認用に
-`config.yaml` の `summarizer.categories` も同じ内容に合わせておくとよい。
+リポジトリ直下の `categories.yaml` を編集し、**イメージを再ビルドしてデプロイ**する
+（`terraform apply` は不要）。このファイルはローカル実行・Cloud Run実行の双方が
+読む唯一の定義元で、カテゴリ名だけでなく各カテゴリの定義文・判定の原則・
+タイブレーク規則・フォールバック値も含む。内容がそのまま要約プロンプトに
+注入されるため、変更はイメージのビルドを伴う（＝イメージと分類挙動が1対1で対応する）。
+
+分類精度を調整したいだけなら、カテゴリ名を変えずに `description` や
+`tiebreak_rules` の文言だけを直せばよい。コード変更は不要。
+
+> **初回移行時の順序に注意**: `SUMMARIZER_CATEGORIES` 環境変数を削除する
+> `terraform apply` は、`categories.yaml` を含むイメージがデプロイされた後に行うこと。
+> 先に apply すると、旧イメージがカテゴリ一覧を空のまま起動し、全記事が
+> カテゴリ検証に失敗して `category_max_retries` 回ぶんの LLM 呼び出しを空振りさせた上、
+> すべて 未分類 になる。「イメージをpush → `summarizer_image` を更新して apply」の順で行う。
 
 ### Minifluxのエンドポイントを変更する
 

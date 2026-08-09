@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - LLM ステップ別パラメータ（temperature / reasoning_effort）の環境変数対応
 - コーディングエージェント向けガイド `AGENTS.md`
 - `article_summaries(source_type, source_id)` の複合インデックス
+- カテゴリ定義ファイル `categories.yaml` を追加。カテゴリ名に加えて各カテゴリの
+  定義文・判定の原則・タイブレーク規則・フォールバック値を構造化して保持し、
+  そのまま要約プロンプトに注入する。分類精度の調整はこのファイルの文言変更のみで
+  完結し、コード変更を伴わない。読み込みパスは `CATEGORIES_PATH` で差し替え可能
+- カテゴリが空、または名前が重複している場合の起動時バリデーション
 
 ### Changed
 
@@ -32,9 +37,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Discord のダイジェスト本文を 4096 文字で切り詰め、投稿全体の失敗を回避
 - 設定ファイルが見つからない場合に警告ログを出力（環境変数のみでの起動が
   意図しない設定ミスと区別できなかったため）
+- カテゴリを16分類から8分類に再編（政治・社会 / 事件・事故・災害 / 経済・ビジネス /
+  テクノロジー / AI・機械学習 / 科学・環境 / 健康・ライフ / カルチャー）。境界の曖昧さによる
+  分類のブレを抑えるのが目的
+- ダイジェストのカテゴリ表示順を、記事の出現順から `categories.yaml` の定義順に固定
+  （未定義カテゴリは末尾）
+- カテゴリ定義を `categories.yaml` に一本化し、ローカルの `config.yaml` と Cloud Run の
+  環境変数に分かれていた二重管理を解消。`categories.yaml` は git 管理下にあり Docker
+  イメージに同梱されるため、ローカルと Cloud Run が同じ定義を読む
+- カテゴリ変更の反映手順が `terraform apply` からイメージ再ビルド＋デプロイに変わった
+
+### Removed
+
+- `summarizer.categories` / `summarizer.fallback_category` 設定キー（`categories.yaml` へ移設）
+- 環境変数 `SUMMARIZER_CATEGORIES` と Terraform 変数 `summarizer_categories`
 
 ### Fixed
 
+- ダイジェストの文字数配分がカテゴリ数の均等割りだったため、記事が集中した
+  カテゴリで1件あたり数文字まで潰れ、収まらない記事が黙って欠落していた問題。
+  記事数に比例配分し、記事の少ないカテゴリには下限120字を確保する
+- `digest_max_length` のコード既定値が 1500 で、環境変数マッピングもないため
+  Cloud Run だけがローカル（3000）より短いダイジェストになっていた問題。
+  既定値を 3000 に揃えた
+- Discord の embed description 上限(4096字)を超えると投稿全体が失敗する
+  可能性があった問題。超過分を切り詰めて投稿を通し、footer に注記する
+- 文字数超過による切り詰めを Discord の footer が「※一部の生成に失敗」と
+  表示していた問題。生成が全件成功していても失敗表示になるため、注記を分離する
+- `categories.yaml` をプロセスの CWD 相対で解決していたため、リポジトリ外から
+  実行すると import 時点で `FileNotFoundError` になっていた問題
+- `AppConfig.taxonomy` が未設定のままだと digest 生成が `AttributeError` で
+  実行ごと停止しうる問題
+- YAML の折りたたみスカラー由来の改行が要約プロンプトのカテゴリ定義に
+  そのまま入り、各行の間に空行が生じていた問題
 - `--dry-run` が Firestore の実行ロックを取得・書き込みしていた問題
 - ロックドキュメントに `expires_at` が欠けている場合に `KeyError` で
   以降の全実行が停止する問題
@@ -49,6 +84,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   YAML が存在する場合は YAML を唯一の正とし、環境変数による構成は YAML 不在時
   （＝Cloud Run）のみに限定する。`GOOGLE_CLOUD_PROJECT` など gcloud/ADC 系ツールが
   設定する変数が、明示した設定を黙って上書きしていた
+
+### Notes
+
+- カテゴリ定義ブロックの注入により、記事1件あたりの入力トークンが約600〜800増える。
+  `max_articles_per_run: 100` で1実行あたり最大 +60〜80k トークン
 
 ## [1.0.0] - 2026-05-01
 

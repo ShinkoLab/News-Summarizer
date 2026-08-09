@@ -9,7 +9,16 @@ from pathlib import Path
 
 import pytest
 
-from config import AppConfig, LLMConfig, SummarizerConfig, DatabaseConfig, DiscordConfig, LoggingConfig
+from config import (
+    AppConfig,
+    CategoryDef,
+    CategoryTaxonomy,
+    DatabaseConfig,
+    DiscordConfig,
+    LLMConfig,
+    LoggingConfig,
+    SummarizerConfig,
+)
 from models import Article, ArticleSummary
 
 
@@ -23,15 +32,26 @@ def minimal_llm_config() -> LLMConfig:
 
 
 @pytest.fixture
-def minimal_app_config(minimal_llm_config) -> AppConfig:
+def minimal_taxonomy() -> CategoryTaxonomy:
+    return CategoryTaxonomy(
+        categories=[
+            CategoryDef(name="テクノロジー", description="IT・ガジェット関連。"),
+            CategoryDef(name="経済・ビジネス", description="景気・企業動向・市況。"),
+            CategoryDef(name="未分類", description="上記いずれにも該当しない場合。"),
+        ],
+        fallback="未分類",
+    )
+
+
+@pytest.fixture
+def minimal_app_config(minimal_llm_config, minimal_taxonomy) -> AppConfig:
     return AppConfig(
         llm=minimal_llm_config,
-        summarizer=SummarizerConfig(
-            categories=["テクノロジー", "ビジネス", "その他"]
-        ),
+        summarizer=SummarizerConfig(),
         database=DatabaseConfig(path=":memory:"),
         discord=DiscordConfig(webhook_url=None),
         logging=LoggingConfig(level="INFO"),
+        taxonomy=minimal_taxonomy,
     )
 
 

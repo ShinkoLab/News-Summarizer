@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+_REPO_ROOT = Path(__file__).resolve().parent
 
 
 # ---------------------------------------------------------------------------
@@ -47,9 +49,7 @@ class SummarizerConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
     individual_max_length: int = 200
-    digest_max_length: int = 1500
-    categories: list[str] = Field(default_factory=list)
-    fallback_category: str = "未分類"
+    digest_max_length: int = 3000
     category_max_retries: int = 3
     max_articles_per_run: int = Field(default=100, ge=1, le=200)
     steps: dict[str, SummarizerStepConfig] = Field(default_factory=dict)
@@ -61,6 +61,38 @@ class SummarizerConfig(BaseModel):
         if isinstance(v, dict):
             return {k: (val if val is not None else {}) for k, val in v.items()}
         return v
+
+
+class CategoryDef(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: str
+    description: str
+
+
+class CategoryTaxonomy(BaseModel):
+    """カテゴリ分類の定義。`categories.yaml` から読み込む。"""
+
+    model_config = {"extra": "forbid"}
+
+    categories: list[CategoryDef]
+    principles: list[str] = Field(default_factory=list)
+    tiebreak_rules: list[str] = Field(default_factory=list)
+    fallback: str = "未分類"
+
+    @model_validator(mode="after")
+    def _validate_categories(self) -> "CategoryTaxonomy":
+        if not self.categories:
+            raise ValueError("categories must not be empty")
+        names = [c.name for c in self.categories]
+        duplicates = {name for name in names if names.count(name) > 1}
+        if duplicates:
+            raise ValueError(f"category names must be unique; duplicated: {sorted(duplicates)}")
+        return self
+
+    @property
+    def names(self) -> list[str]:
+        return [c.name for c in self.categories]
 
 
 class DatabaseConfig(BaseModel):
@@ -120,11 +152,38 @@ class AppConfig(BaseModel):
     email: EmailConfig | None = None
     discord: DiscordConfig = Field(default_factory=DiscordConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    # config.yaml には含まれず categories.yaml から読み込む。summarizer / digest は
+    # 無条件に参照するため、コード内で AppConfig を組み立てた場合（テストや将来の
+    # 呼び出し元）に None が残ると digest 生成が AttributeError で実行ごと落ちる。
+    # 既定値として実ファイルを読ませ、None になりうる経路をなくしておく。
+    taxonomy: CategoryTaxonomy = Field(default_factory=lambda: load_taxonomy())
 
 
 # ---------------------------------------------------------------------------
 # Loader
 # ---------------------------------------------------------------------------
+
+def load_taxonomy(path: str | None = None) -> CategoryTaxonomy:
+    """カテゴリ定義を `categories.yaml` から読み込む。
+
+    パスは `CATEGORIES_PATH` 環境変数（既定 `categories.yaml`）で差し替え可能。
+    ローカル実行・Cloud Run 実行のいずれでも同じファイルを読ませ、
+    カテゴリ一覧の二重管理を避けるためのもの。
+    """
+    # categories.yaml はリポジトリ（＝イメージ）に同梱される固定の資産なので、
+    # プロセスの CWD ではなくこのファイルからの相対で解決する。CWD 相対だと
+    # WorkingDirectory を設定しない cron/systemd や、リポジトリ外からの
+    # `--config /abs/path.yaml` 実行が import 時に落ちる。
+    taxonomy_path = path or os.getenv("CATEGORIES_PATH") or str(_REPO_ROOT / "categories.yaml")
+    file = Path(taxonomy_path)
+    if not file.exists():
+        raise FileNotFoundError(f"Categories file '{taxonomy_path}' not found.")
+
+    with open(file, "r", encoding="utf-8") as f:
+        raw: dict = yaml.safe_load(f) or {}
+
+    return CategoryTaxonomy.model_validate(raw)
+
 
 def load_config(config_path: str = "config.yaml") -> AppConfig:
     """Load and validate configuration from a YAML file.
@@ -143,7 +202,9 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     with open(path, "r", encoding="utf-8") as f:
         raw: dict = yaml.safe_load(f) or {}
 
-    return AppConfig.model_validate(raw)
+    app_config = AppConfig.model_validate(raw)
+    app_config.taxonomy = load_taxonomy()
+    return app_config
 
 
 def _env_bool(name: str) -> bool | None:
@@ -202,8 +263,6 @@ def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
 
     if max_articles := os.getenv("MAX_ARTICLES_PER_RUN"):
         section("summarizer")["max_articles_per_run"] = int(max_articles)
-    if categories := os.getenv("SUMMARIZER_CATEGORIES"):
-        section("summarizer")["categories"] = [c.strip() for c in categories.split(",") if c.strip()]
 
     steps = section("summarizer").setdefault("steps", {})
 
@@ -297,7 +356,9 @@ def load_runtime_config(config_path: str | None = None) -> AppConfig:
             "model": os.getenv("LLM_MODEL", "gemini-3.1-flash-lite"),
         }
     }
-    return AppConfig.model_validate(_apply_environment_overrides(raw))
+    app_config = AppConfig.model_validate(_apply_environment_overrides(raw))
+    app_config.taxonomy = load_taxonomy()
+    return app_config
 
 
 # ---------------------------------------------------------------------------

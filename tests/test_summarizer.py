@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import config as config_module
-from config import AppConfig, LLMConfig, SummarizerConfig, DatabaseConfig, DiscordConfig
+from config import AppConfig, CategoryDef, CategoryTaxonomy, LLMConfig, SummarizerConfig, DatabaseConfig, DiscordConfig
 from models import Article, ArticleSummary
 from datetime import datetime
 
@@ -18,19 +18,22 @@ from datetime import datetime
 
 def _make_cfg(
     categories: list[str] | None = None,
-    fallback_category: str = "未分類",
+    fallback: str = "未分類",
     max_retries: int = 2,
     category_max_retries: int = 2,
 ) -> AppConfig:
+    names = categories or ["テクノロジー", "経済・ビジネス", "未分類"]
     return AppConfig(
         llm=LLMConfig(model="test-model", max_retries=max_retries),
         summarizer=SummarizerConfig(
-            categories=categories or ["テクノロジー", "ビジネス", "その他"],
-            fallback_category=fallback_category,
             category_max_retries=category_max_retries,
         ),
         database=DatabaseConfig(path=":memory:"),
         discord=DiscordConfig(webhook_url=None),
+        taxonomy=CategoryTaxonomy(
+            categories=[CategoryDef(name=n, description=f"{n}に関する記事。") for n in names],
+            fallback=fallback,
+        ),
     )
 
 
@@ -85,6 +88,36 @@ class TestSummarizeArticleCategoryRetry:
         assert result.category == "テクノロジー"
         assert mock_call.call_count == 1
 
+    def test_initial_prompt_includes_category_definitions(self):
+        """初回プロンプトにカテゴリ定義・判定の原則・タイブレーク規則が含まれること。"""
+        cfg = _make_cfg()
+        cfg.taxonomy.principles = ["記事の主眼で判断する。"]
+        cfg.taxonomy.tiebreak_rules = ["決算が主眼なら 経済・ビジネス。"]
+        article = _make_article()
+
+        with patch.object(config_module, "config", cfg):
+            import importlib
+            import summarizer.summarizer as summod
+            importlib.reload(summod)
+
+            with patch("summarizer.summarizer.call_with_retry") as mock_call, \
+                 patch("summarizer.summarizer.get_client"), \
+                 patch("summarizer.summarizer.get_model_name", return_value="test-model"), \
+                 patch("summarizer.summarizer.build_step_params", return_value=({}, None)):
+
+                mock_call.return_value = _make_summary("テクノロジー")
+                summod.summarize_article(article)
+
+        prompt = mock_call.call_args_list[0][0][1]["messages"][1]["content"]
+
+        assert "【カテゴリ定義】" in prompt
+        # 名前だけでなく定義文も注入されていること
+        assert "- テクノロジー: テクノロジーに関する記事。" in prompt
+        assert "【判定の原則】" in prompt
+        assert "記事の主眼で判断する。" in prompt
+        assert "【タイブレーク規則】" in prompt
+        assert "1. 決算が主眼なら 経済・ビジネス。" in prompt
+
     def test_invalid_category_triggers_retry(self):
         """無効なカテゴリが返された場合は再試行する。"""
         cfg = _make_cfg(max_retries=2)
@@ -103,11 +136,11 @@ class TestSummarizeArticleCategoryRetry:
                 # 1回目: 無効、2回目: 有効
                 mock_call.side_effect = [
                     _make_summary("存在しないカテゴリ"),
-                    _make_summary("ビジネス"),
+                    _make_summary("経済・ビジネス"),
                 ]
                 result = summod.summarize_article(article)
 
-        assert result.category == "ビジネス"
+        assert result.category == "経済・ビジネス"
         assert mock_call.call_count == 2
 
     def test_retry_prompt_includes_invalid_category_feedback(self):
@@ -127,7 +160,7 @@ class TestSummarizeArticleCategoryRetry:
 
                 mock_call.side_effect = [
                     _make_summary("未知のカテゴリ"),
-                    _make_summary("その他"),
+                    _make_summary("経済・ビジネス"),
                 ]
                 summod.summarize_article(article)
 
@@ -148,8 +181,8 @@ class TestSummarizeArticleCategoryRetry:
         assert "テクノロジー" in correction_message
 
     def test_fallback_applied_after_all_retries_exhausted(self):
-        """全試行が失敗した場合に fallback_category が適用される。"""
-        cfg = _make_cfg(fallback_category="未分類", max_retries=2)
+        """全試行が失敗した場合に fallback が適用される。"""
+        cfg = _make_cfg(fallback="未分類", max_retries=2)
         article = _make_article()
 
         with patch.object(config_module, "config", cfg):
@@ -170,8 +203,8 @@ class TestSummarizeArticleCategoryRetry:
         assert mock_call.call_count == 3  # 初回 + 2回再試行
 
     def test_fallback_uses_config_value(self):
-        """fallback_category に設定した値が使われること。"""
-        cfg = _make_cfg(fallback_category="その他", category_max_retries=1)
+        """fallback に設定した値が使われること。"""
+        cfg = _make_cfg(fallback="その他", category_max_retries=1)
         article = _make_article()
 
         with patch.object(config_module, "config", cfg):

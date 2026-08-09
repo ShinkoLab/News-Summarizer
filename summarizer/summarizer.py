@@ -31,8 +31,8 @@ def summarize_article(article: Article, stream: bool = False) -> ArticleSummary:
     """
     記事の内容を読み、要約・キーワード・カテゴリを抽出する。
     LLM による Structured Output を使用して ArticleSummary を生成する。
-    カテゴリが設定ファイルの一覧にない場合は max_retries 回まで再試行し、
-    それでも失敗した場合は fallback_category にフォールバックする。
+    カテゴリが categories.yaml の定義にない場合は category_max_retries 回まで
+    再試行し、それでも失敗した場合は同ファイルの fallback にフォールバックする。
     """
     client = get_client()
     model = get_model_name()

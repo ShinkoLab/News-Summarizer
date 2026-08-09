@@ -44,8 +44,8 @@ def _make_digest(overview: str = "今日のニュース概要") -> DigestResult:
                 article_count=2,
             ),
             CategoryDigest(
-                category="ビジネス",
-                articles=["ビジネス記事1"],
+                category="経済・ビジネス",
+                articles=["経済・ビジネス記事1"],
                 article_count=1,
             ),
         ],
@@ -95,7 +95,7 @@ class TestCreateDigestEmbed:
         digest = _make_digest()
         embed = self.output._create_digest_embed(digest)
         assert "テクノロジー" in embed["description"]
-        assert "ビジネス" in embed["description"]
+        assert "経済・ビジネス" in embed["description"]
 
     def test_color_matches_config(self):
         digest = _make_digest()
@@ -166,7 +166,7 @@ class TestCreateSummaryEmbed:
 
     def test_title_matches_summary_title(self):
         summary = ArticleSummary(
-            title="テスト記事", summary="要約文", keywords=["a"], category="科学"
+            title="テスト記事", summary="要約文", keywords=["a"], category="科学・環境"
         )
         embed = self.output._create_summary_embed(summary)
         assert embed["title"] == "テスト記事"
@@ -180,7 +180,7 @@ class TestCreateSummaryEmbed:
 
     def test_fields_include_category(self):
         summary = ArticleSummary(
-            title="t", summary="s", keywords=["k"], category="セキュリティ"
+            title="t", summary="s", keywords=["k"], category="テクノロジー"
         )
         embed = self.output._create_summary_embed(summary)
         field_names = [f["name"] for f in embed["fields"]]
@@ -188,7 +188,7 @@ class TestCreateSummaryEmbed:
 
     def test_fields_include_keywords(self):
         summary = ArticleSummary(
-            title="t", summary="s", keywords=["key1", "key2"], category="その他"
+            title="t", summary="s", keywords=["key1", "key2"], category="未分類"
         )
         embed = self.output._create_summary_embed(summary)
         fields = {f["name"]: f["value"] for f in embed["fields"]}

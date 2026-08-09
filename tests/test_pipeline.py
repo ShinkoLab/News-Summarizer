@@ -60,7 +60,7 @@ def _make_grouping(n: int = 1) -> GroupingResult:
 def minimal_config() -> AppConfig:
     return AppConfig(
         llm=LLMConfig(model="test-model"),
-        summarizer=SummarizerConfig(categories=["テクノロジー"]),
+        summarizer=SummarizerConfig(),
         discord=DiscordConfig(webhook_url=None),
     )
 

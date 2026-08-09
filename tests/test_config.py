@@ -9,7 +9,14 @@ import pytest
 from pydantic import ValidationError
 
 import config as config_module
-from config import AppConfig, LLMConfig, load_config, load_runtime_config, reload_config
+from config import (
+    AppConfig,
+    LLMConfig,
+    load_config,
+    load_runtime_config,
+    load_taxonomy,
+    reload_config,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -28,9 +35,11 @@ class TestLoadConfigFromExample:
         cfg = load_config("config.yaml.example")
         assert cfg.llm.model  # non-empty string
 
-    def test_example_summarizer_categories_populated(self):
+    def test_example_taxonomy_populated(self):
+        """カテゴリ定義は config.yaml ではなく categories.yaml から読み込まれる。"""
         cfg = load_config("config.yaml.example")
-        assert len(cfg.summarizer.categories) > 0
+        assert cfg.taxonomy is not None
+        assert len(cfg.taxonomy.names) > 0
 
     def test_example_miniflux_present(self):
         cfg = load_config("config.yaml.example")
@@ -40,6 +49,77 @@ class TestLoadConfigFromExample:
     def test_example_discord_present(self):
         cfg = load_config("config.yaml.example")
         assert cfg.discord is not None
+
+
+# ---------------------------------------------------------------------------
+# categories.yaml (CategoryTaxonomy)
+# ---------------------------------------------------------------------------
+
+class TestCategoryTaxonomy:
+    """カテゴリ定義は categories.yaml の1箇所のみを正とする。"""
+
+    def test_loads_repository_categories_yaml(self):
+        taxonomy = load_taxonomy()
+        assert taxonomy.names == [
+            "政治・社会",
+            "経済・ビジネス",
+            "テクノロジー",
+            "AI・機械学習",
+            "科学・環境",
+            "健康・ライフ",
+            "カルチャー",
+        ]
+
+    def test_fallback_is_outside_the_category_list(self):
+        """フォールバックは分類失敗のシグナルなので、意図的に categories 外の値。"""
+        taxonomy = load_taxonomy()
+        assert taxonomy.fallback == "未分類"
+        assert taxonomy.fallback not in taxonomy.names
+
+    def test_principles_and_tiebreak_rules_present(self):
+        taxonomy = load_taxonomy()
+        assert taxonomy.principles
+        assert taxonomy.tiebreak_rules
+        assert all(c.description for c in taxonomy.categories)
+
+    def test_missing_file_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            load_taxonomy(str(tmp_path / "absent.yaml"))
+
+    def test_path_override(self, tmp_path):
+        path = tmp_path / "custom.yaml"
+        path.write_text(
+            textwrap.dedent("""\
+                categories:
+                  - name: 独自カテゴリ
+                    description: テスト用。
+                fallback: 未分類
+            """),
+            encoding="utf-8",
+        )
+        assert load_taxonomy(str(path)).names == ["独自カテゴリ"]
+
+    def test_empty_categories_raises(self, tmp_path):
+        """空リストのまま起動すると全記事が無駄なリトライを消費するため弾く。"""
+        path = tmp_path / "empty.yaml"
+        path.write_text("categories: []\n", encoding="utf-8")
+        with pytest.raises(ValidationError, match="must not be empty"):
+            load_taxonomy(str(path))
+
+    def test_duplicate_names_raise(self, tmp_path):
+        path = tmp_path / "dup.yaml"
+        path.write_text(
+            textwrap.dedent("""\
+                categories:
+                  - name: テクノロジー
+                    description: 一つ目。
+                  - name: テクノロジー
+                    description: 二つ目。
+            """),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValidationError, match="unique"):
+            load_taxonomy(str(path))
 
 
 # ---------------------------------------------------------------------------

@@ -305,16 +305,7 @@ summarizer:
   digest_max_length: 1500
   # 1回の実行で処理する記事数の上限（デフォルト: 100）。超過分は次回に繰り越す
   # max_articles_per_run: 100
-  categories:
-    - "テクノロジー"
-    - "ビジネス"
-    - "科学"
-    - "セキュリティ"
-    - "AI・機械学習"
-    - "プログラミング"
-    - "その他"
-  # LLMが定義外カテゴリを返した場合のフォールバック（デフォルト: "未分類"）
-  # fallback_category: "その他"
+  # カテゴリ一覧・定義文・フォールバックは categories.yaml で管理する（後述）
   # カテゴリ検証失敗時の再試行回数（デフォルト: 3）
   # category_max_retries: 3
   steps:
@@ -333,6 +324,39 @@ logging:
   level: "INFO"  # DEBUG | INFO | WARNING | ERROR
 ```
 
+### カテゴリ定義 (`categories.yaml`)
+
+カテゴリ分類の定義はリポジトリ直下の `categories.yaml` に置く。`config.yaml`
+（gitignored）とは別ファイルで、機密情報を含まないため git 管理し、Docker
+イメージにも同梱される。ローカル実行・Cloud Run 実行の双方がこの同じファイルを
+読むため、カテゴリ一覧の二重管理が起きない。読み込むパスは `CATEGORIES_PATH`
+環境変数で差し替えできる（既定 `categories.yaml`）。
+
+```yaml
+categories:
+  - name: 政治・社会
+    description: >
+      政治・選挙・政策・外交・国際政治、行政・法律・司法、事件・事故・災害、
+      社会問題・教育・労働。「国際」「中東」などの地域は軸にせず、記事の内容で判断する。
+  # …計7カテゴリ
+
+principles:          # 判定の原則
+  - 見出しと第1段落が「何について書かれているか（記事の主眼）」で判断する。
+
+tiebreak_rules:      # 複数カテゴリに該当する場合の優先規則
+  - "企業の決算・株価・資金調達・M&A が主眼 → 業種を問わず 経済・ビジネス。"
+
+fallback: 未分類     # 定義外カテゴリが返され続けた場合の値（意図的に categories 外）
+```
+
+現在のカテゴリは **政治・社会 / 経済・ビジネス / テクノロジー / AI・機械学習 /
+科学・環境 / 健康・ライフ / カルチャー** の7分類。`description`・`principles`・
+`tiebreak_rules` はそのまま要約プロンプトに注入され、ダイジェストのカテゴリ
+表示順もこのファイルの定義順に従う。分類精度の調整はこのファイルの文言変更
+だけで完結し、コード変更は不要。
+
+`categories` が空、または名前が重複している場合は設定読み込み時点で
+`ValidationError` になる。
 
 ## データモデル
 
@@ -389,7 +413,7 @@ class ArticleSummary(BaseModel):
     title: str          # 要約タイトル（日本語）
     summary: str        # 要約本文（100〜200文字、日本語）
     keywords: list[str] # キーワード（3〜5個）
-    category: str       # カテゴリ（設定ファイルの categories から選択）
+    category: str       # カテゴリ（categories.yaml の定義から選択）
 ```
 
 #### ダイジェスト結果

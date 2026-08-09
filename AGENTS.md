@@ -167,6 +167,17 @@ Copy `config.yaml.example` → `config.yaml` and fill in:
 `config.yaml.example` is kept in sync with `config.py` and documents every key — treat it as the
 reference, not this file.
 
+**Category taxonomy** lives in `categories.yaml` at the repo root — a separate,
+git-tracked file (unlike the gitignored `config.yaml`) that is baked into the
+Docker image, so local runs and Cloud Run read the same definitions and the list
+is never duplicated across environments. It holds the category names, a
+`description` per category, `principles`, `tiebreak_rules`, and a `fallback`
+value; all of it is injected into the summarizer prompt, and the digest orders
+its categories by the order in this file. Tune classification accuracy by
+editing the wording here — no code change needed. Path is overridable via
+`CATEGORIES_PATH`. Current taxonomy: 政治・社会 / 経済・ビジネス / テクノロジー /
+AI・機械学習 / 科学・環境 / 健康・ライフ / カルチャー.
+
 ### Where config comes from
 
 There are exactly two modes, and they never mix:
@@ -189,7 +200,7 @@ env-var → config-key mapping is the Cloud Run Job definition in `infra/main.tf
 
 Notable optional keys (see `config.yaml.example` for full comments):
 - `database.backend` — `sqlite` (default) or `firestore`; `database.path` (SQLite file, default `data/news_summarizer.db`), `database.project_id` / `database.firestore_database` (Firestore)
-- `summarizer.categories` / `fallback_category` / `category_max_retries` — category list, fallback when the LLM returns an unlisted value, and retry count on validation failure (default: `3`)
+- `summarizer.category_max_retries` — retry count when the LLM returns a category outside the defined list (default: `3`)
 - `summarizer.individual_max_length` / `digest_max_length` — character limits for per-article summaries and the digest
 - `summarizer.max_articles_per_run` — cap on articles processed in one run (default: `100`); the remainder is carried over
 - `summarizer.steps.<step>.thinking` — per-step thinking toggle

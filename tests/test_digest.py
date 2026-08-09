@@ -64,6 +64,35 @@ def test_pass2_overview_failure_keeps_categories():
     assert [c.category for c in result.categories] == ["A"]
 
 
+def test_categories_follow_taxonomy_order():
+    """出力順は記事の出現順ではなく categories.yaml の定義順に従い、未定義は末尾。"""
+    # 定義順と逆順＋未定義カテゴリを混ぜて投入する
+    grouped = [
+        (_summary("未分類"), None, None),
+        (_summary("カルチャー"), None, None),
+        (_summary("政治・社会"), None, None),
+        (_summary("テクノロジー"), None, None),
+    ]
+
+    c1, c2, c3 = _patch_common()
+    with c1, c2, c3, \
+        patch(
+            "summarizer.digest._generate_category_digest",
+            side_effect=lambda category, **_kw: CategoryDigest(
+                category=category, articles=["x"], article_count=1
+            ),
+        ), \
+        patch("summarizer.digest._generate_overview", return_value="概要"):
+        result = generate_digest(grouped)
+
+    assert [c.category for c in result.categories] == [
+        "政治・社会",
+        "テクノロジー",
+        "カルチャー",
+        "未分類",
+    ]
+
+
 def test_all_categories_failing_yields_empty_digest():
     """全カテゴリ失敗 + overview 失敗でも例外を投げず、空のダイジェストを返す。"""
     grouped = [(_summary("A"), None, None)]

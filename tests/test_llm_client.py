@@ -179,15 +179,15 @@ class TestExtractJson:
         assert result.title == "テスト"
 
     def test_bare_json_object(self):
-        text = '{"title": "タイトル", "summary": "要約", "keywords": ["x"], "category": "ビジネス"}'
+        text = '{"title": "タイトル", "summary": "要約", "keywords": ["x"], "category": "経済・ビジネス"}'
         result = self.extract(text, ArticleSummary)
-        assert result.category == "ビジネス"
+        assert result.category == "経済・ビジネス"
 
     def test_think_block_stripped(self):
         text = textwrap.dedent("""\
             <think>Let me think about this carefully...</think>
             ```json
-            {"title": "考えた結果", "summary": "要約文", "keywords": ["k1"], "category": "科学"}
+            {"title": "考えた結果", "summary": "要約文", "keywords": ["k1"], "category": "科学・環境"}
             ```
         """)
         result = self.extract(text, ArticleSummary)
@@ -195,7 +195,7 @@ class TestExtractJson:
 
     def test_truncated_fence_no_closing_backticks(self):
         """Fallback: fenced block that never closes (LLM truncated)."""
-        text = '```json\n{"title": "途中", "summary": "要約", "keywords": ["a", "b", "c"], "category": "その他"}'
+        text = '```json\n{"title": "途中", "summary": "要約", "keywords": ["a", "b", "c"], "category": "未分類"}'
         result = self.extract(text, ArticleSummary)
         assert result.title == "途中"
 

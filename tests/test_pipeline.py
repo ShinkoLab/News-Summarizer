@@ -17,7 +17,12 @@ from models import (
     ArticleGroup,
     SaveResult,
 )
-from pipeline import RunOptions, run_pipeline, select_articles
+from pipeline import (
+    RunOptions,
+    run_pipeline,
+    select_articles,
+    unify_group_categories,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +36,9 @@ def _make_article(source_id: str = "1", source_type: str = "rss") -> Article:
         source_id=source_id,
         title="Test Article",
         content="Test content.",
-        url="https://example.com/1",
+        # URL は source_id ごとに変える。同一URLはパイプラインが重複として
+        # 落とすようになったため、固定にすると複数記事のテストが1件に潰れる。
+        url=f"https://example.com/{source_type}/{source_id}",
         published_at=now,
         fetched_at=now,
         feed_title="Test Feed",
@@ -74,6 +81,7 @@ def _make_db(saved_source_ids: list[str] | None = None) -> MagicMock:
     """
     db = MagicMock()
     db.is_article_processed.return_value = False
+    db.is_url_processed.return_value = False
     db.is_email_processed.return_value = False
     db.record_email_attempt.return_value = 1
 
@@ -278,7 +286,7 @@ class TestNonDryRun:
 
     def test_processed_articles_are_skipped(self, minimal_config):
         articles = [_make_article(source_id="1"), _make_article(source_id="2")]
-        db_mock = MagicMock()
+        db_mock = _make_db()
         db_mock.is_article_processed.side_effect = [True, False]
 
         db_mock, _ = _run_with_patches(
@@ -497,6 +505,138 @@ class TestProcessedArticlesAreMarkedRead:
         )
 
         rss_instance.mark_as_read.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 同一URLの重複排除
+# ---------------------------------------------------------------------------
+
+def _with_url(article: Article, url: str | None) -> Article:
+    article.url = url
+    return article
+
+
+class TestUrlDeduplication:
+    def test_same_url_from_two_feeds_is_processed_once(self, minimal_config):
+        """同じ記事が別フィードから別 entry ID で降ってくるケース。
+
+        entry ID ベースの `is_article_processed()` では素通りしてしまい、
+        実際に同一URLの記事が保存されていた。
+        """
+        url = "https://www.bbc.co.uk/news/articles/cre40875r9vo"
+        articles = [
+            _with_url(_make_article(source_id="1"), url + "?at_medium=RSS&at_campaign=rss"),
+            _with_url(_make_article(source_id="2"), url),
+        ]
+        db_instance = _make_db()
+
+        db_instance, _ = _run_with_patches(
+            minimal_config, RunOptions(dry_run=False), articles, db_mock=db_instance
+        )
+
+        saved = db_instance.save_batch.call_args.args[0]
+        assert [article.source_id for article, *_ in saved] == ["1"]
+
+    def test_duplicate_url_entry_is_marked_read_in_miniflux(self, minimal_config):
+        """既読化しないと、重複エントリが毎回 Miniflux から降ってくる。"""
+        url = "https://example.com/same"
+        articles = [
+            _with_url(_make_article(source_id="1"), url),
+            _with_url(_make_article(source_id="2"), url),
+        ]
+
+        rss_instance = _run_with_db(
+            minimal_config, RunOptions(dry_run=False), articles, _make_db()
+        )
+
+        # 重複分は除外直後に、保存された分は保存後に既読化される。
+        assert rss_instance.mark_as_read.call_args_list == [call([2]), call([1])]
+
+    def test_url_already_in_the_database_is_skipped(self, minimal_config):
+        """バッチを跨いだ重複。grouper は1回の実行内でしか働かないのでここで落とす。"""
+        articles = [_make_article(source_id="1")]
+        db_instance = _make_db()
+        db_instance.is_url_processed.return_value = True
+
+        db_instance, _ = _run_with_patches(
+            minimal_config, RunOptions(dry_run=False), articles, db_mock=db_instance
+        )
+
+        db_instance.save_batch.assert_not_called()
+
+    def test_articles_without_a_url_are_never_deduplicated(self, minimal_config):
+        """メール記事は URL を持たない。全部が重複扱いされては困る。"""
+        articles = [
+            _with_url(_make_article(source_id="mail-1", source_type="email"), None),
+            _with_url(_make_article(source_id="mail-2", source_type="email"), None),
+        ]
+        db_instance = _make_db()
+
+        db_instance, _ = _run_with_patches(
+            minimal_config,
+            RunOptions(dry_run=False, sources=frozenset({"email"})),
+            articles,
+            db_mock=db_instance,
+        )
+
+        saved = db_instance.save_batch.call_args.args[0]
+        assert [article.source_id for article, *_ in saved] == ["mail-1", "mail-2"]
+
+
+# ---------------------------------------------------------------------------
+# クラスタ内のカテゴリ統一
+# ---------------------------------------------------------------------------
+
+class TestUnifyGroupCategories:
+    @staticmethod
+    def _pairs(categories: list[str], published: list[int] | None = None):
+        pairs = []
+        for i, category in enumerate(categories):
+            article = _make_article(source_id=str(i))
+            if published is not None:
+                article.published_at = datetime(2026, 1, 1 + published[i])
+            summary = _make_summary()
+            summary.category = category
+            pairs.append((article, summary))
+        return pairs
+
+    def test_majority_category_wins(self):
+        pairs = self._pairs(["政治・社会", "政治・社会", "事件・事故・災害"])
+        group_map = {0: (0, "topic"), 1: (0, "topic"), 2: (0, "topic")}
+
+        changed = unify_group_categories(pairs, group_map)
+
+        assert changed == 1
+        assert {s.category for _, s in pairs} == {"政治・社会"}
+
+    def test_tie_is_broken_by_the_oldest_article(self):
+        """同数のときは公開が最も古い記事に寄せる。実行ごとに揺れないようにするため。"""
+        pairs = self._pairs(["環境", "社会"], published=[5, 1])
+        group_map = {0: (0, "topic"), 1: (0, "topic")}
+
+        unify_group_categories(pairs, group_map)
+
+        assert [s.category for _, s in pairs] == ["社会", "社会"]
+
+    def test_separate_groups_are_untouched(self):
+        pairs = self._pairs(["環境", "社会"])
+        group_map = {0: (0, "a"), 1: (1, "b")}
+
+        assert unify_group_categories(pairs, group_map) == 0
+        assert [s.category for _, s in pairs] == ["環境", "社会"]
+
+    def test_ungrouped_articles_are_untouched(self):
+        """group_id が None なのはグルーピング失敗時。None 同士は無関係。"""
+        pairs = self._pairs(["環境", "社会"])
+
+        assert unify_group_categories(pairs, {}) == 0
+        assert [s.category for _, s in pairs] == ["環境", "社会"]
+
+    def test_already_consistent_group_reports_no_change(self):
+        pairs = self._pairs(["社会", "社会"])
+        group_map = {0: (0, "topic"), 1: (0, "topic")}
+
+        assert unify_group_categories(pairs, group_map) == 0
 
 
 # ---------------------------------------------------------------------------

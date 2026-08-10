@@ -505,6 +505,10 @@ gcloud run jobs execute news-summarizer --project=<PROJECT_ID> --region=asia-nor
 gcloud scheduler jobs describe news-summarizer-daily --project=<PROJECT_ID> --location=asia-northeast1
 ```
 
-Cloud Scheduler は `schedule = "0 7 * * *"`（Asia/Tokyo）で毎日7:00に自動実行される。
+Cloud Scheduler の既定は `schedule = "0 7 * * *"`（Asia/Tokyo）で1日1回。
+**本番環境は `terraform.tfvars` で `schedule = "0 7,19 * * *"` に上書きしており、
+毎日7:00と19:00の2回自動実行される。** 発火回数を変えたいときは Scheduler ジョブを
+増やすのではなく、この cron に時刻を足すのが基本（ジョブ名 `news-summarizer-daily`
+は改名すると destroy/create になるため据え置いている）。
 デプロイ直後にスケジュール時刻をまたぐと、修正前のイメージで自動実行されてしまう
 ことがあるため、設定変更後は次回のスケジュール実行前に手動実行で動作確認しておくと安全。

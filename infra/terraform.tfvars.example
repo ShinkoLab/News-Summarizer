@@ -22,6 +22,11 @@ llm_model    = "your-model-id"
 # summarizer_reasoning_effort = "low"
 # digest_reasoning_effort     = "medium"
 
+# 実行時刻（既定は "0 7 * * *" = 毎日7:00 JST の1日1回）。
+# 発火回数を増やすときは Scheduler ジョブを足さず、この cron に時刻を並べる。
+# schedule = "0 7,19 * * *"   # 1日2回: 7:00 と 19:00 JST
+# schedule_time_zone = "Asia/Tokyo"
+
 miniflux_base_url = "https://miniflux.example.com"
 # メールを使わない場合もダミー値を設定してください（フェッチ失敗はソース単位で握りつぶされます）
 email_host        = "pop.example.com"

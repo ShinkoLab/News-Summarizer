@@ -90,7 +90,7 @@ gcloud run jobs execute news-summarizer \
 
 - Viewerは最小0・最大1インスタンス
 - Jobは1タスク、失敗時の自動再試行なし
-- Schedulerは1日1回
+- Schedulerは既定で1日1回（`schedule`で変更可）
 - Artifact Registryは最新3世代を保持し、14日超を削除
 - `billing_account_id`設定時は月額2,000円を既定予算として50%、90%、100%で通知
 - Firestore PITRは初期状態では無効。SQLite原本は切替後もしばらく保管

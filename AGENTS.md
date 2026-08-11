@@ -126,25 +126,46 @@ Controlled by `summarizer.steps.grouper.use_embeddings` in config:
 - **`false` (default)**: LLM receives article list and clusters by topic directly
 - **`true`**: individual summaries are embedded (`llm.embedding_model` required), clustered by cosine similarity (`similarity_threshold`, default `0.85`), then LLM only assigns topic names — avoids context overflow for large article sets
 
+Grouping does not merge rows: every article keeps its own record, and the cluster survives as
+`group_id` / `group_topic`. Both consumers hierarchize as **category → group**, so
+`unify_group_categories()` (`pipeline.py`) runs right after grouping and settles each cluster on one
+category by majority vote (ties go to the oldest article, to stay deterministic). Without it the
+summarizer's per-article category calls split a cluster in two — the digest generates it twice and
+the Viewer renders it under two headings.
+
 ### Deduplication
 
 - **RSS**: Miniflux API state. Entries are marked as read in two places, never in the fetcher
-  itself: articles that `is_article_processed()` reveals are **already stored** are marked
-  immediately after the dedup filter (before any early return — the steady state is "everything
-  filtered out", so deferring this would leave them unread forever), and newly persisted articles
-  are marked from `persist_and_publish()` using `SaveResult.saved`. Both paths no-op in
-  `--dry-run` via `MinifluxFetcher.dry_run`
+  itself: everything `filter_new_articles()` drops (already stored **or** a duplicate URL) is
+  marked immediately after the dedup filter (before any early return — the steady state is
+  "everything filtered out", so deferring this would leave them unread forever), and newly
+  persisted articles are marked from `persist_and_publish()` using `SaveResult.saved`. Both
+  paths no-op in `--dry-run` via `MinifluxFetcher.dry_run`
 - **Email**: UIDL tracking stored in the `processed_emails` table; messages are never deleted from
   the server. Because a message that is fetched but not saved would be fully re-downloaded every
   run, `reconcile_email_attempts()` (`pipeline.py`) counts attempts in `email_attempts` /
   `emailAttempts` and gives up on a message once it reaches `email.max_fetch_attempts`
   (default `3`), marking it processed. Articles merely carried over by
   `max_articles_per_run` are never counted — they were not attempted
-- **Article-level**: `db.is_article_processed(source_type, source_id)` filters out anything already
-  stored, before summarization. Combined with `summarizer.max_articles_per_run`, the overflow is
-  simply carried over to the next run rather than dropped. The cap is applied by
-  `select_articles()`, which allocates the quota round-robin across source types so RSS cannot
-  starve email
+- **Article-level**: `filter_new_articles()` (`pipeline.py`) runs before summarization and applies
+  two checks. `db.is_article_processed(source_type, source_id)` drops anything already stored, and
+  `db.is_url_processed(url_key(article.url))` drops articles whose **normalized URL** has been
+  seen — the same story reaches Miniflux as separate entries when several subscribed feeds carry
+  it, so the entry-ID check alone let identical articles through. URLs seen earlier in the *same*
+  run are tracked in-memory, since they are not in the DB yet. Combined with
+  `summarizer.max_articles_per_run`, the overflow is simply carried over to the next run rather
+  than dropped. The cap is applied by `select_articles()`, which allocates the quota round-robin
+  across source types so RSS cannot starve email
+- **URL normalization** (`urls.py`): `normalize_url()` lowercases scheme/host, strips `www.`, the
+  fragment and the trailing slash, and removes **only known tracking parameters** (`utm_*`, `at_*`,
+  `fbclid`, …) — dropping the whole query string would collapse unrelated `?id=123` style URLs onto
+  one key. `url_key()` is its sha256, stored as `article_summaries.url_key` (SQLite, added by the
+  same `PRAGMA table_info` migration as `embedding`) and as the document id of the `articleUrls`
+  collection (Firestore). The `articleUrls` write is committed in the **same chunk** as its article,
+  so a failed article never leaves its URL marked as seen. Articles with no URL (email) are exempt
+- **Grouping vs. dedup**: the embedding grouper only clusters within a single run, so cross-batch
+  duplicates have to be stopped here. What survives dedup and *is* clustered stays as separate rows
+  sharing a `group_id`; the Viewer folds those into one card at display time
 
 ### Storage backends
 

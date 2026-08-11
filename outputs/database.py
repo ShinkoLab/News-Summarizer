@@ -6,6 +6,7 @@ from typing import Optional, TYPE_CHECKING
 
 from config import config
 from models import Article, ArticleSummary, SaveResult
+from urls import url_key
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -53,7 +54,9 @@ class Database:
             group_id INTEGER,
             group_topic TEXT,
             published_at TIMESTAMP,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            url_key TEXT,
+            feed_title TEXT
         );
 
         -- 処理済みメールIDの管理
@@ -78,12 +81,24 @@ class Database:
         CREATE INDEX IF NOT EXISTS idx_summaries_source
             ON article_summaries(source_type, source_id);
         """
+        # 後方互換の列追加。UNIQUE は張らない（url_key 導入前のデータに
+        # 同一URLの重複が既に存在するため、制約を付けると既存DBで失敗する）。
+        migrations = {
+            "embedding": "ALTER TABLE article_summaries ADD COLUMN embedding TEXT",
+            "url_key": "ALTER TABLE article_summaries ADD COLUMN url_key TEXT",
+            "feed_title": "ALTER TABLE article_summaries ADD COLUMN feed_title TEXT",
+        }
         with self.get_connection() as conn:
             conn.executescript(schema)
-            # embedding カラムのマイグレーション（既存DBへの後方互換追加）
             cols = {row[1] for row in conn.execute("PRAGMA table_info(article_summaries)")}
-            if "embedding" not in cols:
-                conn.execute("ALTER TABLE article_summaries ADD COLUMN embedding TEXT")
+            for column, statement in migrations.items():
+                if column not in cols:
+                    conn.execute(statement)
+            # is_url_processed() は取得記事1件ごとに呼ばれる。列追加より後に張る。
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_summaries_url_key "
+                "ON article_summaries(url_key)"
+            )
             conn.commit()
         logger.debug("データベースを初期化しました: %s", self.db_path)
 
@@ -138,8 +153,9 @@ class Database:
                 INSERT INTO article_summaries (
                     batch_id, source_type, source_id, original_title, original_url,
                     summary_title, summary_text, keywords, category,
-                    group_id, group_topic, published_at, embedding
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    group_id, group_topic, published_at, embedding,
+                    url_key, feed_title
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
                 (
                     batch_id,
@@ -155,6 +171,8 @@ class Database:
                     group_topic,
                     published_val,
                     embedding_val,
+                    url_key(article.url),
+                    article.feed_title,
                 )
             )
             conn.commit()
@@ -176,6 +194,20 @@ class Database:
             cursor.execute(
                 "SELECT 1 FROM article_summaries WHERE source_type = ? AND source_id = ? LIMIT 1",
                 (source_type, source_id),
+            )
+            return cursor.fetchone() is not None
+
+    def is_url_processed(self, key: str) -> bool:
+        """Return whether an article with this normalized-URL key is already stored.
+
+        同じ記事が複数フィードから別 entry として降ってくるため、
+        `is_article_processed()`（entry ID ベース）だけでは重複を止められない。
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM article_summaries WHERE url_key = ? LIMIT 1",
+                (key,),
             )
             return cursor.fetchone() is not None
 
@@ -243,8 +275,9 @@ class Database:
                     INSERT INTO article_summaries (
                         batch_id, source_type, source_id, original_title, original_url,
                         summary_title, summary_text, keywords, category,
-                        group_id, group_topic, published_at, embedding
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        group_id, group_topic, published_at, embedding,
+                        url_key, feed_title
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         batch_id,
@@ -260,6 +293,8 @@ class Database:
                         group_topic,
                         published_val,
                         json.dumps(embedding) if embedding is not None else None,
+                        url_key(article.url),
+                        article.feed_title,
                     ),
                 )
                 if article.source_type == "email":

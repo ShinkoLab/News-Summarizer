@@ -6,6 +6,7 @@ Internal steps are broken into small functions for clarity.
 
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Literal
@@ -17,6 +18,7 @@ import config as config_module
 from config import AppConfig
 from logger import get_logger
 from models import Article, ArticleSummary, DigestResult, SaveResult
+from urls import url_key
 
 from fetchers.rss_fetcher import MinifluxFetcher
 from fetchers.email_fetcher import EmailFetcher
@@ -126,6 +128,107 @@ def select_articles(articles: list[Article], limit: int) -> list[Article]:
             break
 
     return selected
+
+
+@dataclass(frozen=True)
+class DedupResult:
+    """`filter_new_articles()` の結果。"""
+
+    remaining: list[Article]
+    # 今回処理しないと確定したRSSエントリ。Minifluxで既読にしないと毎回降ってくる。
+    rss_ids_to_mark_read: list[int]
+    already_processed: int
+    duplicate_urls: int
+
+
+def filter_new_articles(articles: list[Article], db) -> DedupResult:
+    """未処理の記事だけを残す。
+
+    重複判定は2段階ある。
+
+    1. `(source_type, source_id)` — Miniflux の entry ID。同じ entry を
+       二度処理しないための既存の判定
+    2. 正規化URLのハッシュ — 同じ記事が複数フィードから**別々の entry ID**で
+       配信されるケース。1だけでは素通りしてしまい、実際に同一URLの記事が
+       同一バッチにも別バッチにも保存されていた
+
+    2はバッチを跨いで効く点が重要で、grouper のクラスタリングは1回の実行内でしか
+    働かないため、ここで落とさないと Viewer に同じ記事が並び続ける。
+    """
+    remaining: list[Article] = []
+    rss_ids_to_mark_read: list[int] = []
+    already_processed = 0
+    duplicate_urls = 0
+    # 同一実行内で取得した記事どうしの重複。DBにはまだ無いのでDB照会では拾えない。
+    seen_url_keys: set[str] = set()
+
+    for article in articles:
+        key = url_key(article.url)
+
+        if db.is_article_processed(article.source_type, article.source_id):
+            already_processed += 1
+        elif key and (key in seen_url_keys or db.is_url_processed(key)):
+            duplicate_urls += 1
+            logger.debug(
+                "同一URLの記事を除外します (source_id: %s, url: %s)",
+                article.source_id,
+                article.url,
+            )
+        else:
+            if key:
+                seen_url_keys.add(key)
+            remaining.append(article)
+            continue
+
+        if article.source_type == "rss":
+            rss_ids_to_mark_read.append(int(article.source_id))
+
+    return DedupResult(
+        remaining=remaining,
+        rss_ids_to_mark_read=rss_ids_to_mark_read,
+        already_processed=already_processed,
+        duplicate_urls=duplicate_urls,
+    )
+
+
+def unify_group_categories(
+    pairs: list[tuple[Article, ArticleSummary]], article_group_map: dict[int, tuple]
+) -> int:
+    """同一クラスタ内のカテゴリを多数決で揃え、変更した記事数を返す。
+
+    ダイジェスト（`summarizer/digest.py`）も Viewer も「カテゴリ → グループ」の順で
+    階層化するため、要約LLMが同じニュースに違うカテゴリを付けるとクラスタが割れる。
+    実データでも「北日本東日本の大雨警戒」が 社会 と 環境 に分断されていた。
+
+    同数のときは公開が最も古い記事のカテゴリを採る（実行ごとに結果が変わらないよう
+    決定的にするためで、どのカテゴリが正しいかという判断ではない）。
+    """
+    members: dict[int, list[int]] = defaultdict(list)
+    for idx in range(len(pairs)):
+        group_id = article_group_map.get(idx, (None, None))[0]
+        if group_id is not None:
+            members[group_id].append(idx)
+
+    changed = 0
+    for indices in members.values():
+        if len(indices) < 2:
+            continue
+
+        counts = Counter(pairs[i][1].category for i in indices)
+        top = max(counts.values())
+        candidates = {category for category, n in counts.items() if n == top}
+        if len(candidates) == 1:
+            winner = candidates.pop()
+        else:
+            oldest = min(indices, key=lambda i: (pairs[i][0].published_at, i))
+            winner = pairs[oldest][1].category
+
+        for i in indices:
+            if pairs[i][1].category != winner:
+                pairs[i][1].category = winner
+                changed += 1
+
+    return changed
 
 
 def summarize_all(
@@ -332,24 +435,19 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
             logger.info("新規記事はありませんでした。処理を終了します。")
             return
 
-        before_dedup = len(articles)
-        remaining: list[Article] = []
-        processed_rss_ids: list[int] = []
-        for article in articles:
-            if not db.is_article_processed(article.source_type, article.source_id):
-                remaining.append(article)
-            elif article.source_type == "rss":
-                processed_rss_ids.append(int(article.source_id))
-        articles = remaining
+        dedup = filter_new_articles(articles, db)
+        articles = dedup.remaining
 
-        # 保存済みと判明したRSS記事はMinifluxでも既読にする。ここで既読化しないと
-        # 「DB保存済みだがMiniflux上は未読」の記事が毎回取得され続ける。今回の実行の
-        # 成否とは無関係なので、早期returnより前に済ませておく。
-        if rss_fetcher is not None and processed_rss_ids:
-            rss_fetcher.mark_as_read(processed_rss_ids)
+        # 処理対象外と確定したRSS記事はMinifluxでも既読にする。ここで既読化しないと
+        # 「DB保存済み（または重複）だがMiniflux上は未読」の記事が毎回取得され続ける。
+        # 今回の実行の成否とは無関係なので、早期returnより前に済ませておく。
+        if rss_fetcher is not None and dedup.rss_ids_to_mark_read:
+            rss_fetcher.mark_as_read(dedup.rss_ids_to_mark_read)
 
-        if before_dedup != len(articles):
-            logger.info("処理済み記事を%d件除外しました。", before_dedup - len(articles))
+        if dedup.already_processed:
+            logger.info("処理済み記事を%d件除外しました。", dedup.already_processed)
+        if dedup.duplicate_urls:
+            logger.info("同一URLの重複記事を%d件除外しました。", dedup.duplicate_urls)
         if not articles:
             logger.info("未処理の記事はありませんでした。処理を終了します。")
             return
@@ -401,6 +499,12 @@ def _process(
         return SaveResult(batch_id=None, saved=[])
 
     article_group_map, embeddings = group_pairs(pairs, options)
+
+    # ダイジェストも Viewer も「カテゴリ → グループ」で階層化するため、
+    # クラスタ内のカテゴリを先に揃えておかないと同じニュースが2箇所に分かれる。
+    changed = unify_group_categories(pairs, article_group_map)
+    if changed:
+        logger.info("同一グループ内のカテゴリを%d件統一しました。", changed)
 
     try:
         summaries, digest = build_digest(pairs, article_group_map, options)

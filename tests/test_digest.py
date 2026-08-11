@@ -372,3 +372,50 @@ class TestNormalizeBullets:
 
     def test_keeps_inner_punctuation(self):
         assert _normalize_bullets(["A社とB社が提携・統合を発表"]) == ["A社とB社が提携・統合を発表"]
+
+
+def test_split_categories_break_a_cluster_apart():
+    """カテゴリが揃っていないクラスタは2つのグループに割れる。
+
+    ダイジェストは「カテゴリ → group_id」の順で階層化するため、同じ group_id でも
+    カテゴリが違えば別グループとして LLM に渡ってしまう。これが実データで
+    「北日本東日本の大雨警戒」が 社会 と 環境 に分断されていた理由で、
+    `pipeline.unify_group_categories()` が事前にカテゴリを揃える根拠でもある。
+    """
+    captured: dict[str, list] = {}
+
+    def capture(category, groups, **kwargs):
+        captured[category] = groups
+        return CategoryDigest(category=category, summary="本文", highlights=[], article_count=1)
+
+    grouped = [(_summary("環境"), 7, "大雨警戒"), (_summary("社会"), 7, "大雨警戒")]
+
+    c1, c2, c3 = _patch_common()
+    with c1, c2, c3, \
+        patch("summarizer.digest._generate_category_digest", side_effect=capture), \
+        patch("summarizer.digest._generate_overview", return_value="概要"):
+        generate_digest(grouped)
+
+    assert set(captured) == {"環境", "社会"}
+    assert [len(g_summaries) for _, g_summaries in captured["環境"]] == [1]
+    assert [len(g_summaries) for _, g_summaries in captured["社会"]] == [1]
+
+
+def test_unified_categories_keep_a_cluster_in_one_group():
+    """カテゴリを揃えておけば、クラスタは1グループとして LLM に渡る。"""
+    captured: dict[str, list] = {}
+
+    def capture(category, groups, **kwargs):
+        captured[category] = groups
+        return CategoryDigest(category=category, summary="本文", highlights=[], article_count=2)
+
+    grouped = [(_summary("社会"), 7, "大雨警戒"), (_summary("社会"), 7, "大雨警戒")]
+
+    c1, c2, c3 = _patch_common()
+    with c1, c2, c3, \
+        patch("summarizer.digest._generate_category_digest", side_effect=capture), \
+        patch("summarizer.digest._generate_overview", return_value="概要"):
+        generate_digest(grouped)
+
+    assert set(captured) == {"社会"}
+    assert captured["社会"] == [("大雨警戒", [g[0] for g in grouped])]

@@ -9,6 +9,7 @@ from google.cloud import firestore
 
 from logger import get_logger
 from models import Article, ArticleSummary, DigestResult, SaveResult
+from urls import normalize_url, url_key
 
 logger = get_logger(__name__)
 
@@ -68,6 +69,16 @@ class FirestoreDatabase:
         )
         return ref.get().exists
 
+    def is_url_processed(self, key: str) -> bool:
+        """Return whether an article with this normalized-URL key is already stored.
+
+        `articleUrls` はこの判定専用のコレクション。articleSummaries を
+        フィールドで検索するとインデックスが要るうえ課金対象の読み取りも増えるため、
+        `is_article_processed()` と同じくドキュメントID直読み（1ポイントリード）にする。
+        """
+        ref = self.client.collection("articleUrls").document(key)
+        return ref.get().exists
+
     def mark_email_processed(self, uidl: str) -> None:
         """UIDLを処理済みとしてマークし、以後のPOP3取得対象から外す。"""
         ref = self.client.collection("processedEmails").document(make_document_id(uidl))
@@ -106,6 +117,7 @@ class FirestoreDatabase:
         summary_ref = self.client.collection("articleSummaries").document(
             make_document_id(article.source_type, article.source_id)
         )
+        key = url_key(article.url)
         writes: list[tuple[str, object, dict | None]] = [
             (
                 "create",
@@ -126,9 +138,28 @@ class FirestoreDatabase:
                     "published_at": article.published_at,
                     "created_at": now,
                     "embedding": embedding,
+                    "url_key": key,
+                    "feed_title": article.feed_title,
                 },
             )
         ]
+        if key:
+            # 記事サマリと同じチャンクでコミットする。別コミットにすると、
+            # 記事の保存に失敗したURLだけが処理済みとして残り、その記事が
+            # 二度と取り込まれなくなる。
+            url_ref = self.client.collection("articleUrls").document(key)
+            writes.append(
+                (
+                    "set",
+                    url_ref,
+                    {
+                        "url": normalize_url(article.url),
+                        "source_type": article.source_type,
+                        "source_id": article.source_id,
+                        "created_at": now,
+                    },
+                )
+            )
         if article.source_type == "email":
             email_ref = self.client.collection("processedEmails").document(
                 make_document_id(article.source_id)

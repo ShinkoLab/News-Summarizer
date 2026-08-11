@@ -1,4 +1,8 @@
 locals {
+  # Viewer のカテゴリ表示順は categories.yaml を唯一の定義元とする。
+  # Viewer 側に順序を複製しないよう、ここで読み取って環境変数として渡す。
+  category_order = [for c in yamldecode(file("${path.module}/../categories.yaml")).categories : c.name]
+
   required_services = toset([
     "artifactregistry.googleapis.com",
     "billingbudgets.googleapis.com",
@@ -370,6 +374,12 @@ resource "google_cloud_run_v2_service" "viewer" {
       env {
         name  = "FIRESTORE_DATABASE"
         value = "(default)"
+      }
+      # カテゴリの既定の表示順。Viewer はこれを順位表として使い、
+      # 未設定時は名前順に縮退する（＝カテゴリ名を Viewer 側に持たせない）。
+      env {
+        name  = "CATEGORY_ORDER"
+        value = join(",", local.category_order)
       }
     }
   }

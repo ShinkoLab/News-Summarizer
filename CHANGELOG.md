@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Viewer のカテゴリ表示順の定義元を `categories.yaml` に一本化した。`infra/main.tf` が
+  同ファイルを `yamldecode` して `local.category_order` を作り、Viewer の Cloud Run
+  サービスへ `CATEGORY_ORDER`（カンマ区切り）として注入する。Viewer 側はこれを
+  順位表として使うだけでカテゴリ名を持たず、未設定時は名前順へ縮退する。
+  Viewer はこれまで `categories.yaml` を参照しておらず、表示順が
+  `localeCompare(ja)` の副産物（カタカナ始まりのカテゴリが先頭付近に来る）に
+  なっていて、定義順で生成されるダイジェスト本文と食い違っていた。
+  `categories.yaml` の並べ替えを Viewer に反映するには `terraform apply` が必要になるが、
+  分類定義の変更は元々サマライザのイメージ再ビルドを伴うため運用サイクルは変わらない
+
+> このリリースは `infra/` と docs のみの変更で、`.dockerignore` が `infra` を除外して
+> いるためサマライザのイメージ内容は変わらない。`summarizer_image` は据え置きでよい。
+
 ## [2.2.0] - 2026-08-11
 
 ### Added
@@ -241,7 +256,8 @@ Google Cloud（Cloud Run Job + Firestore）での実行に対応し、カテゴ�
 
 - プロジェクト初期セットアップ
 
-[Unreleased]: https://github.com/ShinkoLab/News-Summarizer/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/ShinkoLab/News-Summarizer/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/ShinkoLab/News-Summarizer/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/ShinkoLab/News-Summarizer/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/ShinkoLab/News-Summarizer/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/ShinkoLab/News-Summarizer/compare/v1.0.0...v2.0.0

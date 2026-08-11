@@ -18,9 +18,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   なっていて、定義順で生成されるダイジェスト本文と食い違っていた。
   `categories.yaml` の並べ替えを Viewer に反映するには `terraform apply` が必要になるが、
   分類定義の変更は元々サマライザのイメージ再ビルドを伴うため運用サイクルは変わらない
+- 処理が終わったメールをPOP3サーバから削除するオプション `email.delete_after_processing`
+  （既定 `false`、環境変数 `EMAIL_DELETE_AFTER_PROCESSING` / Terraform 変数
+  `email_delete_after_processing`）。削除するのは「DB保存に成功したメール」と
+  「`max_fetch_attempts` に達して打ち切ったメール」の2種類だけで、今回失敗しただけの
+  メールはサーバに残す（既存のリトライ機構をそのまま働かせるため）。
+  POP3のメッセージ番号はセッションごとに振り直されるため、`EmailFetcher.delete_messages()`
+  は保存後に別セッションを張って `UIDL` を取り直してから `DELE` する。`DELE` は
+  `QUIT` で初めて確定するので、途中で失敗した場合は `QUIT` せずソケットを閉じ、
+  1通も消さずに次回の実行へ委ねる。`--dry-run` では `--output db` を付けた場合でも
+  常にスキップする。既定のままなら従来どおりメールは削除されない
 
-> このリリースは `infra/` と docs のみの変更で、`.dockerignore` が `infra` を除外して
-> いるためサマライザのイメージ内容は変わらない。`summarizer_image` は据え置きでよい。
+### Fixed
+
+- `EmailFetcher.fetch()` が例外で抜けたときにPOP3セッションを `QUIT` せず
+  ソケットを放置していた問題。終了処理を `finally` に移した
+
+> このリリースにはサマライザのコード変更が含まれるため、イメージの再ビルドと
+> `summarizer_image` の更新が必要。
 
 ## [2.2.0] - 2026-08-11
 

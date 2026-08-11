@@ -22,7 +22,7 @@ def strip_tags(html: str) -> str:
     return text.strip()
 
 class EmailFetcher(BaseFetcher):
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, dry_run: bool = False):
         if config.email is None:
             raise ValueError("email の設定が config.yaml に見つかりません。")
         email_cfg = config.email
@@ -31,30 +31,45 @@ class EmailFetcher(BaseFetcher):
         self.username = email_cfg.username
         self.password = email_cfg.password
         self.use_ssl = email_cfg.use_ssl
+        self.delete_after_processing = email_cfg.delete_after_processing
         self.db = db
+        self.dry_run = dry_run
+
+    def _connect(self):
+        """POP3セッションを開いてログインする。"""
+        if self.use_ssl:
+            server = poplib.POP3_SSL(self.host, self.port)
+        else:
+            server = poplib.POP3(self.host, self.port)
+
+        server.user(self.username)
+        server.pass_(self.password)
+        return server
+
+    def _uidl_map(self, server) -> dict[str, int]:
+        """UIDL → メッセージ番号のマップを作る。
+
+        POP3のメッセージ番号はセッションごとに振り直されるため、削除する側は
+        必ずそのセッションで取り直したマップを使わなければならない。
+        """
+        response, listings, octets = server.uidl()
+        uidl_map: dict[str, int] = {}
+        for listing in listings:
+            try:
+                msg_num_str, uidl = listing.decode('utf-8').split(' ')
+            except ValueError:
+                continue
+            uidl_map[uidl] = int(msg_num_str)
+        return uidl_map
 
     def fetch(self) -> List[Article]:
         articles = []
+        server = None
         try:
-            if self.use_ssl:
-                server = poplib.POP3_SSL(self.host, self.port)
-            else:
-                server = poplib.POP3(self.host, self.port)
-            
-            server.user(self.username)
-            server.pass_(self.password)
+            server = self._connect()
 
             # メッセージのリストとUIDLを取得
-            response, listings, octets = server.uidl()
-            
-            for listing in listings:
-                try:
-                    msg_num_str, uidl = listing.decode('utf-8').split(' ')
-                except ValueError:
-                    continue
-                    
-                msg_num = int(msg_num_str)
-                
+            for uidl, msg_num in self._uidl_map(server).items():
                 # DBで処理済みかチェック
                 if self.db.is_email_processed(uidl):
                     continue
@@ -111,8 +126,61 @@ class EmailFetcher(BaseFetcher):
                     feed_title="Email Newsletter"
                 ))
 
-            server.quit()
         except Exception as e:
             logger.error("POP3メール取得中にエラーが発生しました: %s", e, exc_info=True)
+        finally:
+            # fetch()はDELEを一切発行しないので、例外で抜けた場合もQUITして構わない。
+            if server is not None:
+                try:
+                    server.quit()
+                except Exception as e:
+                    logger.warning("POP3セッションの終了に失敗しました: %s", e)
 
         return articles
+
+    def delete_messages(self, uidls: set[str]) -> int:
+        """処理が終わったメールをサーバから削除する。削除できた件数を返す。
+
+        POP3のDELEは削除マークを付けるだけで、確定するのはQUIT。異常終了すれば
+        サーバ側でロールバックされる（RFC 1939）ので、途中で失敗したときは
+        QUITせずソケットだけ閉じ、1通も消さずに次回の実行へ委ねる。
+        """
+        if not self.delete_after_processing or not uidls:
+            return 0
+
+        if self.dry_run:
+            logger.info("[Dry-Run] メールの削除をスキップしました（%d件）", len(uidls))
+            return 0
+
+        server = None
+        deleted = 0
+        try:
+            server = self._connect()
+            uidl_map = self._uidl_map(server)
+
+            for uidl in sorted(uidls):
+                msg_num = uidl_map.get(uidl)
+                if msg_num is None:
+                    # 既に他のクライアントが削除した等。消す対象が無いだけなので続行する。
+                    logger.warning(
+                        "削除対象のメールがサーバに見つかりませんでした (uidl: %s)", uidl
+                    )
+                    continue
+                server.dele(msg_num)
+                deleted += 1
+
+            # QUITで初めて削除が確定する。
+            server.quit()
+            server = None
+            logger.info("処理済みのメールを%d件サーバから削除しました。", deleted)
+        except Exception as e:
+            logger.error("メールの削除中にエラーが発生しました: %s", e, exc_info=True)
+            deleted = 0
+            if server is not None:
+                # QUITしない＝サーバ側の削除マークは破棄される。
+                try:
+                    server.close()
+                except Exception as close_error:
+                    logger.warning("POP3ソケットの切断に失敗しました: %s", close_error)
+
+        return deleted

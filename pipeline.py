@@ -68,16 +68,24 @@ class RunOptions:
 # Pipeline steps
 # ---------------------------------------------------------------------------
 
-def fetch_articles(
-    options: RunOptions, db
-) -> tuple[list[Article], MinifluxFetcher | None]:
-    """Fetch articles from enabled sources with per-source error isolation.
+@dataclass(frozen=True)
+class FetchResult:
+    """`fetch_articles()` の結果。
 
-    Returns the fetched articles and the MinifluxFetcher instance (or None when
-    RSS is disabled), so the caller can defer mark-as-read until after persistence.
+    フェッチャ本体も返すのは、既読化（RSS）とサーバからの削除（Email）を
+    保存が終わるまで遅らせるため。無効なソースのフェッチャはNone。
     """
+
+    articles: list[Article]
+    rss_fetcher: MinifluxFetcher | None
+    email_fetcher: EmailFetcher | None
+
+
+def fetch_articles(options: RunOptions, db) -> FetchResult:
+    """Fetch articles from enabled sources with per-source error isolation."""
     articles: list[Article] = []
     rss_fetcher: MinifluxFetcher | None = None
+    email_fetcher: EmailFetcher | None = None
 
     if options.run_rss:
         try:
@@ -90,12 +98,14 @@ def fetch_articles(
     if options.run_email:
         try:
             logger.info("Email（POP3）から記事を取得中...")
-            email_fetcher = EmailFetcher(db)
+            email_fetcher = EmailFetcher(db, dry_run=options.dry_run)
             articles.extend(email_fetcher.fetch())
         except Exception as e:
             logger.error("Emailの取得中にエラーが発生しました: %s", e, exc_info=True)
 
-    return articles, rss_fetcher
+    return FetchResult(
+        articles=articles, rss_fetcher=rss_fetcher, email_fetcher=email_fetcher
+    )
 
 
 def select_articles(articles: list[Article], limit: int) -> list[Article]:
@@ -337,14 +347,17 @@ def build_digest(
 def reconcile_email_attempts(
     db, attempted_uidls: set[str], saved_uidls: set[str], options: RunOptions,
     max_attempts: int,
-) -> None:
+) -> set[str]:
     """保存に至らなかったメールの試行回数を記録し、上限に達したら打ち切る。
 
-    POP3のメールはサーバから削除しないため、保存されないメールは毎回フルRETRされる。
-    恒久的に失敗するメール（poison message）が毎回ダウンロードされ続けるのを防ぐ。
+    削除しない設定では、保存されないメールは毎回フルRETRされる。恒久的に失敗する
+    メール（poison message）が毎回ダウンロードされ続けるのを防ぐ。
+
+    打ち切った（＝以後二度と取得しない）UIDLを返す。呼び出し側はこれを削除対象に含める。
     """
+    given_up: set[str] = set()
     if not options.run_db:
-        return
+        return given_up
 
     for uidl in sorted(attempted_uidls - saved_uidls):
         try:
@@ -361,12 +374,30 @@ def reconcile_email_attempts(
 
         if attempts >= max_attempts:
             db.mark_email_processed(uidl)
+            given_up.add(uidl)
             logger.warning(
                 "メールの取得試行が%d回に達したため、処理済みとして打ち切ります "
                 "(uidl: %s)",
                 attempts,
                 uidl,
             )
+
+    return given_up
+
+
+def delete_processed_emails(email_fetcher: EmailFetcher | None, uidls: set[str]) -> None:
+    """処理が終わったメールをサーバから削除する。
+
+    ここに来る時点でDB保存もDiscord投稿も済んでおり、削除は後片付けにすぎない。
+    POP3側の失敗で実行全体を落とさないよう、例外はログに留める。
+    """
+    if email_fetcher is None or not uidls:
+        return
+
+    try:
+        email_fetcher.delete_messages(uidls)
+    except Exception as e:
+        logger.error("メールの削除処理に失敗しました: %s", e, exc_info=True)
 
 
 def persist_and_publish(
@@ -430,7 +461,9 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
     lock = db.execution_lock() if options.run_db else nullcontext()
 
     with lock:
-        articles, rss_fetcher = fetch_articles(options, db)
+        fetched = fetch_articles(options, db)
+        articles = fetched.articles
+        rss_fetcher = fetched.rss_fetcher
         if not articles:
             logger.info("新規記事はありませんでした。処理を終了します。")
             return
@@ -477,12 +510,17 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
                 for source_type, source_id in save_result.saved
                 if source_type == "email"
             }
-            reconcile_email_attempts(
+            given_up_uidls = reconcile_email_attempts(
                 db,
                 attempted_email_uidls,
                 saved_uidls,
                 options,
                 config.email.max_fetch_attempts if config.email else 3,
+            )
+            # 保存できたメールと、試行上限で打ち切ったメール（＝二度と取得しない）だけを
+            # 削除する。失敗して次回に回すメールはサーバに残す。
+            delete_processed_emails(
+                fetched.email_fetcher, saved_uidls | given_up_uidls
             )
 
     logger.info("プロセス完了")

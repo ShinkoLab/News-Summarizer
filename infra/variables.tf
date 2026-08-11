@@ -134,6 +134,12 @@ variable "email_max_fetch_attempts" {
   default     = 3
 }
 
+variable "email_delete_after_processing" {
+  description = "DB保存に成功したメールと打ち切ったメールをPOP3サーバから削除するか"
+  type        = bool
+  default     = false
+}
+
 variable "billing_account_id" {
   description = "Optional billing account ID for a monthly budget alert"
   type        = string

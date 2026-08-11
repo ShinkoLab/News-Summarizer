@@ -304,6 +304,30 @@ class TestEnvironmentOverrides:
         assert cfg.email is not None
         assert cfg.email.max_fetch_attempts == 3
 
+    def test_email_delete_after_processing_from_environment(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("EMAIL_HOST", "pop.example.com")
+        monkeypatch.setenv("EMAIL_USERNAME", "user")
+        monkeypatch.setenv("EMAIL_PASSWORD", "pass")
+        monkeypatch.setenv("EMAIL_DELETE_AFTER_PROCESSING", "true")
+
+        cfg = load_runtime_config(str(tmp_path / "missing.yaml"))
+
+        assert cfg.email is not None
+        assert cfg.email.delete_after_processing is True
+
+    def test_email_delete_after_processing_defaults_to_false(self, tmp_path, monkeypatch):
+        """既定はメールを消さない。取り違えると復旧できない操作なので明示的に確認する。"""
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("EMAIL_HOST", "pop.example.com")
+        monkeypatch.setenv("EMAIL_USERNAME", "user")
+        monkeypatch.setenv("EMAIL_PASSWORD", "pass")
+
+        cfg = load_runtime_config(str(tmp_path / "missing.yaml"))
+
+        assert cfg.email is not None
+        assert cfg.email.delete_after_processing is False
+
 
 # ---------------------------------------------------------------------------
 # reload_config replaces the module-level singleton

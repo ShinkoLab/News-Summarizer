@@ -283,6 +283,10 @@ resource "google_cloud_run_v2_job" "summarizer" {
           value = tostring(var.email_max_fetch_attempts)
         }
         env {
+          name  = "EMAIL_DELETE_AFTER_PROCESSING"
+          value = tostring(var.email_delete_after_processing)
+        }
+        env {
           name  = "LOG_LEVEL"
           value = "INFO"
         }

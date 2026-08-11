@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-08-11
+
 ### Added
 
 - Viewer のカテゴリ表示順の定義元を `categories.yaml` に一本化した。`infra/main.tf` が

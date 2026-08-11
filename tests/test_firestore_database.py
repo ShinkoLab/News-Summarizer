@@ -12,6 +12,7 @@ from outputs.firestore_database import (
     estimate_document_size,
     make_document_id,
 )
+from urls import url_key
 
 
 def _article(source_type: str = "rss", source_id: str = "42") -> Article:
@@ -21,7 +22,7 @@ def _article(source_type: str = "rss", source_id: str = "42") -> Article:
         source_id=source_id,
         title="Original",
         content="Content",
-        url="https://example.com/42",
+        url=f"https://example.com/{source_type}/{source_id}",
         published_at=now,
         fetched_at=now,
         feed_title="Feed",
@@ -97,6 +98,14 @@ def _summaries(count: int, source_type: str = "rss"):
     ]
 
 
+# URL を持つ RSS 記事1件あたりの書き込み数: articleSummaries + articleUrls。
+# articleUrls は同一URLの重複検出用のインデックスで、記事サマリと同じチャンクに入る。
+_WRITES_PER_RSS_ARTICLE = 2
+
+# 1コミットに収まる記事数。
+_ARTICLES_PER_CHUNK = _MAX_BATCH_WRITES // _WRITES_PER_RSS_ARTICLE
+
+
 def test_estimate_document_size_is_dominated_by_the_embedding():
     small = estimate_document_size({"summary_text": "あ" * 100})
     with_embedding = estimate_document_size(
@@ -114,10 +123,39 @@ def test_save_batch_writes_article_and_email_documents():
 
     write_batch = fake.batches[0]
     write_batch.create.assert_called_once()   # articleSummaries
-    write_batch.set.assert_called_once()      # processedEmails
+    # articleUrls（重複URL判定用）と processedEmails
+    assert write_batch.set.call_count == 2
     write_batch.delete.assert_called_once()   # emailAttempts の後始末
     assert result.saved == [("email", "mail-1")]
     assert result.failed == 0
+
+
+def test_url_index_is_written_in_the_same_chunk_as_the_article():
+    """別コミットにすると、保存に失敗した記事のURLだけが処理済みとして残る。"""
+    database, fake = _build()
+
+    database.save_batch(_summaries(1), _digest())
+
+    assert len(fake.batches) == 1
+    write_batch = fake.batches[0]
+    write_batch.create.assert_called_once()                     # articleSummaries
+    write_batch.set.assert_called_once()                        # articleUrls
+    assert write_batch.set.call_args.args[0].id == url_key(
+        "https://example.com/rss/id-0"
+    )
+
+
+def test_articles_without_a_url_write_no_url_index():
+    """メール記事は URL を持たない。URL重複判定の対象外にする。"""
+    database, fake = _build()
+    article = _article("email", "mail-1")
+    article.url = None
+
+    database.save_batch([(article, _summary(), None, None)], _digest())
+
+    write_batch = fake.batches[0]
+    # processedEmails のみ。articleUrls は書かない。
+    write_batch.set.assert_called_once()
 
 
 def test_batch_document_is_committed_last():
@@ -135,11 +173,12 @@ def test_batch_document_is_committed_last():
 
 def test_save_batch_splits_on_write_count():
     database, fake = _build()
+    count = _ARTICLES_PER_CHUNK + 10
 
-    result = database.save_batch(_summaries(_MAX_BATCH_WRITES + 10), _digest())
+    result = database.save_batch(_summaries(count), _digest())
 
     assert len(fake.batches) == 2
-    assert len(result.saved) == _MAX_BATCH_WRITES + 10
+    assert len(result.saved) == count
 
 
 def test_save_batch_splits_on_estimated_size():
@@ -158,10 +197,10 @@ def test_save_batch_splits_on_estimated_size():
 def test_failed_chunk_does_not_raise_and_keeps_the_rest():
     database, fake = _build(fail_commits={0})
 
-    result = database.save_batch(_summaries(_MAX_BATCH_WRITES + 10), _digest())
+    result = database.save_batch(_summaries(_ARTICLES_PER_CHUNK + 10), _digest())
 
     assert len(result.saved) == 10
-    assert result.failed == _MAX_BATCH_WRITES
+    assert result.failed == _ARTICLES_PER_CHUNK
     assert result.is_partial
     batch_doc_data = fake.batch_doc.create.call_args.args[0]
     assert batch_doc_data["status"] == "partial"

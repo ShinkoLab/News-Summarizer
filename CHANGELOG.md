@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-08-11
+
+### Added
+
+- 同一URLの重複記事の排除。`urls.py` の `normalize_url()` / `url_key()` で記事URLを
+  正規化し、`db.is_url_processed()`（SQLite は `article_summaries.url_key` 列、
+  Firestore は `articleUrls` コレクションのドキュメントID）で照合する。
+  正規化は scheme/host の小文字化・`www.` 除去・fragment/末尾スラッシュ除去に加え、
+  既知のトラッキングパラメータ（`utm_*`, `at_*`, `fbclid` 等）のみを落とす。
+  クエリを丸ごと捨てると `?id=123` 型の別記事が同一キーに潰れるため。
+  `articleUrls` の書き込みは記事サマリと同一チャンクでコミットするので、
+  保存に失敗した記事のURLだけが処理済みとして残ることはない
+- `pipeline.unify_group_categories()`。同一クラスタ内のカテゴリを多数決で揃える
+  （同数時は最も古い記事のカテゴリを採用し、実行ごとに結果が揺れないようにする）
+- `feed_title` の永続化。Viewer が類似記事を束ねたカードのソース名として使う
+
+### Fixed
+
+- 取得ソースの違う同じ記事が別レコードとして保存されていた問題。重複排除キーが
+  `(source_type, source_id)` = Miniflux の entry ID のみだったため、複数フィードを
+  購読していると同じ記事が別 entry ID で降ってきて素通りしていた。本番 Firestore の
+  直近6バッチ250件で同一URLが12組、うち9組はバッチ跨ぎ。グルーピングは1回の実行内でしか
+  クラスタリングしないため検出できなかった。`filter_new_articles()` が entry ID とURLの
+  2段階で判定し、除外した RSS エントリは既存の `mark_as_read` 経路に乗せて既読化する
+  （既読化しないと重複エントリが毎回 Miniflux から降ってくる）
+- 同じニュースがカテゴリ違いで2箇所に分かれる問題。ダイジェストも Viewer も
+  「カテゴリ → グループ」で階層化するため、要約LLMが同じニュースに違うカテゴリを付けると
+  クラスタが割れていた（実データで「北日本東日本の大雨警戒」が 社会 と 環境 に分断）
+
+### Changed
+
+- `scripts/migrate_sqlite_to_firestore.py` の1バッチあたりの移行上限を 400 → 200 件に変更。
+  1記事あたりの書き込みが `articleSummaries` + `articleUrls` の2件になったため、
+  Firestore の 500 writes/commit に収める
+
 ## [2.1.0] - 2026-08-09
 
 ### Added

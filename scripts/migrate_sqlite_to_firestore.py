@@ -10,6 +10,7 @@ from pathlib import Path
 from google.cloud import firestore
 
 from outputs.firestore_database import make_document_id
+from urls import normalize_url, url_key
 
 
 def parse_datetime(value: str | None) -> datetime | None:
@@ -75,12 +76,19 @@ def migrate(database_path: Path, project_id: str, database_id: str, dry_run: boo
         )
 
         rows = articles_by_batch.get(batch_id, [])
-        if len(rows) > 400:
-            raise ValueError(f"batch_id={batch_id} の記事数が移行上限400件を超えています。")
+        # 1記事あたり articleSummaries と articleUrls の最大2書き込み。
+        # バッチドキュメント1件と合わせて Firestore の 500 writes/commit に収める。
+        if len(rows) > 200:
+            raise ValueError(f"batch_id={batch_id} の記事数が移行上限200件を超えています。")
         for row in rows:
             article_ref = client.collection("articleSummaries").document(
                 make_document_id(row["source_type"], row["source_id"])
             )
+            columns = row.keys()
+            feed_title = row["feed_title"] if "feed_title" in columns else None
+            # 移行元に url_key が無い世代のDBでも、original_url から作り直せる。
+            key = row["url_key"] if "url_key" in columns else None
+            key = key or url_key(row["original_url"])
             # set() rather than create(): a migration that dies partway must be
             # re-runnable, and the document id is already content-derived.
             write_batch.set(
@@ -103,8 +111,21 @@ def migrate(database_path: Path, project_id: str, database_id: str, dry_run: boo
                     "published_at": parse_datetime(row["published_at"]),
                     "created_at": parse_datetime(row["created_at"]),
                     "embedding": parse_json_list(row["embedding"]),
+                    "url_key": key,
+                    "feed_title": feed_title,
                 },
             )
+            if key:
+                # 移行後の実行が同一URLの重複を検出できるよう、判定用の索引も作る。
+                write_batch.set(
+                    client.collection("articleUrls").document(key),
+                    {
+                        "url": normalize_url(row["original_url"]),
+                        "source_type": row["source_type"],
+                        "source_id": row["source_id"],
+                        "created_at": parse_datetime(row["created_at"]),
+                    },
+                )
         write_batch.commit()
         print(f"migrated batch {batch_id}: {len(rows)} articles")
 

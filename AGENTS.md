@@ -12,6 +12,24 @@ git checkout -b feature/<feature-name>
 
 コミットメッセージは必ず**日本語**で記載すること。
 
+**PRをマージしたら、そのブランチをリモート・ローカルとも必ず削除すること。** 消し忘れると
+マージ済みブランチが溜まり、どれが生きているのか分からなくなる。`dev` と `main` は
+恒久ブランチなので削除しない。
+
+```bash
+gh pr merge <番号> --merge --delete-branch   # リモートはこれで消える
+git checkout main && git pull
+git branch -d <branch-name>                  # ローカルも消す
+```
+
+取り漏らしの確認（`main` にマージ済みのブランチが残っていないか）:
+
+```bash
+git fetch -p
+git branch -r --merged origin/main | grep -vE 'origin/(main|dev)$'
+git branch   --merged main         | grep -vE '^\*|(main|dev)$'
+```
+
 ## Development Commands
 
 ```bash

@@ -115,20 +115,23 @@ printf '%s' "unused-placeholder" | gcloud secrets versions add news-email-passwo
 
 ### 6. コンテナイメージのビルド＆プッシュ
 
-各リポジトリのルートで実行する。News-Summarizer は**リリースタグ**（`v2.0.1` 等）を
+各リポジトリのルートで実行する。**両リポジトリともリリースタグ**（`v2.2.0` / `v1.1.0` 等）を
 イメージタグに使う。Artifact Registry を見ればどのリリースが動いているか分かり、
-CHANGELOG との対応も1対1になる。リリースを切らない検証ビルドはコミット短縮SHAでよい。
+CHANGELOG・リリースとの対応も1対1になる。リリースを切らない検証ビルドはコミット短縮SHAでよい。
 
 ```bash
 # News-Summarizer（リリース時）
 gcloud builds submit --project=<PROJECT_ID> --config cloudbuild.yaml \
-  --substitutions=_REGION=asia-northeast1,_TAG=v2.0.1
+  --substitutions=_REGION=asia-northeast1,_TAG=v2.2.0
 
-# News-Viewer
+# News-Viewer（リリース時）
 cd ../News-Viewer
 gcloud builds submit --project=<PROJECT_ID> --config cloudbuild.yaml \
-  --substitutions=_REGION=asia-northeast1,_TAG=$(git rev-parse --short HEAD)
+  --substitutions=_REGION=asia-northeast1,_TAG=v1.1.0
 ```
+
+> News-Viewer は v1.0.2 まではコミット短縮SHAをイメージタグにしていた（`viewer:2c56edc`）。
+> v1.1.0 のリリースからリリースタグに揃えている。
 
 **注意**: News-ViewerのDockerfileは `RUN --mount=type=cache` を使うが、Cloud
 Buildのデフォルトdockerビルドステップ（`gcr.io/cloud-builders/docker`）は
@@ -473,7 +476,7 @@ APIキーは `news-miniflux-api-key` シークレットに新バージョンを�
 
 ```bash
 # 変更したリポジトリのルートで
-# News-Summarizer はリリースタグ、それ以外・検証ビルドはコミット短縮SHA
+# タグが打たれていればリリースタグ、検証ビルドはコミット短縮SHAになる
 gcloud builds submit --project=<PROJECT_ID> --config cloudbuild.yaml \
   --substitutions=_REGION=asia-northeast1,_TAG=$(git describe --exact-match --tags 2>/dev/null || git rev-parse --short HEAD)
 ```

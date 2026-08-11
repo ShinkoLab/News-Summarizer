@@ -224,6 +224,14 @@ editing the wording here — no code change needed. Path is overridable via
 display order): AI・機械学習 / テクノロジー / 経済・ビジネス / 政治・社会 /
 事件・事故・災害 / 科学・環境 / 健康・ライフ / カルチャー.
 
+**The Viewer's default category order comes from this same file.** `infra/main.tf`
+`yamldecode`s it into `local.category_order` and injects it into the Viewer's Cloud
+Run service as the `CATEGORY_ORDER` environment variable, so the Viewer never
+duplicates the category names. Reordering `categories.yaml` therefore needs a
+`terraform apply` to reach the Viewer — the same cycle a taxonomy change already
+requires for the summarizer image. (The Viewer also lets the user override the order
+per browser; the value here is only the default.)
+
 ### Where config comes from
 
 There are exactly two modes, and they never mix:

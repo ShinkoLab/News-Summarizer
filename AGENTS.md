@@ -141,12 +141,20 @@ the Viewer renders it under two headings.
   "everything filtered out", so deferring this would leave them unread forever), and newly
   persisted articles are marked from `persist_and_publish()` using `SaveResult.saved`. Both
   paths no-op in `--dry-run` via `MinifluxFetcher.dry_run`
-- **Email**: UIDL tracking stored in the `processed_emails` table; messages are never deleted from
-  the server. Because a message that is fetched but not saved would be fully re-downloaded every
-  run, `reconcile_email_attempts()` (`pipeline.py`) counts attempts in `email_attempts` /
+- **Email**: UIDL tracking stored in the `processed_emails` table; messages are **not** deleted from
+  the server by default. Because a message that is fetched but not saved would be fully re-downloaded
+  every run, `reconcile_email_attempts()` (`pipeline.py`) counts attempts in `email_attempts` /
   `emailAttempts` and gives up on a message once it reaches `email.max_fetch_attempts`
   (default `3`), marking it processed. Articles merely carried over by
-  `max_articles_per_run` are never counted — they were not attempted
+  `max_articles_per_run` are never counted — they were not attempted.
+  Setting `email.delete_after_processing: true` makes `delete_processed_emails()` (`pipeline.py`)
+  remove messages from the mailbox after persistence, via `EmailFetcher.delete_messages()`. Only two
+  kinds are deleted: those in `SaveResult.saved`, and the ones `reconcile_email_attempts()` just gave
+  up on (it returns those UIDLs) — a message that merely failed this run stays on the server so the
+  retry machinery above still works. POP3 message numbers are per-session, so the deletion opens a
+  **second session** and rebuilds the UIDL→number map there; `DELE` is only committed by `QUIT`, so
+  any error skips `QUIT` and closes the socket instead, deleting nothing. `--dry-run` always skips
+  deletion, even with `--output db`
 - **Article-level**: `filter_new_articles()` (`pipeline.py`) runs before summarization and applies
   two checks. `db.is_article_processed(source_type, source_id)` drops anything already stored, and
   `db.is_url_processed(url_key(article.url))` drops articles whose **normalized URL** has been

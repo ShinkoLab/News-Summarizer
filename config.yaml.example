@@ -121,10 +121,15 @@ email:
   username: "your-email@example.com"
   password: "your-email-password"
   use_ssl: true
-  # POP3のメールはサーバから削除しないため、保存に至らないメールは毎回本文全体を
-  # ダウンロードし直すことになる。取得したが保存しなかった回数がこの値に達したら
-  # 処理済み扱いにして取得対象から外す（poison message対策、デフォルト: 3）。
+  # 削除しない設定（下記 delete_after_processing: false）では、保存に至らないメールは
+  # 毎回本文全体をダウンロードし直すことになる。取得したが保存しなかった回数がこの値に
+  # 達したら処理済み扱いにして取得対象から外す（poison message対策、デフォルト: 3）。
   max_fetch_attempts: 3
+  # true にすると、処理が終わったメールをPOP3サーバから削除する（デフォルト: false）。
+  # 削除対象は「DB保存に成功したメール」と「max_fetch_attempts に達して打ち切ったメール」の
+  # 2種類のみ。要約や保存に失敗したメールはサーバに残るので、次回の実行で再試行される。
+  # --dry-run 時は（--output db を付けた場合でも）常に削除をスキップする。
+  delete_after_processing: false
 
 # Discord Webhook の設定
 discord:

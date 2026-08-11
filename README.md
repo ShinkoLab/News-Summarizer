@@ -126,7 +126,8 @@
 - POP3 サーバーに接続し、メールを取得
 - `UIDL` コマンドで取得したメッセージIDを SQLite に記録し、**処理済みメールをスキップ**
 - メール本文（HTML/テキスト）をパースし、共通フォーマットに変換
-- サーバー上のメールは**削除しない**
+- サーバー上のメールは既定では**削除しない**。`email.delete_after_processing: true` で、
+  DB保存に成功したメールと試行上限で打ち切ったメールのみを削除する（`--dry-run` 時はスキップ）
 
 ### 2. AI処理モジュール (`summarizer/`)
 
@@ -516,7 +517,7 @@ Google Cloudでは同じデータを`batches`、`articleSummaries`、`processedE
 | 差分管理 | `UIDL` でメッセージID取得 → FirestoreまたはSQLiteで管理 |
 | パース | `email` 標準ライブラリで MIME パース |
 | 本文抽出 | HTML → テキスト変換（`html2text` 等） |
-| 削除 | **しない**（サーバー上に保持） |
+| 削除 | 既定は**しない**（サーバー上に保持）。`delete_after_processing: true` で保存成功分＋打ち切り分を削除 |
 
 ## AI処理仕様
 

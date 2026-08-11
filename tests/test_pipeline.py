@@ -19,6 +19,7 @@ from models import (
 )
 from pipeline import (
     RunOptions,
+    reconcile_email_attempts,
     run_pipeline,
     select_articles,
     unify_group_categories,
@@ -724,6 +725,147 @@ class TestEmailAttemptReconciliation:
 
         db_instance.record_email_attempt.assert_not_called()
         db_instance.mark_email_processed.assert_not_called()
+
+    def test_returns_the_uidls_it_gave_up_on(self):
+        """打ち切ったUIDLを返す。呼び出し側はこれを削除対象に含める。"""
+        db_instance = _make_db(saved_source_ids=[])
+        db_instance.record_email_attempt.side_effect = [3, 1]
+
+        given_up = reconcile_email_attempts(
+            db_instance,
+            attempted_uidls={"mail-1", "mail-2"},
+            saved_uidls=set(),
+            options=RunOptions(dry_run=False),
+            max_attempts=3,
+        )
+
+        assert given_up == {"mail-1"}
+
+    def test_returns_empty_set_when_db_writes_are_skipped(self):
+        given_up = reconcile_email_attempts(
+            _make_db(),
+            attempted_uidls={"mail-1"},
+            saved_uidls=set(),
+            options=RunOptions(dry_run=True),
+            max_attempts=1,
+        )
+
+        assert given_up == set()
+
+
+# ---------------------------------------------------------------------------
+# 処理済みメールのサーバからの削除（email.delete_after_processing）
+# ---------------------------------------------------------------------------
+
+def _run_with_email_mock(config, options, articles, db_instance, email_instance=None):
+    """run_pipeline を走らせ、EmailFetcher のモックを返す。"""
+    email_instance = email_instance or MagicMock()
+    with (
+        patch("pipeline.MinifluxFetcher"),
+        patch("pipeline.EmailFetcher") as MockEmail,
+        patch("pipeline.summarize_article", side_effect=lambda *a, **k: _make_summary()),
+        patch("pipeline.group_articles", return_value=_make_grouping(len(articles))),
+        patch("pipeline.generate_digest", return_value=_make_digest(len(articles))),
+        patch("pipeline.create_database", return_value=db_instance),
+        patch("pipeline.DiscordOutput"),
+    ):
+        email_instance.fetch.return_value = [
+            a for a in articles if a.source_type == "email"
+        ]
+        MockEmail.return_value = email_instance
+        run_pipeline(config, options)
+    return email_instance
+
+
+class TestEmailDeletion:
+    """削除の可否は EmailFetcher 側の設定判断。pipeline は「何を渡すか」を決める。"""
+
+    def test_saved_emails_are_handed_to_the_fetcher(self, minimal_config):
+        articles = [
+            _make_article(source_id="mail-1", source_type="email"),
+            _make_article(source_id="mail-2", source_type="email"),
+        ]
+        db_instance = _make_db(saved_source_ids=["mail-1", "mail-2"])
+
+        email_instance = _run_with_email_mock(
+            minimal_config,
+            RunOptions(dry_run=False, sources=frozenset({"email"})),
+            articles,
+            db_instance,
+        )
+
+        email_instance.delete_messages.assert_called_once_with({"mail-1", "mail-2"})
+
+    def test_failed_email_is_left_on_the_server(self, minimal_config):
+        """保存できなかったメールは残す。次回の再試行に必要。"""
+        articles = [
+            _make_article(source_id="mail-1", source_type="email"),
+            _make_article(source_id="mail-2", source_type="email"),
+        ]
+        db_instance = _make_db(saved_source_ids=["mail-1"])
+
+        email_instance = _run_with_email_mock(
+            minimal_config,
+            RunOptions(dry_run=False, sources=frozenset({"email"})),
+            articles,
+            db_instance,
+        )
+
+        email_instance.delete_messages.assert_called_once_with({"mail-1"})
+
+    def test_given_up_email_is_deleted_too(self, minimal_config):
+        """試行上限で打ち切ったメールは二度と取得しないので、残す意味がない。"""
+        minimal_config.email = EmailConfig(
+            host="pop.example.com", username="u", password="p", max_fetch_attempts=2
+        )
+        articles = [
+            _make_article(source_id="mail-1", source_type="email"),
+            _make_article(source_id="mail-2", source_type="email"),
+        ]
+        db_instance = _make_db(saved_source_ids=["mail-1"])
+        db_instance.record_email_attempt.return_value = 2
+
+        email_instance = _run_with_email_mock(
+            minimal_config,
+            RunOptions(dry_run=False, sources=frozenset({"email"})),
+            articles,
+            db_instance,
+        )
+
+        email_instance.delete_messages.assert_called_once_with({"mail-1", "mail-2"})
+
+    def test_fetcher_failure_does_not_break_the_run(self, minimal_config):
+        """削除は後片付け。失敗しても保存済みの実行を壊さない。"""
+        articles = [_make_article(source_id="mail-1", source_type="email")]
+        db_instance = _make_db(saved_source_ids=["mail-1"])
+
+        failing_fetcher = MagicMock()
+        failing_fetcher.delete_messages.side_effect = OSError("boom")
+
+        # 例外が伝播しないこと（伝播すれば run_pipeline がここで落ちる）
+        email_instance = _run_with_email_mock(
+            minimal_config,
+            RunOptions(dry_run=False, sources=frozenset({"email"})),
+            articles,
+            db_instance,
+            email_instance=failing_fetcher,
+        )
+
+        email_instance.delete_messages.assert_called_once()
+        db_instance.save_batch.assert_called_once()
+
+    def test_rss_only_run_does_not_touch_email(self, minimal_config):
+        articles = [_make_article(source_id="1")]
+        db_instance = _make_db(saved_source_ids=["1"])
+
+        email_instance = _run_with_email_mock(
+            minimal_config,
+            RunOptions(dry_run=False, sources=frozenset({"rss"})),
+            articles,
+            db_instance,
+        )
+
+        email_instance.delete_messages.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,9 @@ miniflux_base_url = "https://miniflux.example.com"
 # メールを使わない場合もダミー値を設定してください（フェッチ失敗はソース単位で握りつぶされます）
 email_host        = "pop.example.com"
 email_username    = "news@example.com"
+# 処理が終わったメールをPOP3サーバから削除する（既定 false）。削除対象はDB保存に
+# 成功したメールと、max_fetch_attempts に達して打ち切ったメールのみ。
+# email_delete_after_processing = true
 
 # billing_account_id = "000000-000000-000000"
 # monthly_budget_jpy = 2000

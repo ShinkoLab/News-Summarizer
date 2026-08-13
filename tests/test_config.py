@@ -281,6 +281,52 @@ class TestEnvironmentOverrides:
         assert cfg.summarizer.steps["grouper"].use_embeddings is True
         assert cfg.summarizer.steps["grouper"].similarity_threshold == 0.7
 
+    def test_miniflux_fetch_limit_from_environment(self, tmp_path, monkeypatch):
+        """取得件数の上限も環境変数で渡せること。
+
+        max_articles_per_run だけ上げても、Miniflux 側が limit 未指定で既定の
+        100件に打ち切るため処理件数は増えない。2つはセットで効く。
+        """
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("MINIFLUX_BASE_URL", "https://miniflux.example.com")
+        monkeypatch.setenv("MINIFLUX_API_KEY", "secret-manager-value")
+        monkeypatch.setenv("MINIFLUX_FETCH_LIMIT", "250")
+        monkeypatch.setenv("MAX_ARTICLES_PER_RUN", "200")
+
+        cfg = load_runtime_config(str(tmp_path / "missing.yaml"))
+
+        assert cfg.miniflux is not None
+        assert cfg.miniflux.fetch_limit == 250
+        assert cfg.summarizer.max_articles_per_run == 200
+
+    def test_miniflux_fetch_limit_alone_does_not_build_broken_section(
+        self, tmp_path, monkeypatch
+    ):
+        """FETCH_LIMIT 単独では miniflux セクションを作らない。
+
+        作ってしまうと base_url / api_key を欠いたセクションになり、必須フィールド
+        欠落で設定読み込みごと落ちる。RSS を使わない構成では miniflux は None が正。
+        """
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("MINIFLUX_FETCH_LIMIT", "250")
+
+        cfg = load_runtime_config(str(tmp_path / "missing.yaml"))
+
+        assert cfg.miniflux is None
+
+    def test_miniflux_fetch_limit_defaults_to_miniflux_server_default(
+        self, tmp_path, monkeypatch
+    ):
+        """未指定なら 100（= Miniflux 側の既定値）。既存構成の挙動を変えない。"""
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("MINIFLUX_BASE_URL", "https://miniflux.example.com")
+        monkeypatch.setenv("MINIFLUX_API_KEY", "secret-manager-value")
+
+        cfg = load_runtime_config(str(tmp_path / "missing.yaml"))
+
+        assert cfg.miniflux is not None
+        assert cfg.miniflux.fetch_limit == 100
+
     def test_email_max_fetch_attempts_from_environment(self, tmp_path, monkeypatch):
         monkeypatch.setenv("LLM_MODEL", "env-model")
         monkeypatch.setenv("EMAIL_HOST", "pop.example.com")

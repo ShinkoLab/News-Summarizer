@@ -73,6 +73,32 @@ variable "summarizer_individual_max_length" {
   default     = 500
 }
 
+variable "max_articles_per_run" {
+  description = "1回の実行で要約する記事数の上限。miniflux_fetch_limit がこれを下回ると、そちらが実際の天井になる"
+  type        = number
+  default     = 100
+
+  validation {
+    # config.py の SummarizerConfig.max_articles_per_run が Field(ge=1, le=200)。
+    # 超過するとジョブが pydantic の ValidationError で起動直後に落ちるため、
+    # apply の時点で弾く。
+    condition     = var.max_articles_per_run >= 1 && var.max_articles_per_run <= 200
+    error_message = "max_articles_per_run は 1〜200 の範囲で指定してください（config.py の Field 制約に合わせる）。"
+  }
+}
+
+variable "miniflux_fetch_limit" {
+  description = "Miniflux /v1/entries に渡す limit。重複除去で1割前後が落ちるため max_articles_per_run より多めにする"
+  type        = number
+  default     = 100
+
+  validation {
+    # Miniflux 側の MaxEntryLimit（internal/model/entry.go）が 1000。
+    condition     = var.miniflux_fetch_limit >= 1 && var.miniflux_fetch_limit <= 1000
+    error_message = "miniflux_fetch_limit は 1〜1000 の範囲で指定してください（Miniflux の MaxEntryLimit）。"
+  }
+}
+
 variable "grouper_similarity_threshold" {
   description = "Cosine similarity threshold for embedding-based grouping"
   type        = number

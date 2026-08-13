@@ -113,6 +113,11 @@ database:
 miniflux:
   base_url: "http://your-miniflux-host"
   api_key: "your-miniflux-api-key"
+  # 1回の取得で Miniflux に要求する未読記事の件数（既定 100、上限 1000）。
+  # Miniflux は limit 未指定だとサーバ既定の 100 で打ち切るため、
+  # summarizer.max_articles_per_run を上げるときはこちらも併せて上げること。
+  # 取得後の重複除去で1割前後が落ちるので、max_articles_per_run より多めが目安。
+  #fetch_limit: 100
 
 # POP3 メールサーバーの設定
 email:

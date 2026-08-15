@@ -109,6 +109,10 @@ class MinifluxConfig(BaseModel):
 
     base_url: str
     api_key: str
+    # Miniflux の /v1/entries は limit 未指定だとサーバ側の既定値 100 で打ち切られる。
+    # summarizer.max_articles_per_run をいくら上げても、ここが下回っていれば
+    # そちらは一度も発動しない。上限 1000 は Miniflux 側の MaxEntryLimit に合わせた。
+    fetch_limit: int = Field(default=100, ge=1, le=1000)
 
 
 class EmailConfig(BaseModel):
@@ -321,6 +325,11 @@ def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         for env_name, field_name in miniflux_vars.items():
             if value := os.getenv(env_name):
                 miniflux[field_name] = value
+        # base_url / api_key と違い int なので変換が要る。またセクションを作るのは
+        # 上の条件のみ——fetch_limit だけを渡されて base_url 不在のセクションが
+        # でき、必須フィールド欠落で落ちる、という壊れ方をさせない。
+        if fetch_limit := os.getenv("MINIFLUX_FETCH_LIMIT"):
+            miniflux["fetch_limit"] = int(fetch_limit)
 
     email_vars = {
         "EMAIL_HOST": "host",

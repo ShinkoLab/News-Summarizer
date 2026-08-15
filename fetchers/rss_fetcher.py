@@ -15,16 +15,28 @@ class MinifluxFetcher(BaseFetcher):
         miniflux_cfg = config.miniflux
         self.base_url = miniflux_cfg.base_url
         self.api_key = miniflux_cfg.api_key
+        self.fetch_limit = miniflux_cfg.fetch_limit
         self.dry_run = dry_run
         self.headers = {
             "X-Auth-Token": self.api_key
         }
 
     def fetch(self) -> List[Article]:
-        url = f"{self.base_url}/v1/entries?status=unread"
-        
+        url = f"{self.base_url}/v1/entries"
+        params = {
+            "status": "unread",
+            "limit": self.fetch_limit,
+            # Miniflux 側の既定値と同じ並び（published_at / asc）だが明示して固定する。
+            # サーバ既定に任せるとバージョン差で新しい順に変わりうる。古い順でないと、
+            # 未読が fetch_limit を超えて滞留したときに古い記事が永久に取り残される。
+            "order": "published_at",
+            "direction": "asc",
+        }
+
         try:
-            response = httpx.get(url, headers=self.headers, timeout=10.0)
+            # 本文フルHTMLを含むレスポンスなので、件数に比例して重くなる。
+            # 100件で実測3秒程度。fetch_limit を上げても頭打ちしないよう長めに取る。
+            response = httpx.get(url, params=params, headers=self.headers, timeout=60.0)
             response.raise_for_status()
         except httpx.RequestError as e:
             logger.error("Failed to fetch from Miniflux: %s", e, exc_info=True)
@@ -32,7 +44,18 @@ class MinifluxFetcher(BaseFetcher):
 
         data = response.json()
         entries = data.get("entries", [])
-        
+
+        # total は未読の全件数（limit で切られる前）。取得件数が limit に張り付いて
+        # いるとき、残りが何件なのかはこれを見ないと分からない。
+        total = data.get("total")
+        if total is not None:
+            logger.info(
+                "Minifluxの未読は%d件、うち%d件を取得しました（limit=%d）。",
+                total,
+                len(entries),
+                self.fetch_limit,
+            )
+
         articles = []
         empty_entry_ids = []
 

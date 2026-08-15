@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-08-13
+
+### Added
+
+- Miniflux から1回に取得する未読件数の設定 `miniflux.fetch_limit`（既定 `100`、
+  上限 `1000` = Miniflux 側の `MaxEntryLimit`。環境変数 `MINIFLUX_FETCH_LIMIT` /
+  Terraform 変数 `miniflux_fetch_limit`）。`MinifluxFetcher.fetch()` はこれを
+  `/v1/entries` の `limit` として送る
+- `MinifluxFetcher.fetch()` が Miniflux レスポンスの `total`（未読の全件数）を
+  INFO ログに出すようになった。取得件数が `limit` に張り付いているとき、
+  残りが何件あるのかを実行ログから追えるようにするため
+
+### Changed
+
+- `MAX_ARTICLES_PER_RUN` が `infra/main.tf` にハードコードされていたのをやめ、
+  Terraform 変数 `max_articles_per_run`（既定 `100`）にした。`config.py` 側の
+  `Field(ge=1, le=200)` と Miniflux の `MaxEntryLimit` に対応する validation を
+  両変数に付けてあるので、範囲外の値は `terraform apply` の時点で弾かれる
+- `MinifluxFetcher.fetch()` が取得順に `order=published_at` / `direction=asc` を
+  明示するようになった。値は Miniflux の既定と同じだが、サーバ既定に委ねたままだと
+  バージョン差で新しい順に変わりうる。未読が `fetch_limit` を超えて滞留したとき、
+  古い順でないと古い記事が永久に取り残される
+- Miniflux 取得のタイムアウトを 10秒 → 60秒 にした。レスポンスに本文フルHTMLが
+  含まれるため件数に比例して重くなり、100件で実測3秒。`fetch_limit` を
+  引き上げると10秒では頭打ちする
+
+### Fixed
+
+- `summarizer.max_articles_per_run` を引き上げても処理件数が増えなかった問題。
+  Miniflux の `/v1/entries` は `limit` を指定しないとサーバ既定の100件で
+  打ち切るため、フェッチャーが `limit` を送っていない状態では入力が常に100件を
+  下回り、`max_articles_per_run` の上限判定が一度も発動していなかった
+  （＝天井が2枚重なり、下の1枚だけが効いていた）。実際に未読が492件滞留していても
+  1回の処理は87〜100件で頭打ちになっていた
+
+> このリリースにはサマライザのコード変更が含まれるため、イメージの再ビルドと
+> `summarizer_image` の更新が必要。件数を増やす場合は `terraform.tfvars` の
+> `max_articles_per_run` と `miniflux_fetch_limit` を**セットで**設定すること
+> （詳細は `infra/DEPLOYMENT.md`「1回に処理する記事数を変更する」）。
+
 ## [2.3.0] - 2026-08-11
 
 ### Added

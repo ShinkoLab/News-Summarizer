@@ -216,7 +216,7 @@ resource "google_cloud_run_v2_job" "summarizer" {
         }
         env {
           name  = "MAX_ARTICLES_PER_RUN"
-          value = "100"
+          value = tostring(var.max_articles_per_run)
         }
         env {
           name  = "SUMMARIZER_INDIVIDUAL_MAX_LENGTH"
@@ -261,6 +261,10 @@ resource "google_cloud_run_v2_job" "summarizer" {
         env {
           name  = "MINIFLUX_BASE_URL"
           value = var.miniflux_base_url
+        }
+        env {
+          name  = "MINIFLUX_FETCH_LIMIT"
+          value = tostring(var.miniflux_fetch_limit)
         }
         env {
           name  = "EMAIL_HOST"

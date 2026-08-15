@@ -466,6 +466,45 @@ grouper_similarity_threshold     = 0.7   # embedding グルーピングのコサ
 > カテゴリ検証に失敗して `category_max_retries` 回ぶんの LLM 呼び出しを空振りさせた上、
 > すべて 未分類 になる。「イメージをpush → `summarizer_image` を更新して apply」の順で行う。
 
+### 1回に処理する記事数を変更する
+
+`terraform.tfvars` の**2つをセットで**変更して `terraform apply`。
+
+```hcl
+max_articles_per_run = 200   # 要約する上限（既定100、config.py の Field 制約で最大200）
+miniflux_fetch_limit = 250   # Miniflux に要求する取得件数（既定100、最大1000）
+```
+
+**片方だけ上げても効かない。** Miniflux の `/v1/entries` は `limit` を指定しないと
+サーバ既定の100件で打ち切る（`MaxEntryLimit` は1000）。この状態では
+`max_articles_per_run` をいくつにしても入力が100件を超えないため、
+繰り越しの警告すら一度も出ない——実際、2026-08 に未読が400件滞留していた原因が
+これだった。逆に `miniflux_fetch_limit` だけ上げると、今度は
+`max_articles_per_run` で切られて毎回繰り越し警告が出る。
+
+`fetch_limit` を `max_articles_per_run` より多めに取るのは、取得後の重複除去
+（既処理・同一URL）で毎回1割前後が落ちるため。溢れた分は既読化されないので
+次回そのまま再取得され、捨てられることはない。
+
+上限を上げるときに確認すること:
+
+- **実行時間** — 90件で7〜9分が実績値。Cloud Run Job の `timeout` は 3600s
+  （`main.tf`）。200件でも15〜20分程度で収まるが、要約は1記事ずつ逐次に
+  LLM を呼ぶので件数にほぼ比例する
+- **LLM コスト** — 記事数にほぼ比例して増える
+- **ダイジェストの密度** — `digest_max_length` は3000字固定（環境変数マッピングが
+  無くクラウドでは変更不可）。記事数を倍にしても総量は変わらないため、
+  1記事あたりの露出は薄くなる。Discord の embed description 上限が4096字なので
+  引き上げ余地も1000字程度しかない
+- **未読の残数** — `fetchers/rss_fetcher.py` が Miniflux レスポンスの `total`
+  （＝未読の全件数）を INFO ログに出す。「Minifluxの未読は412件、うち250件を
+  取得しました（limit=250）」の形。この値が実行ごとに減っていれば、
+  処理能力が流入を上回っている
+
+処理能力がまだ足りない場合、`max_articles_per_run` は200が上限（`config.py` の
+`Field(le=200)`）なので、次の手は後述の `schedule` に発火時刻を足して
+実行回数を増やす方になる。
+
 ### Minifluxのエンドポイントを変更する
 
 `terraform.tfvars` の `miniflux_base_url` を更新し `terraform apply`。

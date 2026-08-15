@@ -28,6 +28,13 @@ llm_model    = "your-model-id"
 # schedule_time_zone = "Asia/Tokyo"
 
 miniflux_base_url = "https://miniflux.example.com"
+# 1回の実行で処理する記事数の上限（既定 100、config.py の制約で最大 200）と、
+# Miniflux に要求する取得件数（既定 100、Miniflux の MaxEntryLimit で最大 1000）。
+# **この2つはセットで見ること。** Miniflux は limit 未指定だとサーバ既定の 100 で
+# 打ち切るため、max_articles_per_run だけ上げても実際の処理件数は増えない。
+# 取得後の重複除去で1割前後落ちるので、fetch_limit は多めに取る。
+# max_articles_per_run = 200
+# miniflux_fetch_limit = 250
 # メールを使わない場合もダミー値を設定してください（フェッチ失敗はソース単位で握りつぶされます）
 email_host        = "pop.example.com"
 email_username    = "news@example.com"

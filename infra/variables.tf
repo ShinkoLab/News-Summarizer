@@ -19,6 +19,34 @@ variable "llm_model" {
   type        = string
 }
 
+variable "llm_provider" {
+  description = <<-EOT
+    LLM provider / API shape ("openai" = Chat Completions, "openai_responses" = OpenAI Responses API).
+    Some OpenCode Zen models (e.g. gpt-5.6-luna, grok-4.6) are only exposed via /v1/responses,
+    not /v1/chat/completions — see infra/DEPLOYMENT.md for the incident this was added for.
+  EOT
+  type        = string
+  default     = "openai"
+}
+
+variable "llm_structured_output" {
+  description = "Whether the endpoint honors OpenAI Structured Output (response_format / text_format)"
+  type        = bool
+  default     = false
+}
+
+variable "llm_thinking" {
+  description = "Whether llm_model is a reasoning model (gates disable_temperature_with_thinking)"
+  type        = bool
+  default     = false
+}
+
+variable "llm_disable_temperature_with_thinking" {
+  description = "Strip temperature from every step's parameters when llm_thinking is true (reasoning models that reject temperature)"
+  type        = bool
+  default     = false
+}
+
 variable "embedding_base_url" {
   description = "OpenAI-compatible embedding API endpoint base URL (used for similarity-based grouping)"
   type        = string

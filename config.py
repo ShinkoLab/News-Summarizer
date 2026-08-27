@@ -18,7 +18,7 @@ _REPO_ROOT = Path(__file__).resolve().parent
 class LLMConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
-    provider: Literal["openai", "vertex"] = "openai"
+    provider: Literal["openai", "vertex", "openai_responses"] = "openai"
     base_url: str = "http://127.0.0.1:11434/v1"
     model: str
     api_key: str = "ollama"
@@ -264,6 +264,10 @@ def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         llm["max_retries"] = int(max_retries)
     if (structured_output := _env_bool("LLM_STRUCTURED_OUTPUT")) is not None:
         llm["structured_output"] = structured_output
+    if (thinking := _env_bool("LLM_THINKING")) is not None:
+        llm["thinking"] = thinking
+    if (disable_temp := _env_bool("DISABLE_TEMPERATURE_WITH_THINKING")) is not None:
+        llm["disable_temperature_with_thinking"] = disable_temp
 
     llm_params: dict[str, Any] = {}
     if temperature := os.getenv("LLM_TEMPERATURE"):

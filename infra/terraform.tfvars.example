@@ -10,6 +10,15 @@ viewer_users = [
 llm_base_url = "https://your-openai-compatible-endpoint.example.com/v1"
 llm_model    = "your-model-id"
 
+# エンドポイントが /v1/chat/completions ではなく OpenAIの Responses API
+# （/v1/responses）しか提供しないモデルの場合（例: OpenCode Zenのgpt-5.6-luna,
+# grok-4.6）に切り替える。詳細はinfra/DEPLOYMENT.md参照。
+# llm_provider          = "openai_responses"
+# llm_structured_output = true  # Structured Outputに対応していれば true
+# 推論モデルでtemperatureパラメータがエラーになる場合はセットで有効化する
+# llm_thinking                          = true
+# llm_disable_temperature_with_thinking = true
+
 # LLMパラメータ（省略時のデフォルト: グローバル temperature=0.7, max_tokens=8192、
 # grouper/summarizer は temperature低め+reasoning_effort=low、digest は reasoning_effort=medium）
 # reasoning_effort は reasoning model（GPT-5系等）のみ有効。非対応モデルでは無視されるか

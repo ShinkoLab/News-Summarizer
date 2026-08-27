@@ -281,6 +281,24 @@ class TestEnvironmentOverrides:
         assert cfg.summarizer.steps["grouper"].use_embeddings is True
         assert cfg.summarizer.steps["grouper"].similarity_threshold == 0.7
 
+    def test_thinking_and_disable_temperature_from_environment(self, tmp_path, monkeypatch):
+        """LLM_THINKING / DISABLE_TEMPERATURE_WITH_THINKING も環境変数で渡せること。
+
+        これらのマッピングが無いと、Responses API 専用モデル（推論系で temperature
+        非対応）に切り替えても Cloud Run 側は常に thinking=None のままになり、
+        build_step_params が temperature を送り続けて 400 エラーになる。
+        """
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("LLM_PROVIDER", "openai_responses")
+        monkeypatch.setenv("LLM_THINKING", "true")
+        monkeypatch.setenv("DISABLE_TEMPERATURE_WITH_THINKING", "true")
+
+        cfg = load_runtime_config(str(tmp_path / "missing.yaml"))
+
+        assert cfg.llm.provider == "openai_responses"
+        assert cfg.llm.thinking is True
+        assert cfg.llm.disable_temperature_with_thinking is True
+
     def test_miniflux_fetch_limit_from_environment(self, tmp_path, monkeypatch):
         """取得件数の上限も環境変数で渡せること。
 

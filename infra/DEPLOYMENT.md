@@ -584,6 +584,31 @@ gcloud builds submit --project=<PROJECT_ID> --config cloudbuild.yaml \
 OAuth同意画面が「テスト」モードのままの場合は、Audienceページでテスト
 ユーザーとしても追加する必要がある（`https://console.cloud.google.com/auth/audience?project=<PROJECT_ID>`）。
 
+### カスタムドメインでViewerにアクセスできるようにする
+
+Cloud Run Domain Mapping は現時点でPreview機能（本番SLA非保証）。低頻度な
+家族向け用途では実用上問題ない前提で採用している。IAPはCloud Runサービスに
+直接かかっており（Backend Service経由ではない）、OAuthのリダイレクトURIも
+`https://iap.googleapis.com/v1/oauth/clientIds/<CLIENT_ID>:handleRedirect`と
+IAP自身の固定エンドポイントでホスト名に依存しないため、カスタムドメイン追加に
+伴うIAP/OAuth側の設定変更は不要（`iap_settings.yaml` も無修正）。
+
+1. `gcloud domains verify <ベースドメイン>` でドメイン所有権を確認する
+   （Search Console検証、`terraform apply` を実行するGoogleアカウントで）。
+2. `infra/terraform.tfvars` に `viewer_domain = "viewer.your-domain.example.com"` を追加。
+   サブドメイン推奨（ルート/apexドメインはA/AAAAレコードが複数必要になり複雑）。
+3. `terraform apply`。
+4. `terraform output viewer_domain_mapping_records`（または
+   `gcloud run domain-mappings describe --domain=<domain> --project=<PROJECT_ID> --region=asia-northeast1`）
+   で必要なDNSレコード（サブドメインなら CNAME → `ghs.googlehosted.com.`）を確認し、
+   ドメインのDNSプロバイダ（レジストラ等）に追加する。
+5. SSL証明書の発行を待つ（通常15分、最大24時間。この間は404/TLSエラーが出ても
+   異常ではない）。
+6. ブラウザで `https://viewer.your-domain.example.com/` にアクセスし、既存と同じ
+   IAPログイン画面が表示され、`viewer_users` に登録したアカウントのみアクセス
+   できることを確認する。既存の `*.run.app` URL（`terraform output viewer_url`）も
+   引き続き使える。
+
 ## 日常運用・トラブルシュート
 
 ```bash

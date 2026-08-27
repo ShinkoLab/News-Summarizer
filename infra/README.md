@@ -1,7 +1,10 @@
 # Google Cloud deployment
 
 家族利用向けの低固定費構成です。Cloud Run Job、Cloud Run Service、Firestore、
-Cloud Scheduler、Secret Manager、直接IAPをTerraformで管理します。
+Cloud Scheduler、Secret Manager、直接IAPをTerraformで管理します。Viewerは既定の
+`*.run.app` URLに加え、自分のドメインでもIAP認証を保ったままアクセスできます
+（`viewer_domain`、詳細は `DEPLOYMENT.md` の「カスタムドメインでViewerに
+アクセスできるようにする」参照）。
 LLMは既定でOpenAI互換エンドポイント（`llm_base_url`/`llm_model`で指定、APIキーは
 Secret Manager経由）を利用します。Vertex AI経路もコード側（`summarizer/llm_client.py`）は
 実装済みで、`LLM_PROVIDER=vertex`と`llm.project_id`/`llm.location`相当の環境変数で

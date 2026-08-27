@@ -313,6 +313,15 @@ def _call_plain_text_with_retry(client, completion_kwargs, stream: bool = False)
     return _retry_loop(call)
 
 
+# Chat Completions にはあるが Responses API（openai==2.29.0 の
+# client.responses.create/.parse/.stream シグネチャ）には存在しないパラメータ。
+# 素通しすると SDK 側で "unexpected keyword argument" という分かりにくい
+# TypeError になるため、_build_responses_kwargs で早期に検知する。
+_RESPONSES_UNSUPPORTED_PARAMS = frozenset(
+    {"frequency_penalty", "presence_penalty", "stop", "seed", "n", "logit_bias"}
+)
+
+
 def _build_responses_kwargs(completion_kwargs: dict) -> tuple[dict, type | None]:
     """Chat Completions 形式の completion_kwargs を Responses API 形式に変換する。
 
@@ -329,6 +338,15 @@ def _build_responses_kwargs(completion_kwargs: dict) -> tuple[dict, type | None]
         kwargs["max_output_tokens"] = kwargs.pop("max_tokens")
     if "reasoning_effort" in kwargs:
         kwargs["reasoning"] = {"effort": kwargs.pop("reasoning_effort")}
+
+    unsupported = _RESPONSES_UNSUPPORTED_PARAMS & kwargs.keys()
+    if unsupported:
+        raise ValueError(
+            f"llm.parameters に Responses API 未対応のキーが含まれています: {sorted(unsupported)}。"
+            "openai_responses プロバイダでは Chat Completions専用パラメータは使えません。"
+            "config.yaml / terraform.tfvars の該当パラメータを削除してください。"
+        )
+
     model_class = kwargs.pop("response_format", None)
     return kwargs, model_class
 

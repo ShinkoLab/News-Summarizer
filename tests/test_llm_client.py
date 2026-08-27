@@ -406,3 +406,19 @@ class TestOpenAIResponsesProvider:
         out = capsys.readouterr().out
         assert "分割" in out
         assert "[Thinking]" not in out
+
+    def test_chat_completions_only_param_raises_before_calling_client(self):
+        """stop/seed等Chat Completions専用パラメータは、SDKの分かりにくいTypeError
+        ではなく _build_responses_kwargs の時点で明示的なValueErrorになる。
+        リトライも消費しない（設定ミスは再試行しても直らないため）。"""
+        client = MagicMock()
+        kwargs = self._completion_kwargs()
+        kwargs["stop"] = ["\n"]
+        kwargs["seed"] = 42
+
+        import summarizer.llm_client as llm_client
+        with patch.object(llm_client, "config", self._cfg(structured_output=True)):
+            with pytest.raises(ValueError, match="stop.*seed|seed.*stop"):
+                llm_client.call_with_retry(client, kwargs)
+
+        client.responses.parse.assert_not_called()

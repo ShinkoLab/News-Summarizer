@@ -27,6 +27,14 @@ variable "llm_provider" {
   EOT
   type        = string
   default     = "openai"
+
+  validation {
+    # config.py の LLMConfig.provider が Literal["openai", "vertex", "openai_responses"]。
+    # ここで弾かないと typo した値がそのままCloud Runに渡り、全実行がpydanticの
+    # ValidationErrorで起動直後に失敗する（#11と同種の「気づきにくい全滅」になる）。
+    condition     = contains(["openai", "vertex", "openai_responses"], var.llm_provider)
+    error_message = "llm_provider は openai / vertex / openai_responses のいずれかを指定してください（config.py の Literal 制約に合わせる）。"
+  }
 }
 
 variable "llm_structured_output" {

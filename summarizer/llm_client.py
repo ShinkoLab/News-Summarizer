@@ -135,8 +135,10 @@ def _log_usage(response, context: str = "") -> None:
     usage = getattr(response, "usage", None)
     if usage is None:
         return
-    prompt = getattr(usage, "prompt_tokens", "?")
-    completion = getattr(usage, "completion_tokens", "?")
+    # Chat Completions は prompt_tokens/completion_tokens、Responses API は
+    # input_tokens/output_tokens と命名が異なる。
+    prompt = getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", "?")
+    completion = getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", "?")
     total = getattr(usage, "total_tokens", "?")
     prefix = f"[{context}] " if context else ""
     logger.debug("%sToken usage — prompt: %s, completion: %s, total: %s", prefix, prompt, completion, total)
@@ -328,6 +330,8 @@ def _call_responses_structured_with_retry(client, completion_kwargs, stream: boo
     max_retries = config.llm.max_retries
     last_error: Exception | None = None
     kwargs, model_class = _build_responses_kwargs(completion_kwargs)
+    if model_class is None:
+        raise ValueError("response_format が指定されていません。")
     kwargs["text_format"] = model_class
 
     for attempt in range(max_retries + 1):
@@ -377,115 +381,92 @@ def _call_responses_plain_text_with_retry(client, completion_kwargs, stream: boo
     raise last_error
 
 
-def _stream_responses_structured(client, kwargs):
-    """Structured Output ストリーミング（Responses API）。thinking / content を標準出力に流す。"""
+def _consume_delta_stream(events, get_reasoning_delta, get_content_delta) -> str:
+    """reasoning/content delta を持つイベント列を消費し、thinking表示を切り替えつつ全文を返す。
+
+    Chat Completions と Responses API はイベント形状が異なるため、呼び出し側が
+    各イベントから reasoning/content のテキスト断片を取り出す関数を渡す。
+    reasoning フィールドが存在する場合は「--- [Thinking] ---」ブロックとして表示する。
+    """
     thinking_active = False
+    content_parts: list[str] = []
 
+    for event in events:
+        reasoning = get_reasoning_delta(event)
+        if reasoning:
+            if not thinking_active:
+                print("\n--- [Thinking] ---", flush=True)
+                thinking_active = True
+            print(reasoning, end="", flush=True)
+            continue
+        content = get_content_delta(event)
+        if content:
+            if thinking_active:
+                print("\n--- [/Thinking] ---\n", flush=True)
+                thinking_active = False
+            print(content, end="", flush=True)
+            content_parts.append(content)
+
+    if thinking_active:
+        print("\n--- [/Thinking] ---\n", flush=True)
+    print("\n", flush=True)
+    return "".join(content_parts)
+
+
+def _responses_reasoning_delta(event) -> str | None:
+    return event.delta if event.type == "response.reasoning_text.delta" else None
+
+
+def _responses_content_delta(event) -> str | None:
+    return event.delta if event.type == "response.output_text.delta" else None
+
+
+def _stream_responses_structured(client, kwargs):
+    """Structured Output ストリーミング（Responses API）。最終的な response オブジェクトを返す。"""
     with client.responses.stream(**kwargs) as stream_ctx:
-        for event in stream_ctx:
-            if event.type == "response.reasoning_text.delta":
-                if not thinking_active:
-                    print("\n--- [Thinking] ---", flush=True)
-                    thinking_active = True
-                print(event.delta, end="", flush=True)
-            elif event.type == "response.output_text.delta":
-                if thinking_active:
-                    print("\n--- [/Thinking] ---\n", flush=True)
-                    thinking_active = False
-                print(event.delta, end="", flush=True)
-
-        if thinking_active:
-            print("\n--- [/Thinking] ---\n", flush=True)
-        print("\n", flush=True)
+        _consume_delta_stream(stream_ctx, _responses_reasoning_delta, _responses_content_delta)
         final = stream_ctx.get_final_response()
         _log_usage(final, kwargs.get("model", ""))
         return final
 
 
 def _stream_responses_plain_text(client, kwargs) -> str:
-    """プレーンテキストストリーミング（Responses API）。thinking / content を標準出力に流す。"""
-    thinking_active = False
-    content_parts: list[str] = []
-
+    """プレーンテキストストリーミング（Responses API）。出力しながら全文を返す。"""
     with client.responses.create(stream=True, **kwargs) as stream:
-        for event in stream:
-            if event.type == "response.reasoning_text.delta":
-                if not thinking_active:
-                    print("\n--- [Thinking] ---", flush=True)
-                    thinking_active = True
-                print(event.delta, end="", flush=True)
-            elif event.type == "response.output_text.delta":
-                if thinking_active:
-                    print("\n--- [/Thinking] ---\n", flush=True)
-                    thinking_active = False
-                print(event.delta, end="", flush=True)
-                content_parts.append(event.delta)
-
-    if thinking_active:
-        print("\n--- [/Thinking] ---\n", flush=True)
-    print("\n", flush=True)
-    return "".join(content_parts)
+        return _consume_delta_stream(stream, _responses_reasoning_delta, _responses_content_delta)
 
 
 def stream_plain_text_completion(client, completion_kwargs) -> str:
     """ストリーミングでプレーンテキスト補完を実行し、出力しながら全文を返す。"""
-    thinking_active = False
-    content_parts: list[str] = []
+
+    def get_reasoning(chunk) -> str | None:
+        if not chunk.choices:
+            return None
+        return getattr(chunk.choices[0].delta, "reasoning", None)
+
+    def get_content(chunk) -> str | None:
+        return chunk.choices[0].delta.content if chunk.choices else None
 
     with client.chat.completions.create(stream=True, **completion_kwargs) as stream:
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            rc = getattr(delta, "reasoning", None)
-            if rc:
-                if not thinking_active:
-                    print("\n--- [Thinking] ---", flush=True)
-                    thinking_active = True
-                print(rc, end="", flush=True)
-            if delta.content:
-                if thinking_active:
-                    print("\n--- [/Thinking] ---\n", flush=True)
-                    thinking_active = False
-                print(delta.content, end="", flush=True)
-                content_parts.append(delta.content)
-
-    if thinking_active:
-        print("\n--- [/Thinking] ---\n", flush=True)
-    print("\n", flush=True)
-    return "".join(content_parts)
+        return _consume_delta_stream(stream, get_reasoning, get_content)
 
 
 def stream_completion(client, completion_kwargs):
     """ストリーミングで LLM 補完を実行し、thinking / content を標準出力に流す。
 
-    reasoning フィールドが存在する場合は「--- [Thinking] ---」ブロックとして表示する。
     最終的な completion オブジェクトを返す。
     """
-    thinking_active = False
+
+    def get_reasoning(event) -> str | None:
+        if event.type != "chunk" or not event.chunk.choices or not event.chunk.choices[0].delta:
+            return None
+        return getattr(event.chunk.choices[0].delta, "reasoning", None)
+
+    def get_content(event) -> str | None:
+        return event.delta if event.type == "content.delta" else None
 
     with client.chat.completions.stream(**completion_kwargs) as stream_ctx:
-        for event in stream_ctx:
-            if event.type == "chunk":
-                chunk = event.chunk
-                if chunk.choices and chunk.choices[0].delta:
-                    delta = chunk.choices[0].delta
-                    rc = getattr(delta, "reasoning", None)
-                    if rc:
-                        if not thinking_active:
-                            print("\n--- [Thinking] ---", flush=True)
-                            thinking_active = True
-                        print(rc, end="", flush=True)
-            elif event.type == "content.delta":
-                if thinking_active and event.delta:
-                    print("\n--- [/Thinking] ---\n", flush=True)
-                    thinking_active = False
-                if event.delta:
-                    print(event.delta, end="", flush=True)
-
-        if thinking_active:
-            print("\n--- [/Thinking] ---\n", flush=True)
-        print("\n", flush=True)
+        _consume_delta_stream(stream_ctx, get_reasoning, get_content)
         final = stream_ctx.get_final_completion()
         _log_usage(final, completion_kwargs.get("model", ""))
         return final

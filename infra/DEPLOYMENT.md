@@ -400,6 +400,52 @@ issue #27。重複防止（`is_article_processed()`）は効いていたが、
   従来は RSS → Email の順に並べた先頭から切っていたため、
   RSS だけで枠が埋まると Email が永久に処理されなかった
 
+### 11. `gpt-5.6-luna` が `/v1/chat/completions` から `/v1/responses` 専用に切り替わり全リクエストが500になった
+
+2026-08-27、Viewerが2026-08-23から更新されていないことに気づいて調査した。
+`gcloud logging read` で直近の実行を追うと、8/23 22:00 UTC の実行以降
+すべての記事要約が `openai.InternalServerError: 500 - Internal server error`
+で失敗し、「要約に成功した記事がありませんでした」のまま何も保存せず
+`exit(0)` していた（**Cloud Run Job・Cloud Schedulerの実行一覧は0件保存でも
+成功扱いになるため、一見しただけでは異常に気づけない**）。
+
+実際のAPIキーで直接叩いて切り分けたところ、同じキー・同じ
+`https://opencode.ai/zen/go/v1` でも `glm-5.3` や `kimi-k3` は200が返り、
+`gpt-5.6-luna` だけが500になることを確認。OpenCode Zenの公式ドキュメント
+（`https://opencode.ai/docs/en/go/#endpoints`）を見ると、`gpt-5.6-luna` と
+`grok-4.6` は `/v1/chat/completions`（OpenAI-compatible）ではなく
+`/v1/responses`（OpenAI Responses API 形式）専用に変わっていた。うちの
+コードは `client.chat.completions.create()` しか呼んでいなかったため、
+形式の合わないリクエストを送り続けて500になっていたと推測される
+（以前は動いていたので、OpenCode Zen側がある時点で互換シムを外した
+ものと見られる）。
+
+中華系LLM（Zhipu/Moonshot/DeepSeek/Xiaomi/Meituan/Tencent系がOpenCode Zenの
+`/v1/chat/completions` 対応モデルのほぼ全て）は政治的に機微な話題の要約で
+表現がぼやける事例があったため避けたい方針があり、`gpt-5.6-luna` を
+使い続けるために `summarizer/llm_client.py` に Responses API
+（`client.responses.parse` / `client.responses.create`）専用の呼び出し
+パスを追加した（`llm.provider: "openai_responses"`）。あわせて分かったこと:
+
+- Responses API の `text.format`（`json_schema`）は `gpt-5.6-luna` で
+  正しく機能する。Chat Completions側で `LLM_STRUCTURED_OUTPUT=false`
+  にしていたのは別の問題（OpenCode Zen (go) がMarkdown混じりのテキストを
+  返す）で、Responses APIには影響しない
+- `gpt-5.6-luna` は推論モデルのため `temperature` パラメータを送ると
+  `400 Unsupported parameter: 'temperature' is not supported with this
+  model` になる。既存の `llm.thinking` /
+  `llm.disable_temperature_with_thinking`（`build_step_params()` が
+  thinking かつ disable_temperature_with_thinking のとき temperature を
+  除去する仕組み）がまさにこの用途で存在していたが、Cloud Run向けの
+  環境変数マッピング（`LLM_THINKING` / `DISABLE_TEMPERATURE_WITH_THINKING`）
+  が抜けていたため常にデフォルト値（thinking無効）で動いていた。
+  これも他の設定フィールドと同じ「フィールドはあるのにマッピングが無い」
+  パターン（#1・#2・#7・#8 参照）なので追加した
+- `infra/variables.tf` に `llm_provider` / `llm_structured_output` /
+  `llm_thinking` / `llm_disable_temperature_with_thinking` を追加し、
+  従来 `infra/main.tf` にハードコードしていた `LLM_PROVIDER="openai"` /
+  `LLM_STRUCTURED_OUTPUT="false"` をterraform変数化した
+
 ## 設定変更手順
 
 ### LLM設定を変更する（プロバイダ・モデル・エンドポイント）
@@ -409,14 +455,22 @@ issue #27。重複防止（`is_article_processed()`）は効いていたが、
    `curl`/`urllib` 単体での成功はCloudflare越しの疎通確認にはなるが、
    Structured Output対応可否までは分からない）。
 2. `infra/terraform.tfvars` の `llm_base_url` / `llm_model` を更新。
-3. 新しいエンドポイントがStructured Output（`response_format`によるJSON
-   Schema指定）に対応しているか確認する。対応していなければ
-   `infra/main.tf` の `LLM_STRUCTURED_OUTPUT` を `"false"` のままにする
-   （対応していれば `"true"` に変更して呼び出し回数を削減できる）。
-4. APIキーが変わる場合は `gcloud secrets versions add news-llm-api-key
+3. **エンドポイントが `/v1/chat/completions` と `/v1/responses` のどちらを
+   要求するか確認する**（プロバイダのドキュメントを見る。前者が既定の
+   `llm_provider = "openai"` で、後者は `llm_provider = "openai_responses"`
+   に切り替える必要がある。誤った形式のまま気づかないと#11のように
+   全リクエストが失敗し続ける）。
+4. 新しいエンドポイントがStructured Output（`response_format` /
+   `text_format` によるJSON Schema指定）に対応しているか確認する。
+   対応していなければ `llm_structured_output = false`（既定値）のままに
+   する（対応していれば `true` に変更して呼び出し回数を削減できる）。
+5. 推論モデル（GPT-5系・o1系等）で `temperature` パラメータがエラーになる
+   場合は `llm_thinking = true` と `llm_disable_temperature_with_thinking
+   = true` を設定する。
+6. APIキーが変わる場合は `gcloud secrets versions add news-llm-api-key
    --project=<PROJECT_ID> --data-file=-` で新バージョンを追加
    （`print(key, end="")` または `printf '%s'` で改行を含めないこと）。
-5. `terraform apply` を実行（Job定義の環境変数が更新される）。
+7. `terraform apply` を実行（Job定義の環境変数が更新される）。
 
 ### LLMパラメータ（temperature・reasoning_effort）を変更する
 

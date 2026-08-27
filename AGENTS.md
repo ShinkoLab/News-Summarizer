@@ -108,7 +108,10 @@ config source (see **Deployment** below). For the full design spec see `README.m
   - `embedder.py` — embedding retrieval (separate endpoint from the chat LLM)
   - `digest.py` — category digest generation
 - **`outputs/`** — `create_database()` returns `Database` (SQLite) or `FirestoreDatabase` depending on `database.backend`; both expose `save_batch()` / `is_article_processed()` / `is_email_processed()` / `execution_lock()`. Plus `DiscordOutput` (webhook embeds, description truncated at the 4096-char Discord limit)
-- **`scripts/`** — `migrate_sqlite_to_firestore.py` (one-shot data migration, supports `--dry-run`)
+- **`scripts/`** — `migrate_sqlite_to_firestore.py` (one-shot data migration, supports `--dry-run`);
+  `skip_stale_backlog.py` (marks-as-read/deletes Miniflux/POP3 backlog older than a cutoff after an
+  outage, so the pipeline doesn't have to grind through days of stale entries; dry-run by default,
+  `--execute` + confirmation prompt required to actually change anything — see its module docstring)
 - **`infra/`** — Terraform for the Google Cloud deployment; see `infra/README.md` and `infra/DEPLOYMENT.md`
 
 ### LLM integration

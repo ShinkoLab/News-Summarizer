@@ -318,10 +318,12 @@ def _build_responses_kwargs(completion_kwargs: dict) -> tuple[dict, type | None]
 
     Responses API は messages の代わりに input、max_tokens の代わりに
     max_output_tokens、reasoning_effort の代わりに reasoning={"effort": ...} を使う。
-    extra_body（Ollama 専用パラメータ）は Responses API では未対応のため落とす。
+    extra_body は openai SDK 側の汎用パススルー引数で、
+    client.responses.create/.parse/.stream でもそのまま使えるため変換せず残す
+    （現状 llm.extra_body は Ollama 専用の think 設定にしか使っておらず
+    Responses API プロバイダでは通常未設定になる）。
     """
     kwargs = dict(completion_kwargs)
-    kwargs.pop("extra_body", None)
     kwargs["input"] = _inject_thinking_token(kwargs.pop("messages"))
     if "max_tokens" in kwargs:
         kwargs["max_output_tokens"] = kwargs.pop("max_tokens")
@@ -343,10 +345,11 @@ def _call_responses_structured_with_retry(client, completion_kwargs, stream: boo
             response = _stream_responses_structured(client, kwargs)
         else:
             response = client.responses.parse(**kwargs)
-            _log_usage(response, kwargs.get("model", ""))
         parsed = response.output_parsed
         if not parsed:
             raise ValueError("Failed to parse the structured output from LLM.")
+        if not stream:
+            _log_usage(response, kwargs.get("model", ""))
         return parsed
 
     return _retry_loop(call)

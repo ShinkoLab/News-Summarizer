@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import textwrap
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -354,3 +355,54 @@ class TestOpenAIResponsesProvider:
                 llm_client.call_with_retry(client, self._completion_kwargs())
 
         assert client.responses.parse.call_count == 2
+
+    def test_structured_streaming_consumes_events_and_returns_final_response(self, capsys):
+        """client.responses.stream() のイベントを消費し、thinkingを表示しつつ最終レスポンスを返す。"""
+        expected = ArticleSummary(
+            title="Streamで要約",
+            summary="ストリーミング応答",
+            keywords=["ストリーム"],
+            category="テクノロジー",
+        )
+        events = [
+            SimpleNamespace(type="response.reasoning_text.delta", delta="考え中..."),
+            SimpleNamespace(type="response.output_text.delta", delta='{"title": "..."}'),
+        ]
+        stream_ctx = MagicMock()
+        stream_ctx.__iter__.return_value = iter(events)
+        stream_ctx.get_final_response.return_value = MagicMock(output_parsed=expected, usage=None)
+
+        client = MagicMock()
+        client.responses.stream.return_value.__enter__.return_value = stream_ctx
+        client.responses.stream.return_value.__exit__.return_value = False
+
+        import summarizer.llm_client as llm_client
+        with patch.object(llm_client, "config", self._cfg(structured_output=True)):
+            result = llm_client.call_with_retry(client, self._completion_kwargs(), stream=True)
+
+        assert result == expected
+        out = capsys.readouterr().out
+        assert "[Thinking]" in out
+        assert "考え中..." in out
+
+    def test_plain_text_streaming_accumulates_content_and_extracts_json(self, capsys):
+        """client.responses.create(stream=True) のイベントから全文を組み立てJSONを抽出する。"""
+        events = [
+            SimpleNamespace(type="response.output_text.delta", delta='{"title": "分割", "summary": "要約", '),
+            SimpleNamespace(type="response.output_text.delta", delta='"keywords": ["a"], "category": "テクノロジー"}'),
+        ]
+        stream_cm = MagicMock()
+        stream_cm.__enter__.return_value = iter(events)
+        stream_cm.__exit__.return_value = False
+
+        client = MagicMock()
+        client.responses.create.return_value = stream_cm
+
+        import summarizer.llm_client as llm_client
+        with patch.object(llm_client, "config", self._cfg(structured_output=False)):
+            result = llm_client.call_with_retry(client, self._completion_kwargs(), stream=True)
+
+        assert result.title == "分割"
+        out = capsys.readouterr().out
+        assert "分割" in out
+        assert "[Thinking]" not in out

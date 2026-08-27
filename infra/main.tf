@@ -188,7 +188,7 @@ resource "google_cloud_run_v2_job" "summarizer" {
         }
         env {
           name  = "LLM_PROVIDER"
-          value = "openai"
+          value = var.llm_provider
         }
         env {
           name  = "LLM_BASE_URL"
@@ -200,7 +200,15 @@ resource "google_cloud_run_v2_job" "summarizer" {
         }
         env {
           name  = "LLM_STRUCTURED_OUTPUT"
-          value = "false"
+          value = tostring(var.llm_structured_output)
+        }
+        env {
+          name  = "LLM_THINKING"
+          value = tostring(var.llm_thinking)
+        }
+        env {
+          name  = "DISABLE_TEMPERATURE_WITH_THINKING"
+          value = tostring(var.llm_disable_temperature_with_thinking)
         }
         env {
           name  = "LLM_MAX_RETRIES"

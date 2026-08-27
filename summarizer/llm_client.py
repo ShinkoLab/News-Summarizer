@@ -135,8 +135,14 @@ def _log_usage(response, context: str = "") -> None:
     usage = getattr(response, "usage", None)
     if usage is None:
         return
-    prompt = getattr(usage, "prompt_tokens", "?")
-    completion = getattr(usage, "completion_tokens", "?")
+    # Chat Completions は prompt_tokens/completion_tokens、Responses API は
+    # input_tokens/output_tokens と命名が異なる。
+    prompt = getattr(usage, "prompt_tokens", None)
+    if prompt is None:
+        prompt = getattr(usage, "input_tokens", "?")
+    completion = getattr(usage, "completion_tokens", None)
+    if completion is None:
+        completion = getattr(usage, "output_tokens", "?")
     total = getattr(usage, "total_tokens", "?")
     prefix = f"[{context}] " if context else ""
     logger.debug("%sToken usage — prompt: %s, completion: %s, total: %s", prefix, prompt, completion, total)
@@ -150,6 +156,10 @@ def call_with_retry(client, completion_kwargs, stream: bool = False):
     """
     if config.llm.provider == "vertex":
         return _call_vertex_with_retry(client, completion_kwargs, stream)
+    if config.llm.provider == "openai_responses":
+        if use_structured_output():
+            return _call_responses_structured_with_retry(client, completion_kwargs, stream)
+        return _call_responses_plain_text_with_retry(client, completion_kwargs, stream)
     if use_structured_output():
         return _call_structured_with_retry(client, completion_kwargs, stream)
     else:
@@ -237,29 +247,20 @@ def _call_vertex_with_retry(client, completion_kwargs, stream: bool = False):
     raise last_error
 
 
-def _call_structured_with_retry(client, completion_kwargs, stream: bool = False):
-    """Structured Output モード: response_format に Pydantic モデルを渡して parse する。"""
+def _retry_loop(call_fn):
+    """max_retries 回まで call_fn() を再試行する共通ハーネス。
+
+    call_fn は成功時に結果を return し、失敗（パース失敗含む）時は例外を送出する。
+    全試行失敗時は最後の例外を再送出する。4つの *_with_retry 関数（Chat
+    Completions / Responses API × Structured Output / プレーンテキスト）で共有する。
+    """
     max_retries = config.llm.max_retries
     last_error: Exception | None = None
-
-    completion_kwargs = dict(completion_kwargs)
-    completion_kwargs["messages"] = _inject_thinking_token(completion_kwargs["messages"])
-
     for attempt in range(max_retries + 1):
         if attempt > 0:
             logger.warning("[再試行 %d/%d] LLM 生成を再試行します...", attempt, max_retries)
         try:
-            if stream:
-                response = stream_completion(client, completion_kwargs)
-            else:
-                response = client.chat.completions.parse(**completion_kwargs)
-
-            parsed = response.choices[0].message.parsed
-            if not parsed:
-                raise ValueError("Failed to parse the structured output from LLM.")
-            if not stream:
-                _log_usage(response, completion_kwargs.get("model", ""))
-            return parsed
+            return call_fn()
         except Exception as e:
             last_error = e
             logger.warning("LLM 生成エラー (試行 %d/%d): %s", attempt + 1, max_retries + 1, e, exc_info=True)
@@ -267,11 +268,29 @@ def _call_structured_with_retry(client, completion_kwargs, stream: bool = False)
     raise last_error
 
 
+def _call_structured_with_retry(client, completion_kwargs, stream: bool = False):
+    """Structured Output モード: response_format に Pydantic モデルを渡して parse する。"""
+    completion_kwargs = dict(completion_kwargs)
+    completion_kwargs["messages"] = _inject_thinking_token(completion_kwargs["messages"])
+
+    def call():
+        if stream:
+            response = stream_completion(client, completion_kwargs)
+        else:
+            response = client.chat.completions.parse(**completion_kwargs)
+
+        parsed = response.choices[0].message.parsed
+        if not parsed:
+            raise ValueError("Failed to parse the structured output from LLM.")
+        if not stream:
+            _log_usage(response, completion_kwargs.get("model", ""))
+        return parsed
+
+    return _retry_loop(call)
+
+
 def _call_plain_text_with_retry(client, completion_kwargs, stream: bool = False):
     """プレーンテキストモード: response_format なしで呼び出し、JSON を手動パースする。"""
-    max_retries = config.llm.max_retries
-    last_error: Exception | None = None
-
     # response_format からモデルクラスを取り出し、kwargs から除去
     kwargs = dict(completion_kwargs)
     kwargs["messages"] = _inject_thinking_token(kwargs["messages"])
@@ -282,47 +301,125 @@ def _call_plain_text_with_retry(client, completion_kwargs, stream: bool = False)
     # JSON 出力指示をプロンプトに注入
     kwargs["messages"] = _inject_json_instruction(kwargs["messages"], model_class)
 
-    for attempt in range(max_retries + 1):
-        if attempt > 0:
-            logger.warning("[再試行 %d/%d] LLM 生成を再試行します...", attempt, max_retries)
-        try:
-            if stream:
-                text = stream_plain_text_completion(client, kwargs)
-            else:
-                response = client.chat.completions.create(**kwargs)
-                text = response.choices[0].message.content or ""
-                _log_usage(response, kwargs.get("model", ""))
-            return _extract_json(text, model_class)
-        except Exception as e:
-            last_error = e
-            logger.warning("LLM 生成エラー (試行 %d/%d): %s", attempt + 1, max_retries + 1, e, exc_info=True)
+    def call():
+        if stream:
+            text = stream_plain_text_completion(client, kwargs)
+        else:
+            response = client.chat.completions.create(**kwargs)
+            text = response.choices[0].message.content or ""
+            _log_usage(response, kwargs.get("model", ""))
+        return _extract_json(text, model_class)
 
-    raise last_error
+    return _retry_loop(call)
 
 
+# Chat Completions にはあるが Responses API（openai==2.29.0 の
+# client.responses.create/.parse/.stream シグネチャ）には存在しないパラメータ。
+# 素通しすると SDK 側で "unexpected keyword argument" という分かりにくい
+# TypeError になるため、_build_responses_kwargs で早期に検知する。
+_RESPONSES_UNSUPPORTED_PARAMS = frozenset(
+    {"frequency_penalty", "presence_penalty", "stop", "seed", "n", "logit_bias"}
+)
 
-def stream_plain_text_completion(client, completion_kwargs) -> str:
-    """ストリーミングでプレーンテキスト補完を実行し、出力しながら全文を返す。"""
+
+def _build_responses_kwargs(completion_kwargs: dict) -> tuple[dict, type | None]:
+    """Chat Completions 形式の completion_kwargs を Responses API 形式に変換する。
+
+    Responses API は messages の代わりに input、max_tokens の代わりに
+    max_output_tokens、reasoning_effort の代わりに reasoning={"effort": ...} を使う。
+    extra_body は openai SDK 側の汎用パススルー引数で、
+    client.responses.create/.parse/.stream でもそのまま使えるため変換せず残す
+    （現状 llm.extra_body は Ollama 専用の think 設定にしか使っておらず
+    Responses API プロバイダでは通常未設定になる）。
+    """
+    kwargs = dict(completion_kwargs)
+    kwargs["input"] = _inject_thinking_token(kwargs.pop("messages"))
+    if "max_tokens" in kwargs:
+        kwargs["max_output_tokens"] = kwargs.pop("max_tokens")
+    if "reasoning_effort" in kwargs:
+        kwargs["reasoning"] = {"effort": kwargs.pop("reasoning_effort")}
+
+    unsupported = _RESPONSES_UNSUPPORTED_PARAMS & kwargs.keys()
+    if unsupported:
+        raise ValueError(
+            f"llm.parameters に Responses API 未対応のキーが含まれています: {sorted(unsupported)}。"
+            "openai_responses プロバイダでは Chat Completions専用パラメータは使えません。"
+            "config.yaml / terraform.tfvars の該当パラメータを削除してください。"
+        )
+
+    model_class = kwargs.pop("response_format", None)
+    return kwargs, model_class
+
+
+def _call_responses_structured_with_retry(client, completion_kwargs, stream: bool = False):
+    """Responses API の Structured Output（text_format）モード。"""
+    kwargs, model_class = _build_responses_kwargs(completion_kwargs)
+    if model_class is None:
+        raise ValueError("response_format が指定されていません。")
+    kwargs["text_format"] = model_class
+
+    def call():
+        if stream:
+            response = _stream_responses_structured(client, kwargs)
+        else:
+            response = client.responses.parse(**kwargs)
+        parsed = response.output_parsed
+        if not parsed:
+            raise ValueError("Failed to parse the structured output from LLM.")
+        if not stream:
+            _log_usage(response, kwargs.get("model", ""))
+        return parsed
+
+    return _retry_loop(call)
+
+
+def _call_responses_plain_text_with_retry(client, completion_kwargs, stream: bool = False):
+    """Responses API のプレーンテキストモード: response_format なしで呼び出し、JSON を手動パースする。"""
+    kwargs, model_class = _build_responses_kwargs(completion_kwargs)
+    if model_class is None:
+        raise ValueError("response_format が指定されていません。")
+    kwargs["input"] = _inject_json_instruction(kwargs["input"], model_class)
+
+    def call():
+        if stream:
+            text = _stream_responses_plain_text(client, kwargs)
+        else:
+            response = client.responses.create(**kwargs)
+            text = response.output_text or ""
+            _log_usage(response, kwargs.get("model", ""))
+        return _extract_json(text, model_class)
+
+    return _retry_loop(call)
+
+
+def _consume_delta_stream(events, get_reasoning_delta, get_content_delta) -> str:
+    """reasoning/content delta を持つイベント列を消費し、thinking表示を切り替えつつ全文を返す。
+
+    Chat Completions と Responses API はイベント形状が異なるため、呼び出し側が
+    各イベントから reasoning/content のテキスト断片を取り出す関数を渡す。
+    reasoning フィールドが存在する場合は「--- [Thinking] ---」ブロックとして表示する。
+    """
     thinking_active = False
     content_parts: list[str] = []
 
-    with client.chat.completions.create(stream=True, **completion_kwargs) as stream:
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            rc = getattr(delta, "reasoning", None)
-            if rc:
-                if not thinking_active:
-                    print("\n--- [Thinking] ---", flush=True)
-                    thinking_active = True
-                print(rc, end="", flush=True)
-            if delta.content:
-                if thinking_active:
-                    print("\n--- [/Thinking] ---\n", flush=True)
-                    thinking_active = False
-                print(delta.content, end="", flush=True)
-                content_parts.append(delta.content)
+    for event in events:
+        # reasoning/content は Chat Completions の生チャンクでは同一デルタに両方
+        # 乗ることがある（thinking→回答の切り替わり）ため、continue で早期終了せず
+        # 両方を毎回チェックする。Responses API 等イベント型が別れている場合は
+        # 片方が常に None を返すだけで実害はない。
+        reasoning = get_reasoning_delta(event)
+        if reasoning:
+            if not thinking_active:
+                print("\n--- [Thinking] ---", flush=True)
+                thinking_active = True
+            print(reasoning, end="", flush=True)
+        content = get_content_delta(event)
+        if content:
+            if thinking_active:
+                print("\n--- [/Thinking] ---\n", flush=True)
+                thinking_active = False
+            print(content, end="", flush=True)
+            content_parts.append(content)
 
     if thinking_active:
         print("\n--- [/Thinking] ---\n", flush=True)
@@ -330,36 +427,60 @@ def stream_plain_text_completion(client, completion_kwargs) -> str:
     return "".join(content_parts)
 
 
+def _responses_reasoning_delta(event) -> str | None:
+    return event.delta if event.type == "response.reasoning_text.delta" else None
+
+
+def _responses_content_delta(event) -> str | None:
+    return event.delta if event.type == "response.output_text.delta" else None
+
+
+def _stream_responses_structured(client, kwargs):
+    """Structured Output ストリーミング（Responses API）。最終的な response オブジェクトを返す。"""
+    with client.responses.stream(**kwargs) as stream_ctx:
+        _consume_delta_stream(stream_ctx, _responses_reasoning_delta, _responses_content_delta)
+        final = stream_ctx.get_final_response()
+        _log_usage(final, kwargs.get("model", ""))
+        return final
+
+
+def _stream_responses_plain_text(client, kwargs) -> str:
+    """プレーンテキストストリーミング（Responses API）。出力しながら全文を返す。"""
+    with client.responses.create(stream=True, **kwargs) as stream:
+        return _consume_delta_stream(stream, _responses_reasoning_delta, _responses_content_delta)
+
+
+def stream_plain_text_completion(client, completion_kwargs) -> str:
+    """ストリーミングでプレーンテキスト補完を実行し、出力しながら全文を返す。"""
+
+    def get_reasoning(chunk) -> str | None:
+        if not chunk.choices:
+            return None
+        return getattr(chunk.choices[0].delta, "reasoning", None)
+
+    def get_content(chunk) -> str | None:
+        return chunk.choices[0].delta.content if chunk.choices else None
+
+    with client.chat.completions.create(stream=True, **completion_kwargs) as stream:
+        return _consume_delta_stream(stream, get_reasoning, get_content)
+
+
 def stream_completion(client, completion_kwargs):
     """ストリーミングで LLM 補完を実行し、thinking / content を標準出力に流す。
 
-    reasoning フィールドが存在する場合は「--- [Thinking] ---」ブロックとして表示する。
     最終的な completion オブジェクトを返す。
     """
-    thinking_active = False
+
+    def get_reasoning(event) -> str | None:
+        if event.type != "chunk" or not event.chunk.choices or not event.chunk.choices[0].delta:
+            return None
+        return getattr(event.chunk.choices[0].delta, "reasoning", None)
+
+    def get_content(event) -> str | None:
+        return event.delta if event.type == "content.delta" else None
 
     with client.chat.completions.stream(**completion_kwargs) as stream_ctx:
-        for event in stream_ctx:
-            if event.type == "chunk":
-                chunk = event.chunk
-                if chunk.choices and chunk.choices[0].delta:
-                    delta = chunk.choices[0].delta
-                    rc = getattr(delta, "reasoning", None)
-                    if rc:
-                        if not thinking_active:
-                            print("\n--- [Thinking] ---", flush=True)
-                            thinking_active = True
-                        print(rc, end="", flush=True)
-            elif event.type == "content.delta":
-                if thinking_active and event.delta:
-                    print("\n--- [/Thinking] ---\n", flush=True)
-                    thinking_active = False
-                if event.delta:
-                    print(event.delta, end="", flush=True)
-
-        if thinking_active:
-            print("\n--- [/Thinking] ---\n", flush=True)
-        print("\n", flush=True)
+        _consume_delta_stream(stream_ctx, get_reasoning, get_content)
         final = stream_ctx.get_final_completion()
         _log_usage(final, completion_kwargs.get("model", ""))
         return final

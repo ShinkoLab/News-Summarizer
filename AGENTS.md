@@ -113,10 +113,15 @@ config source (see **Deployment** below). For the full design spec see `README.m
 
 ### LLM integration
 
-Two providers, selected by `llm.provider`:
+Three providers, selected by `llm.provider`:
 
 - **`openai` (default)** — OpenAI Python SDK pointed at any OpenAI-compatible endpoint
-  (local Ollama at `http://127.0.0.1:11434/v1`, OpenRouter, etc.)
+  (local Ollama at `http://127.0.0.1:11434/v1`, OpenRouter, etc.); calls `chat.completions`
+- **`openai_responses`** — same OpenAI SDK, but calls the OpenAI Responses API
+  (`client.responses.create`/`.parse`) instead of Chat Completions. Needed for endpoints
+  that only expose `/v1/responses` for a given model (e.g. OpenCode Zen's `gpt-5.6-luna`,
+  `grok-4.6` — see `infra/DEPLOYMENT.md` #11); `messages`→`input`, `max_tokens`→
+  `max_output_tokens`, `reasoning_effort`→`reasoning.effort` are translated automatically
 - **`vertex`** — Vertex AI via `google-genai`; requires `llm.project_id` / `llm.location`
 
 Config key is `llm` (not `ollama`). All LLM steps use **structured output** (Pydantic models) by

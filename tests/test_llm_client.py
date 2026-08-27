@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import textwrap
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -267,3 +268,157 @@ class TestVertexProvider:
         assert call.kwargs["model"] == "gemini-test"
         assert call.kwargs["config"].system_instruction == "日本語で要約してください"
         assert call.kwargs["config"].max_output_tokens == 1024
+
+
+class TestOpenAIResponsesProvider:
+    """openai_responses: OpenAI Responses API (/v1/responses) 経由の呼び出し。"""
+
+    def _cfg(self, structured_output: bool = True) -> AppConfig:
+        return AppConfig(
+            llm=LLMConfig(
+                provider="openai_responses",
+                model="gpt-5.6-luna",
+                max_retries=0,
+                structured_output=structured_output,
+            ),
+        )
+
+    def _completion_kwargs(self) -> dict:
+        return {
+            "model": "gpt-5.6-luna",
+            "messages": [
+                {"role": "system", "content": "日本語で要約してください"},
+                {"role": "user", "content": "記事本文"},
+            ],
+            "response_format": ArticleSummary,
+            "max_tokens": 1024,
+            "reasoning_effort": "low",
+        }
+
+    def test_structured_mode_maps_params_and_returns_parsed(self):
+        expected = ArticleSummary(
+            title="Responses要約",
+            summary="Responses APIからの応答",
+            keywords=["OpenAI"],
+            category="テクノロジー",
+        )
+        client = MagicMock()
+        client.responses.parse.return_value = MagicMock(output_parsed=expected)
+
+        import summarizer.llm_client as llm_client
+        with patch.object(llm_client, "config", self._cfg(structured_output=True)):
+            result = llm_client.call_with_retry(client, self._completion_kwargs())
+
+        assert result == expected
+        call = client.responses.parse.call_args
+        assert call.kwargs["model"] == "gpt-5.6-luna"
+        assert call.kwargs["input"] == self._completion_kwargs()["messages"]
+        assert call.kwargs["text_format"] is ArticleSummary
+        assert call.kwargs["max_output_tokens"] == 1024
+        assert call.kwargs["reasoning"] == {"effort": "low"}
+        assert "max_tokens" not in call.kwargs
+        assert "reasoning_effort" not in call.kwargs
+        assert "response_format" not in call.kwargs
+
+    def test_plain_text_mode_extracts_json_from_output_text(self):
+        client = MagicMock()
+        client.responses.create.return_value = MagicMock(
+            output_text='```json\n{"title": "プレーン", "summary": "要約", '
+            '"keywords": ["a"], "category": "テクノロジー"}\n```'
+        )
+
+        import summarizer.llm_client as llm_client
+        with patch.object(llm_client, "config", self._cfg(structured_output=False)):
+            result = llm_client.call_with_retry(client, self._completion_kwargs())
+
+        assert result.title == "プレーン"
+        call = client.responses.create.call_args
+        assert "response_format" not in call.kwargs
+        assert "text_format" not in call.kwargs
+
+    def test_structured_mode_retries_and_raises_last_error(self):
+        client = MagicMock()
+        client.responses.parse.side_effect = RuntimeError("boom")
+
+        cfg = AppConfig(
+            llm=LLMConfig(
+                provider="openai_responses",
+                model="gpt-5.6-luna",
+                max_retries=1,
+                structured_output=True,
+            ),
+        )
+
+        import summarizer.llm_client as llm_client
+        with patch.object(llm_client, "config", cfg):
+            with pytest.raises(RuntimeError, match="boom"):
+                llm_client.call_with_retry(client, self._completion_kwargs())
+
+        assert client.responses.parse.call_count == 2
+
+    def test_structured_streaming_consumes_events_and_returns_final_response(self, capsys):
+        """client.responses.stream() のイベントを消費し、thinkingを表示しつつ最終レスポンスを返す。"""
+        expected = ArticleSummary(
+            title="Streamで要約",
+            summary="ストリーミング応答",
+            keywords=["ストリーム"],
+            category="テクノロジー",
+        )
+        events = [
+            SimpleNamespace(type="response.reasoning_text.delta", delta="考え中..."),
+            SimpleNamespace(type="response.output_text.delta", delta='{"title": "..."}'),
+        ]
+        stream_ctx = MagicMock()
+        stream_ctx.__iter__.return_value = iter(events)
+        stream_ctx.get_final_response.return_value = MagicMock(output_parsed=expected, usage=None)
+
+        client = MagicMock()
+        client.responses.stream.return_value.__enter__.return_value = stream_ctx
+        client.responses.stream.return_value.__exit__.return_value = False
+
+        import summarizer.llm_client as llm_client
+        with patch.object(llm_client, "config", self._cfg(structured_output=True)):
+            result = llm_client.call_with_retry(client, self._completion_kwargs(), stream=True)
+
+        assert result == expected
+        out = capsys.readouterr().out
+        assert "[Thinking]" in out
+        assert "考え中..." in out
+
+    def test_plain_text_streaming_accumulates_content_and_extracts_json(self, capsys):
+        """client.responses.create(stream=True) のイベントから全文を組み立てJSONを抽出する。"""
+        events = [
+            SimpleNamespace(type="response.output_text.delta", delta='{"title": "分割", "summary": "要約", '),
+            SimpleNamespace(type="response.output_text.delta", delta='"keywords": ["a"], "category": "テクノロジー"}'),
+        ]
+        stream_cm = MagicMock()
+        stream_cm.__enter__.return_value = iter(events)
+        stream_cm.__exit__.return_value = False
+
+        client = MagicMock()
+        client.responses.create.return_value = stream_cm
+
+        import summarizer.llm_client as llm_client
+        with patch.object(llm_client, "config", self._cfg(structured_output=False)):
+            result = llm_client.call_with_retry(client, self._completion_kwargs(), stream=True)
+
+        assert result.title == "分割"
+        out = capsys.readouterr().out
+        assert "分割" in out
+        assert "[Thinking]" not in out
+
+    def test_chat_completions_only_param_raises_before_calling_client(self):
+        """stop/seed等Chat Completions専用パラメータは、SDKの分かりにくいTypeError
+        ではなく _build_responses_kwargs の時点で明示的なValueErrorになる。
+        リトライも消費しない（設定ミスは再試行しても直らないため）。"""
+        client = MagicMock()
+        kwargs = self._completion_kwargs()
+        kwargs["stop"] = ["\n"]
+        kwargs["seed"] = 42
+
+        import summarizer.llm_client as llm_client
+        with patch.object(llm_client, "config", self._cfg(structured_output=True)):
+            with pytest.raises(ValueError, match="stop.*seed|seed.*stop"):
+                llm_client.call_with_retry(client, kwargs)
+
+        client.responses.parse.assert_not_called()

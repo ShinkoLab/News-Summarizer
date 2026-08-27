@@ -137,8 +137,12 @@ def _log_usage(response, context: str = "") -> None:
         return
     # Chat Completions は prompt_tokens/completion_tokens、Responses API は
     # input_tokens/output_tokens と命名が異なる。
-    prompt = getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", "?")
-    completion = getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", "?")
+    prompt = getattr(usage, "prompt_tokens", None)
+    if prompt is None:
+        prompt = getattr(usage, "input_tokens", "?")
+    completion = getattr(usage, "completion_tokens", None)
+    if completion is None:
+        completion = getattr(usage, "output_tokens", "?")
     total = getattr(usage, "total_tokens", "?")
     prefix = f"[{context}] " if context else ""
     logger.debug("%sToken usage — prompt: %s, completion: %s, total: %s", prefix, prompt, completion, total)
@@ -243,29 +247,20 @@ def _call_vertex_with_retry(client, completion_kwargs, stream: bool = False):
     raise last_error
 
 
-def _call_structured_with_retry(client, completion_kwargs, stream: bool = False):
-    """Structured Output モード: response_format に Pydantic モデルを渡して parse する。"""
+def _retry_loop(call_fn):
+    """max_retries 回まで call_fn() を再試行する共通ハーネス。
+
+    call_fn は成功時に結果を return し、失敗（パース失敗含む）時は例外を送出する。
+    全試行失敗時は最後の例外を再送出する。4つの *_with_retry 関数（Chat
+    Completions / Responses API × Structured Output / プレーンテキスト）で共有する。
+    """
     max_retries = config.llm.max_retries
     last_error: Exception | None = None
-
-    completion_kwargs = dict(completion_kwargs)
-    completion_kwargs["messages"] = _inject_thinking_token(completion_kwargs["messages"])
-
     for attempt in range(max_retries + 1):
         if attempt > 0:
             logger.warning("[再試行 %d/%d] LLM 生成を再試行します...", attempt, max_retries)
         try:
-            if stream:
-                response = stream_completion(client, completion_kwargs)
-            else:
-                response = client.chat.completions.parse(**completion_kwargs)
-
-            parsed = response.choices[0].message.parsed
-            if not parsed:
-                raise ValueError("Failed to parse the structured output from LLM.")
-            if not stream:
-                _log_usage(response, completion_kwargs.get("model", ""))
-            return parsed
+            return call_fn()
         except Exception as e:
             last_error = e
             logger.warning("LLM 生成エラー (試行 %d/%d): %s", attempt + 1, max_retries + 1, e, exc_info=True)
@@ -273,11 +268,29 @@ def _call_structured_with_retry(client, completion_kwargs, stream: bool = False)
     raise last_error
 
 
+def _call_structured_with_retry(client, completion_kwargs, stream: bool = False):
+    """Structured Output モード: response_format に Pydantic モデルを渡して parse する。"""
+    completion_kwargs = dict(completion_kwargs)
+    completion_kwargs["messages"] = _inject_thinking_token(completion_kwargs["messages"])
+
+    def call():
+        if stream:
+            response = stream_completion(client, completion_kwargs)
+        else:
+            response = client.chat.completions.parse(**completion_kwargs)
+
+        parsed = response.choices[0].message.parsed
+        if not parsed:
+            raise ValueError("Failed to parse the structured output from LLM.")
+        if not stream:
+            _log_usage(response, completion_kwargs.get("model", ""))
+        return parsed
+
+    return _retry_loop(call)
+
+
 def _call_plain_text_with_retry(client, completion_kwargs, stream: bool = False):
     """プレーンテキストモード: response_format なしで呼び出し、JSON を手動パースする。"""
-    max_retries = config.llm.max_retries
-    last_error: Exception | None = None
-
     # response_format からモデルクラスを取り出し、kwargs から除去
     kwargs = dict(completion_kwargs)
     kwargs["messages"] = _inject_thinking_token(kwargs["messages"])
@@ -288,23 +301,16 @@ def _call_plain_text_with_retry(client, completion_kwargs, stream: bool = False)
     # JSON 出力指示をプロンプトに注入
     kwargs["messages"] = _inject_json_instruction(kwargs["messages"], model_class)
 
-    for attempt in range(max_retries + 1):
-        if attempt > 0:
-            logger.warning("[再試行 %d/%d] LLM 生成を再試行します...", attempt, max_retries)
-        try:
-            if stream:
-                text = stream_plain_text_completion(client, kwargs)
-            else:
-                response = client.chat.completions.create(**kwargs)
-                text = response.choices[0].message.content or ""
-                _log_usage(response, kwargs.get("model", ""))
-            return _extract_json(text, model_class)
-        except Exception as e:
-            last_error = e
-            logger.warning("LLM 生成エラー (試行 %d/%d): %s", attempt + 1, max_retries + 1, e, exc_info=True)
+    def call():
+        if stream:
+            text = stream_plain_text_completion(client, kwargs)
+        else:
+            response = client.chat.completions.create(**kwargs)
+            text = response.choices[0].message.content or ""
+            _log_usage(response, kwargs.get("model", ""))
+        return _extract_json(text, model_class)
 
-    raise last_error
-
+    return _retry_loop(call)
 
 
 def _build_responses_kwargs(completion_kwargs: dict) -> tuple[dict, type | None]:
@@ -327,58 +333,42 @@ def _build_responses_kwargs(completion_kwargs: dict) -> tuple[dict, type | None]
 
 def _call_responses_structured_with_retry(client, completion_kwargs, stream: bool = False):
     """Responses API の Structured Output（text_format）モード。"""
-    max_retries = config.llm.max_retries
-    last_error: Exception | None = None
     kwargs, model_class = _build_responses_kwargs(completion_kwargs)
     if model_class is None:
         raise ValueError("response_format が指定されていません。")
     kwargs["text_format"] = model_class
 
-    for attempt in range(max_retries + 1):
-        if attempt > 0:
-            logger.warning("[再試行 %d/%d] LLM 生成を再試行します...", attempt, max_retries)
-        try:
-            if stream:
-                response = _stream_responses_structured(client, kwargs)
-            else:
-                response = client.responses.parse(**kwargs)
-                _log_usage(response, kwargs.get("model", ""))
-            parsed = response.output_parsed
-            if not parsed:
-                raise ValueError("Failed to parse the structured output from LLM.")
-            return parsed
-        except Exception as e:
-            last_error = e
-            logger.warning("LLM 生成エラー (試行 %d/%d): %s", attempt + 1, max_retries + 1, e, exc_info=True)
+    def call():
+        if stream:
+            response = _stream_responses_structured(client, kwargs)
+        else:
+            response = client.responses.parse(**kwargs)
+            _log_usage(response, kwargs.get("model", ""))
+        parsed = response.output_parsed
+        if not parsed:
+            raise ValueError("Failed to parse the structured output from LLM.")
+        return parsed
 
-    raise last_error
+    return _retry_loop(call)
 
 
 def _call_responses_plain_text_with_retry(client, completion_kwargs, stream: bool = False):
     """Responses API のプレーンテキストモード: response_format なしで呼び出し、JSON を手動パースする。"""
-    max_retries = config.llm.max_retries
-    last_error: Exception | None = None
     kwargs, model_class = _build_responses_kwargs(completion_kwargs)
     if model_class is None:
         raise ValueError("response_format が指定されていません。")
     kwargs["input"] = _inject_json_instruction(kwargs["input"], model_class)
 
-    for attempt in range(max_retries + 1):
-        if attempt > 0:
-            logger.warning("[再試行 %d/%d] LLM 生成を再試行します...", attempt, max_retries)
-        try:
-            if stream:
-                text = _stream_responses_plain_text(client, kwargs)
-            else:
-                response = client.responses.create(**kwargs)
-                text = response.output_text or ""
-                _log_usage(response, kwargs.get("model", ""))
-            return _extract_json(text, model_class)
-        except Exception as e:
-            last_error = e
-            logger.warning("LLM 生成エラー (試行 %d/%d): %s", attempt + 1, max_retries + 1, e, exc_info=True)
+    def call():
+        if stream:
+            text = _stream_responses_plain_text(client, kwargs)
+        else:
+            response = client.responses.create(**kwargs)
+            text = response.output_text or ""
+            _log_usage(response, kwargs.get("model", ""))
+        return _extract_json(text, model_class)
 
-    raise last_error
+    return _retry_loop(call)
 
 
 def _consume_delta_stream(events, get_reasoning_delta, get_content_delta) -> str:
@@ -392,13 +382,16 @@ def _consume_delta_stream(events, get_reasoning_delta, get_content_delta) -> str
     content_parts: list[str] = []
 
     for event in events:
+        # reasoning/content は Chat Completions の生チャンクでは同一デルタに両方
+        # 乗ることがある（thinking→回答の切り替わり）ため、continue で早期終了せず
+        # 両方を毎回チェックする。Responses API 等イベント型が別れている場合は
+        # 片方が常に None を返すだけで実害はない。
         reasoning = get_reasoning_delta(event)
         if reasoning:
             if not thinking_active:
                 print("\n--- [Thinking] ---", flush=True)
                 thinking_active = True
             print(reasoning, end="", flush=True)
-            continue
         content = get_content_delta(event)
         if content:
             if thinking_active:

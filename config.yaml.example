@@ -1,6 +1,9 @@
 # LLM (OpenAI Compatible API) の設定
 llm:
-  # Cloud Run + Vertex AI では "vertex"。ローカルOllamaでは "openai"
+  # Cloud Run + Vertex AI では "vertex"。ローカルOllamaでは "openai"。
+  # エンドポイントが /v1/chat/completions ではなく OpenAIの Responses API
+  # （/v1/responses）しか提供しないモデルの場合は "openai_responses"
+  # （例: OpenCode Zenのgpt-5.6-luna, grok-4.6。詳細はinfra/DEPLOYMENT.md参照）
   provider: "openai"
   base_url: "http://127.0.0.1:11434/v1"
   model: "your-model-name" # 使用するモデル名

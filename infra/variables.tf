@@ -162,6 +162,12 @@ variable "viewer_users" {
   type        = set(string)
 }
 
+variable "viewer_domain" {
+  description = "Custom domain (e.g. viewer.example.com) to map to the Viewer via Cloud Run Domain Mapping. Empty string (default) skips domain mapping entirely"
+  type        = string
+  default     = ""
+}
+
 variable "schedule" {
   description = "Cloud Scheduler cron expression"
   type        = string

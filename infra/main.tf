@@ -421,6 +421,25 @@ resource "google_iap_web_cloud_run_service_iam_binding" "family" {
   depends_on = [google_cloud_run_v2_service_iam_member.iap_invoker]
 }
 
+resource "google_cloud_run_domain_mapping" "viewer" {
+  count    = var.viewer_domain != "" ? 1 : 0
+  location = google_cloud_run_v2_service.viewer.location
+  name     = var.viewer_domain
+
+  metadata {
+    namespace = var.project_id
+  }
+
+  spec {
+    route_name = google_cloud_run_v2_service.viewer.name
+  }
+
+  depends_on = [
+    google_cloud_run_v2_service.viewer,
+    google_iap_web_cloud_run_service_iam_binding.family,
+  ]
+}
+
 resource "google_cloud_run_v2_job_iam_member" "scheduler_invoker" {
   project  = var.project_id
   location = google_cloud_run_v2_job.summarizer.location

@@ -7,6 +7,10 @@ viewer_users = [
   "family@example.com",
 ]
 
+# Viewer を自分のドメインでも公開したい場合に設定（未設定なら *.run.app URLのみ）。
+# ドメイン所有権確認が先に必要。詳細は infra/DEPLOYMENT.md 参照。
+# viewer_domain = "viewer.your-domain.example.com"
+
 llm_base_url = "https://your-openai-compatible-endpoint.example.com/v1"
 llm_model    = "your-model-id"
 

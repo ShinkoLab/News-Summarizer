@@ -27,29 +27,28 @@ def env(name: str, default: str | None = None) -> str | None:
     return value if value not in (None, "") else default
 
 
-def _request(method: str, url: str, auth_header: str, body: dict | None = None) -> object:
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8") if body is not None else None,
-        headers={"Authorization": auth_header, "Content-Type": "application/json"},
-        method=method,
-    )
-    with urllib.request.urlopen(request, timeout=10) as response:
-        raw = response.read()
-        return json.loads(raw) if raw else None
-
-
-def find_existing_key(base_url: str, auth_header: str) -> str | None:
+def _request(method: str, url: str, auth_header: str, body: dict | None = None, *, error_context: str) -> object:
     # Miniflux 起動直後は疎通できてもまだ 502 の HTML を返す等、JSON として
     # 壊れた応答が返ることがある。ここで未捕捉例外を出すとスクリプト全体が
     # 落ちて `docker/entrypoint.sh` 側のリトライの1回分が診断メッセージ無しに
-    # 消費されてしまうため、他の失敗経路と同じく警告を出して None に倒す。
+    # 消費されてしまうため、失敗はすべてここで警告に倒して None を返す。
     try:
-        keys = _request("GET", f"{base_url}/v1/api-keys", auth_header)
-    except Exception as exc:  # noqa: BLE001 - 何が起きても既存キー無しとして続行する
-        print(f"既存の Miniflux API キー一覧の取得に失敗しました: {exc}", file=sys.stderr)
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8") if body is not None else None,
+            headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            method=method,
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw = response.read()
+            return json.loads(raw) if raw else None
+    except Exception as exc:  # noqa: BLE001 - 何が起きても失敗として続行する
+        print(f"{error_context}: {exc}", file=sys.stderr)
         return None
 
+
+def find_existing_key(base_url: str, auth_header: str) -> str | None:
+    keys = _request("GET", f"{base_url}/v1/api-keys", auth_header, error_context="既存の Miniflux API キー一覧の取得に失敗しました")
     if not isinstance(keys, list):
         return None
 
@@ -77,15 +76,15 @@ def create_miniflux_api_key(base_url: str) -> str | None:
     if existing:
         return existing
 
-    try:
-        payload = _request("POST", f"{base_url}/v1/api-keys", auth_header, {"description": DESCRIPTION})
-        return payload.get("token") if isinstance(payload, dict) else None
-    except Exception as exc:  # noqa: BLE001 - find_existing_key と同じ理由
-        print(f"Miniflux API キーの発行に失敗しました: {exc}", file=sys.stderr)
-        return None
+    payload = _request(
+        "POST", f"{base_url}/v1/api-keys", auth_header, {"description": DESCRIPTION}, error_context="Miniflux API キーの発行に失敗しました"
+    )
+    return payload.get("token") if isinstance(payload, dict) else None
 
 
 def main() -> None:
+    # 既定値は docker/entrypoint.sh 側で MINIFLUX_BASE_URL に export 済みなので、
+    # ここでは env var が無い異常系のフォールバックとしてのみ持たせる。
     base_url = env("MINIFLUX_BASE_URL", "http://miniflux:8080")
     token = create_miniflux_api_key(base_url)
     if token:

@@ -7,6 +7,30 @@ PYTHON="/app/.venv/bin/python"
 # email ソースの処理が本番から静かに消える。
 SOURCE="${NEWS_SUMMARIZER_SOURCE:-all}"
 
+# MINIFLUX_BASE_URL の既定値はここで一度だけ確定させ、以降 export して
+# provision_miniflux_key.py・main.py の両方に同じ値を見せる。
+# provision_miniflux_key.py 側にも独自の既定値があったが、ここで未設定のまま
+# だと「キー発行は（自前の既定値で）成功したのに、config.py 側は
+# MINIFLUX_BASE_URL 環境変数そのものが無いため miniflux.base_url が必須項目
+# 欠落で起動時に落ちる」というズレが起きうる。単一の真実源にする。
+export MINIFLUX_BASE_URL="${MINIFLUX_BASE_URL:-http://miniflux:8080}"
+
+# 正の整数でなければ既定値にフォールバックし、警告を出す。
+# MINIFLUX_KEY_PROVISION_RETRIES と NEWS_SUMMARIZER_INTERVAL_SECONDS の
+# どちらも同じ形の検証が必要なため関数化する。
+validate_positive_int() {
+  # $1=値 $2=環境変数名（メッセージ用） $3=既定値
+  case "$1" in
+    ''|*[!0-9]*|0)
+      echo "[entrypoint] ${2}=\"$1\" は不正な値です。既定の${3}を使います" >&2
+      echo "$3"
+      ;;
+    *)
+      echo "$1"
+      ;;
+  esac
+}
+
 # 主要な処理をすべてバックグラウンドで起動して trap 経由で SIGTERM/SIGINT を
 # 転送する。単純に前面で呼ぶだけだと、このスクリプト（PID 1）がシグナルを
 # 受けても子プロセスには伝わらず、docker stop / compose down のたびに猶予
@@ -55,13 +79,7 @@ if [ -z "${MINIFLUX_API_KEY:-}" ] && [ -n "${MINIFLUX_ADMIN_USERNAME:-}" ] && [ 
   # 効かなくなる。一時ファイル経由で受け取ることで run_bg を親シェルのまま呼ぶ。
   key_tmp="$(mktemp)"
   attempt=0
-  max_attempts="${MINIFLUX_KEY_PROVISION_RETRIES:-5}"
-  case "$max_attempts" in
-    ''|*[!0-9]*|0)
-      echo "[entrypoint] MINIFLUX_KEY_PROVISION_RETRIES=\"$max_attempts\" は不正な値です。既定の5回を使います" >&2
-      max_attempts=5
-      ;;
-  esac
+  max_attempts="$(validate_positive_int "${MINIFLUX_KEY_PROVISION_RETRIES:-5}" MINIFLUX_KEY_PROVISION_RETRIES 5)"
   while [ "$attempt" -lt "$max_attempts" ]; do
     run_bg "$PYTHON" /app/docker/provision_miniflux_key.py > "$key_tmp" || true
     exit_if_terminating
@@ -107,13 +125,7 @@ fi
 case "$1" in
   run-loop)
     shift
-    interval="${NEWS_SUMMARIZER_INTERVAL_SECONDS:-3600}"
-    case "$interval" in
-      ''|*[!0-9]*|0)
-        echo "[entrypoint] NEWS_SUMMARIZER_INTERVAL_SECONDS=\"$interval\" は不正な値です。既定の3600秒を使います" >&2
-        interval=3600
-        ;;
-    esac
+    interval="$(validate_positive_int "${NEWS_SUMMARIZER_INTERVAL_SECONDS:-3600}" NEWS_SUMMARIZER_INTERVAL_SECONDS 3600)"
     while true; do
       # main.py が失敗しても set -e でループごと落ちないようにする。
       # 一過性の障害（LLM/DBの一時エラー等）でコンテナが停止し、次回間隔まで

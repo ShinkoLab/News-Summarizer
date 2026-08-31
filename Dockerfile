@@ -11,12 +11,12 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY . .
 RUN uv sync --frozen --no-dev
-RUN chmod +x /app/docker/entrypoint.sh
 
-# Docker Compose では /data を named volume でマウントし、SQLite バックエンドの
-# 保存先にする。named volume は初回作成時にイメージ側のディレクトリの所有権を
-# 引き継ぐため、USER nobody に切り替える前に nobody 書き込み可能にしておく。
-RUN mkdir -p /data && chown nobody:nogroup /data
+# entrypoint.sh を実行可能にし、/data を named volume 用に用意する（後者は
+# Docker Compose で SQLite バックエンドの保存先にする想定。named volume は
+# 初回作成時にイメージ側のディレクトリの所有権を引き継ぐため、USER nobody に
+# 切り替える前に nobody 書き込み可能にしておく）。
+RUN chmod +x /app/docker/entrypoint.sh && mkdir -p /data && chown nobody:nogroup /data
 
 USER nobody
 

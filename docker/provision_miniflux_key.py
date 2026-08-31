@@ -5,6 +5,10 @@
 1行だけ印字する（`docker/entrypoint.sh` が `$(...)` で拾って `MINIFLUX_API_KEY` に設定する）。
 失敗しても標準エラーへ警告を出すだけで、ここでは終了コード 0 のまま戻る。API キーが
 結局空のままなら main.py 側の Miniflux 認証エラーとして自然に失敗させる。
+
+Miniflux の `GET /v1/api-keys` は発行済みトークンの値を含めて返す（動作確認済み）ため、
+`DESCRIPTION` に一致する既存キーがあればそれをそのまま使い回し、無ければ新規作成する。
+これによりコンテナ再起動のたびに無効な API キーが積み上がることもない。
 """
 
 from __future__ import annotations
@@ -16,10 +20,37 @@ import urllib.error
 import urllib.request
 from base64 import b64encode
 
+DESCRIPTION = "news-summarizer-docker"
+
 
 def env(name: str, default: str | None = None) -> str | None:
     value = os.environ.get(name)
     return value if value not in (None, "") else default
+
+
+def _request(method: str, url: str, auth_header: str, body: dict | None = None) -> object:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8") if body is not None else None,
+        headers={"Authorization": auth_header, "Content-Type": "application/json"},
+        method=method,
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        raw = response.read()
+        return json.loads(raw) if raw else None
+
+
+def find_existing_key(base_url: str, auth_header: str) -> str | None:
+    try:
+        keys = _request("GET", f"{base_url}/v1/api-keys", auth_header)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+        print(f"既存の Miniflux API キー一覧の取得に失敗しました: {exc}", file=sys.stderr)
+        return None
+
+    for key in keys or []:
+        if key.get("description") == DESCRIPTION and key.get("token"):
+            return key["token"]
+    return None
 
 
 def create_miniflux_api_key(base_url: str) -> str | None:
@@ -33,21 +64,16 @@ def create_miniflux_api_key(base_url: str) -> str | None:
         )
         return None
 
-    request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/v1/api-keys",
-        data=json.dumps({"description": "news-summarizer-docker"}).encode("utf-8"),
-        headers={
-            "Authorization": "Basic "
-            + b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii"),
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
+    base_url = base_url.rstrip("/")
+    auth_header = "Basic " + b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+
+    existing = find_existing_key(base_url, auth_header)
+    if existing:
+        return existing
 
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-            return payload.get("token")
+        payload = _request("POST", f"{base_url}/v1/api-keys", auth_header, {"description": DESCRIPTION})
+        return payload.get("token") if payload else None
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
         print(f"Miniflux API キーの発行に失敗しました: {exc}", file=sys.stderr)
         return None

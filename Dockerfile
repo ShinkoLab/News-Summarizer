@@ -20,6 +20,12 @@ RUN mkdir -p /data && chown nobody:nogroup /data
 
 USER nobody
 
+# DATABASE_BACKEND=sqlite のとき、明示的に SQLITE_DATABASE_PATH を渡し忘れても
+# 下の VOLUME にきちんと書き込まれるようにする既定値（config.py 側の相対パス
+# デフォルト "data/news_summarizer.db" だと /app/data 配下＝コンテナの書き込み層に
+# 書かれてしまい、ボリュームを永続化しているつもりでも再作成時に消える）。
+ENV SQLITE_DATABASE_PATH=/data/news_summarizer.db
+
 VOLUME ["/data"]
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]

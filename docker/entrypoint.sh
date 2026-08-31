@@ -51,6 +51,13 @@ trap forward_signal TERM INT
 run_bg() {
   "$@" &
   child_pid=$!
+  # "$@ &" から child_pid=$! までのごく短い間にシグナルが届くと、trap は
+  # terminating=1 にはするものの child_pid がまだ空で kill できない
+  # （forward_signal 自体は再度呼ばれない）。ここで改めてチェックし、
+  # 取りこぼしていたら今すぐ転送する。
+  if [ "$terminating" -eq 1 ]; then
+    kill -TERM "$child_pid" 2>/dev/null || true
+  fi
   wait "$child_pid"
   rc=$?
   child_pid=""

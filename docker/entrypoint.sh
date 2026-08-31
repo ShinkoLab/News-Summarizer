@@ -41,7 +41,11 @@ exit_if_terminating() {
   fi
 }
 
-if [ -z "${MINIFLUX_API_KEY:-}" ]; then
+if [ -z "${MINIFLUX_API_KEY:-}" ] && [ -n "${MINIFLUX_ADMIN_USERNAME:-}" ] && [ -n "${MINIFLUX_ADMIN_PASSWORD:-}" ]; then
+  # 管理者アカウント情報が最初から無い場合は provision_miniflux_key.py が
+  # 即座に諦めて空を返す（ネットワークエラーではないので待っても変わらない）。
+  # ここで先にチェックしておかないと、5回×5秒＝約25秒を意味もなく浪費する。
+  #
   # Miniflux 側の起動完了（healthcheck）と competing しうるので、初回起動直後の
   # 失敗だけで諦めずに何度か再試行する。ここで諦めると run-loop の耐障害性
   # （main.py 自体の再試行）があっても、認証キーが永遠に空のままになる。
@@ -52,6 +56,12 @@ if [ -z "${MINIFLUX_API_KEY:-}" ]; then
   key_tmp="$(mktemp)"
   attempt=0
   max_attempts="${MINIFLUX_KEY_PROVISION_RETRIES:-5}"
+  case "$max_attempts" in
+    ''|*[!0-9]*|0)
+      echo "[entrypoint] MINIFLUX_KEY_PROVISION_RETRIES=\"$max_attempts\" は不正な値です。既定の5回を使います" >&2
+      max_attempts=5
+      ;;
+  esac
   while [ "$attempt" -lt "$max_attempts" ]; do
     run_bg "$PYTHON" /app/docker/provision_miniflux_key.py > "$key_tmp" || true
     exit_if_terminating
@@ -73,9 +83,11 @@ fi
 
 has_source_arg() {
   for arg in "$@"; do
-    if [ "$arg" = "--source" ]; then
-      return 0
-    fi
+    case "$arg" in
+      --source|--source=*)
+        return 0
+        ;;
+    esac
   done
   return 1
 }

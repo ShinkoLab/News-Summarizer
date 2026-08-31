@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import urllib.error
 import urllib.request
 from base64 import b64encode
 
@@ -41,14 +40,21 @@ def _request(method: str, url: str, auth_header: str, body: dict | None = None) 
 
 
 def find_existing_key(base_url: str, auth_header: str) -> str | None:
+    # Miniflux 起動直後は疎通できてもまだ 502 の HTML を返す等、JSON として
+    # 壊れた応答が返ることがある。ここで未捕捉例外を出すとスクリプト全体が
+    # 落ちて `docker/entrypoint.sh` 側のリトライの1回分が診断メッセージ無しに
+    # 消費されてしまうため、他の失敗経路と同じく警告を出して None に倒す。
     try:
         keys = _request("GET", f"{base_url}/v1/api-keys", auth_header)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+    except Exception as exc:  # noqa: BLE001 - 何が起きても既存キー無しとして続行する
         print(f"既存の Miniflux API キー一覧の取得に失敗しました: {exc}", file=sys.stderr)
         return None
 
-    for key in keys or []:
-        if key.get("description") == DESCRIPTION and key.get("token"):
+    if not isinstance(keys, list):
+        return None
+
+    for key in keys:
+        if isinstance(key, dict) and key.get("description") == DESCRIPTION and key.get("token"):
             return key["token"]
     return None
 
@@ -73,8 +79,8 @@ def create_miniflux_api_key(base_url: str) -> str | None:
 
     try:
         payload = _request("POST", f"{base_url}/v1/api-keys", auth_header, {"description": DESCRIPTION})
-        return payload.get("token") if payload else None
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+        return payload.get("token") if isinstance(payload, dict) else None
+    except Exception as exc:  # noqa: BLE001 - find_existing_key と同じ理由
         print(f"Miniflux API キーの発行に失敗しました: {exc}", file=sys.stderr)
         return None
 

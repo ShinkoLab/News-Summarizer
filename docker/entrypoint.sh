@@ -12,7 +12,9 @@ SOURCE="${NEWS_SUMMARIZER_SOURCE:-all}"
 # シグナルを受けても子プロセスには伝わらず、docker stop / compose down のたびに
 # 猶予時間いっぱい待たされた末に SIGKILL される。
 child_pid=""
+terminating=0
 forward_signal() {
+  terminating=1
   if [ -n "$child_pid" ]; then
     kill -TERM "$child_pid" 2>/dev/null || true
   fi
@@ -79,8 +81,18 @@ case "$1" in
     while true; do
       # main.py が失敗しても set -e でループごと落ちないようにする。
       # 一過性の障害（LLM/DBの一時エラー等）でコンテナが停止し、次回間隔まで
-      # 何も実行されなくなるのを防ぐ。
-      run_summarizer "$@" || echo "[entrypoint] main.py が異常終了しました。次の間隔まで待って再試行します" >&2
+      # 何も実行されなくなるのを防ぐ。ただし SIGTERM/SIGINT による意図的な
+      # 停止（forward_signal が terminating=1 にする）は再試行せず、ここで
+      # ループを抜けて終了する（`|| ...` で set -e が効かないため明示チェックする）。
+      run_summarizer "$@" || {
+        if [ "$terminating" -eq 1 ]; then
+          exit 0
+        fi
+        echo "[entrypoint] main.py が異常終了しました。次の間隔まで待って再試行します" >&2
+      }
+      if [ "$terminating" -eq 1 ]; then
+        exit 0
+      fi
       sleep "$interval" &
       child_pid=$!
       wait "$child_pid"

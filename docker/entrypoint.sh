@@ -7,10 +7,10 @@ PYTHON="/app/.venv/bin/python"
 # email ソースの処理が本番から静かに消える。
 SOURCE="${NEWS_SUMMARIZER_SOURCE:-all}"
 
-# main.py をバックグラウンドで起動して trap 経由で SIGTERM/SIGINT を転送する。
-# 単純に "$PYTHON" main.py ... を前面で呼ぶだけだと、このスクリプト（PID 1）が
-# シグナルを受けても子プロセスには伝わらず、docker stop / compose down のたびに
-# 猶予時間いっぱい待たされた末に SIGKILL される。
+# 主要な処理をすべてバックグラウンドで起動して trap 経由で SIGTERM/SIGINT を
+# 転送する。単純に前面で呼ぶだけだと、このスクリプト（PID 1）がシグナルを
+# 受けても子プロセスには伝わらず、docker stop / compose down のたびに猶予
+# 時間いっぱい待たされた末に SIGKILL される。
 child_pid=""
 terminating=0
 forward_signal() {
@@ -21,14 +21,41 @@ forward_signal() {
 }
 trap forward_signal TERM INT
 
+# バックグラウンドで1コマンド実行し、完了を待つ。$child_pid を trap から
+# 見えるようにすることで、実行中に届いた SIGTERM/SIGINT を即座に転送できる
+# （main.py・Miniflux APIキー取得・sleep のすべてで共通して使う）。
+run_bg() {
+  "$@" &
+  child_pid=$!
+  wait "$child_pid"
+  rc=$?
+  child_pid=""
+  return "$rc"
+}
+
+# 終了要求が来ていたらここで抜ける。set -e は `||`/`if` の条件式の中では
+# 効かないため、各ステップの後で明示的にチェックする。
+exit_if_terminating() {
+  if [ "$terminating" -eq 1 ]; then
+    exit 0
+  fi
+}
+
 if [ -z "${MINIFLUX_API_KEY:-}" ]; then
   # Miniflux 側の起動完了（healthcheck）と competing しうるので、初回起動直後の
   # 失敗だけで諦めずに何度か再試行する。ここで諦めると run-loop の耐障害性
   # （main.py 自体の再試行）があっても、認証キーが永遠に空のままになる。
+  #
+  # 出力を $(...) で直接受け取ると run_bg がサブシェルの中で実行されてしまい、
+  # そこで設定した child_pid が親シェル（trap 側）から見えず、シグナル転送が
+  # 効かなくなる。一時ファイル経由で受け取ることで run_bg を親シェルのまま呼ぶ。
+  key_tmp="$(mktemp)"
   attempt=0
   max_attempts="${MINIFLUX_KEY_PROVISION_RETRIES:-5}"
   while [ "$attempt" -lt "$max_attempts" ]; do
-    provisioned_key="$("$PYTHON" /app/docker/provision_miniflux_key.py || true)"
+    run_bg "$PYTHON" /app/docker/provision_miniflux_key.py > "$key_tmp" || true
+    exit_if_terminating
+    provisioned_key="$(cat "$key_tmp")"
     if [ -n "$provisioned_key" ]; then
       MINIFLUX_API_KEY="$provisioned_key"
       export MINIFLUX_API_KEY
@@ -37,9 +64,11 @@ if [ -z "${MINIFLUX_API_KEY:-}" ]; then
     attempt=$((attempt + 1))
     if [ "$attempt" -lt "$max_attempts" ]; then
       echo "[entrypoint] Miniflux API キーの取得に失敗しました（${attempt}/${max_attempts}）。5秒後に再試行します" >&2
-      sleep 5
+      run_bg sleep 5 || true
+      exit_if_terminating
     fi
   done
+  rm -f "$key_tmp"
 fi
 
 has_source_arg() {
@@ -53,15 +82,10 @@ has_source_arg() {
 
 run_summarizer() {
   if has_source_arg "$@"; then
-    "$PYTHON" main.py "$@" &
+    run_bg "$PYTHON" main.py "$@"
   else
-    "$PYTHON" main.py --source "$SOURCE" "$@" &
+    run_bg "$PYTHON" main.py --source "$SOURCE" "$@"
   fi
-  child_pid=$!
-  wait "$child_pid"
-  rc=$?
-  child_pid=""
-  return "$rc"
 }
 
 if [ "$#" -eq 0 ]; then
@@ -73,7 +97,7 @@ case "$1" in
     shift
     interval="${NEWS_SUMMARIZER_INTERVAL_SECONDS:-3600}"
     case "$interval" in
-      ''|*[!0-9]*)
+      ''|*[!0-9]*|0)
         echo "[entrypoint] NEWS_SUMMARIZER_INTERVAL_SECONDS=\"$interval\" は不正な値です。既定の3600秒を使います" >&2
         interval=3600
         ;;
@@ -81,22 +105,15 @@ case "$1" in
     while true; do
       # main.py が失敗しても set -e でループごと落ちないようにする。
       # 一過性の障害（LLM/DBの一時エラー等）でコンテナが停止し、次回間隔まで
-      # 何も実行されなくなるのを防ぐ。ただし SIGTERM/SIGINT による意図的な
-      # 停止（forward_signal が terminating=1 にする）は再試行せず、ここで
-      # ループを抜けて終了する（`|| ...` で set -e が効かないため明示チェックする）。
-      run_summarizer "$@" || {
-        if [ "$terminating" -eq 1 ]; then
-          exit 0
-        fi
+      # 何も実行されなくなるのを防ぐ。SIGTERM/SIGINT による意図的な停止は
+      # 「異常終了」扱いにせず、そのままループを抜けて終了する。
+      if ! run_summarizer "$@"; then
+        exit_if_terminating
         echo "[entrypoint] main.py が異常終了しました。次の間隔まで待って再試行します" >&2
-      }
-      if [ "$terminating" -eq 1 ]; then
-        exit 0
       fi
-      sleep "$interval" &
-      child_pid=$!
-      wait "$child_pid"
-      child_pid=""
+      exit_if_terminating
+      run_bg sleep "$interval" || true
+      exit_if_terminating
     done
     ;;
   run-once)

@@ -649,6 +649,28 @@ uv run python main.py --stream
 uv run python main.py --debug
 ```
 
+### Docker実行
+
+このリポジトリの `Dockerfile` は `docker/entrypoint.sh` をエントリポイントとし、`config.yaml`
+を置かず環境変数のみで動かす前提のコンテナ用に、`main.py` を単発実行する `run-once` と、
+コンテナ内で `sleep` を挟みながら定期実行し続ける `run-loop` の2モードを提供する
+（既定は `run-once`）。Miniflux の管理者アカウント情報（`MINIFLUX_ADMIN_USERNAME` /
+`MINIFLUX_ADMIN_PASSWORD`）が設定されていて `MINIFLUX_API_KEY` が未設定の場合は、
+起動時に `docker/provision_miniflux_key.py` が Miniflux の API キーを自動発行する。
+
+```bash
+docker build -t news-summarizer .
+
+# 単発実行
+docker run --rm -e MINIFLUX_BASE_URL=... -e MINIFLUX_API_KEY=... news-summarizer run-once
+
+# 1時間おきに定期実行し続ける
+docker run --rm -e NEWS_SUMMARIZER_INTERVAL_SECONDS=3600 news-summarizer run-loop
+```
+
+Miniflux・News-Viewer を含めたフルスタックを `docker compose up` だけで動かす手順は、
+`News-Summarizer-Docker/README.md`（このリポジトリと同階層に配置する別ディレクトリ）を参照。
+
 ## ディレクトリ構成
 
 ```

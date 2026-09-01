@@ -1,8 +1,10 @@
 import json
 import re
+from typing import Any, get_args, get_origin
 from google import genai
 from google.genai import types as genai_types
 from openai import OpenAI
+from pydantic import BaseModel
 from config import config
 from config import SummarizerStepConfig
 from logger import get_logger
@@ -92,13 +94,42 @@ def _inject_thinking_token(messages: list[dict]) -> list[dict]:
     return messages
 
 
+def _example_value(annotation: Any) -> Any:
+    """型注釈から JSON の例示値を1つ生成する（ネストされた BaseModel も再帰的に処理）。"""
+    origin = get_origin(annotation)
+    if origin is list:
+        args = get_args(annotation)
+        item_type = args[0] if args else str
+        return [_example_value(item_type)]
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return _example_instance(annotation)
+    if annotation is int:
+        return 0
+    if annotation is float:
+        return 0.0
+    if annotation is bool:
+        return True
+    return "..."
+
+
+def _example_instance(model_class: type[BaseModel]) -> dict:
+    return {name: _example_value(field.annotation) for name, field in model_class.model_fields.items()}
+
+
 def _inject_json_instruction(messages: list[dict], model_class) -> list[dict]:
-    """プロンプトの末尾に JSON スキーマ出力指示を追加する。"""
-    schema = model_class.model_json_schema()
+    """プロンプトの末尾に JSON 出力指示を追加する。
+
+    生の JSON Schema（$defs/properties/description などのメタ情報込み）をそのまま
+    見せると、小型・ローカルモデルがスキーマ定義自体を値として出力してしまうことが
+    実機で確認された（例: gemma-4-26b-a4b が {"description": "...", "type": "object"}
+    のようなスキーマの断片をそのまま埋めて返す）。スキーマではなく具体的な JSON の
+    例を1つ示す方が確実に倣ってくれるため、例示インスタンスを埋め込む。
+    """
+    example = _example_instance(model_class)
     instruction = (
-        "\n\n以下の JSON スキーマに従い、JSON のみを出力してください。"
+        "\n\n次の例と同じ構造の JSON のみを出力してください。"
         "必ず ```json ... ``` のコードブロックで囲んでください。余分な説明文は不要です。\n"
-        f"スキーマ:\n```json\n{json.dumps(schema, ensure_ascii=False, indent=2)}\n```"
+        f"例:\n```json\n{json.dumps(example, ensure_ascii=False, indent=2)}\n```"
     )
     messages = list(messages)
     last = dict(messages[-1])

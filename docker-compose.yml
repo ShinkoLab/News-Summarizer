@@ -1,0 +1,129 @@
+services:
+  miniflux-db:
+    image: ${MINIFLUX_POSTGRES_IMAGE:-postgres:17-alpine}
+    environment:
+      POSTGRES_USER: miniflux
+      POSTGRES_PASSWORD: ${MINIFLUX_POSTGRES_PASSWORD:-miniflux}
+      POSTGRES_DB: miniflux
+    volumes:
+      - miniflux-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U miniflux -d miniflux"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  miniflux:
+    image: ${MINIFLUX_IMAGE:-miniflux/miniflux:latest}
+    depends_on:
+      miniflux-db:
+        condition: service_healthy
+    ports:
+      - "${MINIFLUX_PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgres://miniflux:${MINIFLUX_POSTGRES_PASSWORD:-miniflux}@miniflux-db/miniflux?sslmode=disable
+      RUN_MIGRATIONS: "1"
+      CREATE_ADMIN: "1"
+      ADMIN_USERNAME: ${MINIFLUX_ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${MINIFLUX_ADMIN_PASSWORD:-miniflux}
+    healthcheck:
+      test: ["CMD", "/usr/bin/miniflux", "-healthcheck", "auto"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  summarizer:
+    build:
+      context: .
+    depends_on:
+      miniflux:
+        condition: service_healthy
+    environment:
+      DATABASE_BACKEND: sqlite
+      SQLITE_DATABASE_PATH: /data/news_summarizer.db
+      MINIFLUX_BASE_URL: http://miniflux:8080
+      MINIFLUX_API_KEY: ${MINIFLUX_API_KEY:-}
+      MINIFLUX_ADMIN_USERNAME: ${MINIFLUX_ADMIN_USERNAME:-admin}
+      MINIFLUX_ADMIN_PASSWORD: ${MINIFLUX_ADMIN_PASSWORD:-miniflux}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-ollama}
+      LLM_STRUCTURED_OUTPUT: ${LLM_STRUCTURED_OUTPUT:-true}
+      LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-3}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-}
+      LLM_EMBEDDING_MODEL: ${LLM_EMBEDDING_MODEL:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      GROUPER_USE_EMBEDDINGS: ${GROUPER_USE_EMBEDDINGS:-false}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      NEWS_SUMMARIZER_SOURCE: ${NEWS_SUMMARIZER_SOURCE:-rss}
+      NEWS_SUMMARIZER_INTERVAL_SECONDS: ${NEWS_SUMMARIZER_INTERVAL_SECONDS:-3600}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      TZ: ${TZ:-Asia/Tokyo}
+    volumes:
+      - summarizer-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["run-loop"]
+    restart: unless-stopped
+
+  summarizer-once:
+    profiles: ["manual"]
+    build:
+      context: .
+    depends_on:
+      miniflux:
+        condition: service_healthy
+    environment:
+      DATABASE_BACKEND: sqlite
+      SQLITE_DATABASE_PATH: /data/news_summarizer.db
+      MINIFLUX_BASE_URL: http://miniflux:8080
+      MINIFLUX_API_KEY: ${MINIFLUX_API_KEY:-}
+      MINIFLUX_ADMIN_USERNAME: ${MINIFLUX_ADMIN_USERNAME:-admin}
+      MINIFLUX_ADMIN_PASSWORD: ${MINIFLUX_ADMIN_PASSWORD:-miniflux}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-ollama}
+      LLM_STRUCTURED_OUTPUT: ${LLM_STRUCTURED_OUTPUT:-true}
+      LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-3}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-}
+      LLM_EMBEDDING_MODEL: ${LLM_EMBEDDING_MODEL:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      GROUPER_USE_EMBEDDINGS: ${GROUPER_USE_EMBEDDINGS:-false}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      NEWS_SUMMARIZER_SOURCE: ${NEWS_SUMMARIZER_SOURCE:-rss}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      TZ: ${TZ:-Asia/Tokyo}
+    volumes:
+      - summarizer-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["run-once"]
+
+  web:
+    build:
+      # News-Viewer は別リポジトリ。このリポジトリと同じ階層に clone しておく
+      # 前提の相対パス（`git clone` で兄弟ディレクトリになる運用）。
+      context: ../News-Viewer
+    depends_on:
+      - summarizer
+    ports:
+      - "${NEWS_VIEWER_PORT:-3080}:3000"
+    environment:
+      DB_BACKEND: sqlite
+      DATABASE_URL: file:/data/news_summarizer.db
+      TZ: ${TZ:-Asia/Tokyo}
+    volumes:
+      - summarizer-data:/data:ro
+    restart: unless-stopped
+
+volumes:
+  miniflux-db:
+  summarizer-data:

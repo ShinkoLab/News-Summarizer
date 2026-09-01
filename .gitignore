@@ -13,6 +13,7 @@ venv/
 
 # 設定ファイル（機密情報を含む）
 config.yaml
+.env
 
 # データファイル
 data/

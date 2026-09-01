@@ -668,8 +668,57 @@ docker run --rm -e MINIFLUX_BASE_URL=... -e MINIFLUX_API_KEY=... news-summarizer
 docker run --rm -e NEWS_SUMMARIZER_INTERVAL_SECONDS=3600 news-summarizer run-loop
 ```
 
-Miniflux・News-Viewer を含めたフルスタックを `docker compose up` だけで動かす手順は、
-`News-Summarizer-Docker/README.md`（このリポジトリと同階層に配置する別ディレクトリ）を参照。
+### フルスタック（`docker compose up`）
+
+Miniflux・PostgreSQL・Summarizer・Viewer を1コマンドでまとめて起動できる。`docker-compose.yml`
+の `web` サービスは [`News-Viewer`](https://github.com/ShinkoLab/News-Viewer) を
+`../News-Viewer` という相対パスでビルドするため、**このリポジトリと同じ階層に
+`News-Viewer` を clone しておく**必要がある（同一 GitHub Organization の別リポジトリで、
+Compose 定義だけをどちらかに同梱する形にした。両リポジトリを1つの Compose ファイルから
+ビルドする都合上、この兄弟ディレクトリ配置が前提になる）。
+
+```bash
+git clone https://github.com/ShinkoLab/News-Summarizer.git
+git clone https://github.com/ShinkoLab/News-Viewer.git
+cd News-Summarizer
+
+cp .env.example .env
+# .env の LLM_MODEL・パスワード・必要なら DISCORD_WEBHOOK_URL を設定
+docker compose up --build
+```
+
+- News Viewer: http://localhost:3080
+- Miniflux: http://localhost:8080（`.env` の `MINIFLUX_ADMIN_USERNAME` / `MINIFLUX_ADMIN_PASSWORD`
+  で初期管理者アカウントが作られる。起動後、UI にログインして RSS フィードを手動登録する
+  ——フィード登録だけは自動化されていない）
+
+LLM 自体は Compose に含まれていない。ホスト上の Ollama / llama-swap など、コンテナから
+到達可能な OpenAI 互換エンドポイントが必要（Docker Desktop なら既定の
+`LLM_BASE_URL=http://host.docker.internal:11434/v1` のままで到達できる。ネイティブ Linux でも
+`docker-compose.yml` に `extra_hosts: host.docker.internal:host-gateway` を設定済みなので同じ
+URL で到達できるはず）。
+
+`summarizer` サービスは `NEWS_SUMMARIZER_INTERVAL_SECONDS` 間隔で定期実行し続ける。手動で
+一度だけ実行したい場合や CLI オプションを渡したい場合は `summarizer-once`（`profiles: manual`）を使う:
+
+```bash
+docker compose run --rm summarizer-once
+docker compose run --rm summarizer-once --dry-run
+docker compose run --rm summarizer-once --source email
+```
+
+`.env` の `MINIFLUX_API_KEY` が空の場合、summarizer コンテナは起動のたびに Miniflux の
+管理者ユーザーで API key を自動発行してから `main.py` を実行する（`docker/provision_miniflux_key.py`）。
+既存の API key を使い回したい場合は `MINIFLUX_API_KEY` に設定する。
+
+**トラブルシューティング**: `summarizer` / `summarizer-once` のログに Miniflux の 401 が出る場合、
+API key の自動発行が失敗している可能性がある。`docker compose ps` で `miniflux` が healthy に
+なっていることを確認してから `docker compose run --rm summarizer-once` を再実行する
+（`depends_on: condition: service_healthy` で通常は防がれるが、Miniflux 側の管理者アカウント
+作成が想定より遅れた場合に発生し得る）。
+
+Summarizer と Viewer は `summarizer-data` volume の `/data/news_summarizer.db` を共有する。
+Summarizer は書き込み、Viewer は読み取り専用で参照する。
 
 ## ディレクトリ構成
 
@@ -714,6 +763,9 @@ News-Summarizer/
 ├── Dockerfile                # Cloud Run Job用イメージ
 ├── .dockerignore             # イメージから除外するファイル
 ├── cloudbuild.yaml           # Artifact Registryへのビルド
+├── docker/                   # Docker実行用エントリポイント・APIキー自動発行スクリプト
+├── docker-compose.yml        # フルスタック構成（Miniflux + Summarizer + Viewer）
+├── .env.example              # docker-compose.yml 用の設定テンプレート
 ├── tests/                     # pytest テストスイート
 └── data/                      # データディレクトリ（自動生成）
     └── news_summarizer.db    # SQLite データベース

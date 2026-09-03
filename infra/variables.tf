@@ -43,6 +43,12 @@ variable "llm_structured_output" {
   default     = false
 }
 
+variable "llm_session_header" {
+  description = "Header name for a per-run session ID some OpenAI-compatible providers require (e.g. OpenCode Zen's x-opencode-session). Empty string disables it."
+  type        = string
+  default     = ""
+}
+
 variable "llm_thinking" {
   description = "Whether llm_model is a reasoning model (gates disable_temperature_with_thinking)"
   type        = bool

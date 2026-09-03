@@ -199,6 +199,10 @@ resource "google_cloud_run_v2_job" "summarizer" {
           value = var.llm_model
         }
         env {
+          name  = "LLM_SESSION_HEADER"
+          value = var.llm_session_header
+        }
+        env {
           name  = "LLM_STRUCTURED_OUTPUT"
           value = tostring(var.llm_structured_output)
         }

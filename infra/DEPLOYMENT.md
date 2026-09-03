@@ -57,6 +57,7 @@ llm:
   model: "gpt-5.6-luna"
   api_key: "実際のキー"
   structured_output: false   # 後述: OpenCode Zen は Structured Output を守らないため false 必須
+  session_header: "x-opencode-session"   # OpenCode Zen (go) がセッション追跡に要求するヘッダー名
 
 miniflux:
   base_url: "https://reader.miniflux.app"   # 末尾に /v1/ を付けない（コード側で自動付与）

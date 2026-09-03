@@ -142,6 +142,10 @@ Additional `llm:` config fields (all optional):
 - `max_retries` — retries on JSON parse / API errors (default: `3`)
 - `structured_output` — global toggle for structured output (default: `true`); set `false` for providers that don't support it
 - `extra_body` — provider-specific extra parameters passed through to the API (e.g. Ollama `think: true` for thinking mode)
+- `session_header` — header name for a per-run session ID some providers require for optimization
+  (e.g. OpenCode Zen's `x-opencode-session`); when set, `get_client()` (`summarizer/llm_client.py`)
+  sends a UUID generated once per process under that header name. Unset by default, so nothing is
+  sent unless a provider actually asks for it — the header name lives in config, not hardcoded per vendor
 - `thinking` / `disable_temperature_with_thinking` — set `thinking: true` on a step to auto-exclude `temperature` when using thinking models
 - `gemma4_think` — prepend `<|think|>` to the system prompt for Gemma 4 thinking stabilization
 
@@ -297,4 +301,4 @@ Notable optional keys (see `config.yaml.example` for full comments):
 - `discord.post_individual_articles` / `embed_color` / `footer_text` — Discord embed tuning. `post_individual_articles` defaults to **`false`**; enabling it re-posts every article as its own embed, duplicating what the category digest already covers
 - `llm.provider` / `project_id` / `location` — provider selection and Vertex AI target
 - `llm.embedding_model` / `embedding_base_url` / `embedding_api_key` — embedding endpoint, independent of the chat LLM
-- `llm.max_retries` / `structured_output` / `extra_body` — LLM behavior tuning
+- `llm.max_retries` / `structured_output` / `extra_body` / `session_header` — LLM behavior tuning

@@ -1,5 +1,6 @@
 import json
 import re
+import uuid
 from google import genai
 from google.genai import types as genai_types
 from openai import OpenAI
@@ -8,6 +9,11 @@ from config import SummarizerStepConfig
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+# llm.session_header が設定された場合に送るセッションID（一部プロバイダが最適化に利用）。
+# プロセス（=1回のパイプライン実行）単位で1本の安定した値にするため、
+# モジュール読み込み時に一度だけ生成する
+_SESSION_ID = str(uuid.uuid4())
 
 
 def use_structured_output() -> bool:
@@ -23,9 +29,13 @@ def get_client():
             project=config.llm.project_id,
             location=config.llm.location,
         )
+    default_headers = None
+    if config.llm.session_header:
+        default_headers = {config.llm.session_header: _SESSION_ID}
     return OpenAI(
         base_url=config.llm.base_url,
         api_key=config.llm.api_key,
+        default_headers=default_headers,
     )
 
 

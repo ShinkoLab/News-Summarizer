@@ -26,6 +26,7 @@ class LLMConfig(BaseModel):
     location: str = "global"
     parameters: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] | None = None
+    session_header: str | None = None
     thinking: bool | None = None
     gemma4_think: bool = False
     disable_temperature_with_thinking: bool = False
@@ -256,6 +257,7 @@ def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         "LLM_EMBEDDING_MODEL": "embedding_model",
         "EMBEDDING_BASE_URL": "embedding_base_url",
         "EMBEDDING_API_KEY": "embedding_api_key",
+        "LLM_SESSION_HEADER": "session_header",
     }
     for env_name, field_name in llm_mapping.items():
         if value := os.getenv(env_name):

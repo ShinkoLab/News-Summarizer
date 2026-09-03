@@ -23,6 +23,10 @@ llm_model    = "your-model-id"
 # llm_thinking                          = true
 # llm_disable_temperature_with_thinking = true
 
+# 一部プロバイダーが要求する、実行単位のセッション追跡用ヘッダー。
+# 例: OpenCode Zen (go) が要求する x-opencode-session（詳細はinfra/DEPLOYMENT.md参照）
+# llm_session_header = "x-opencode-session"
+
 # LLMパラメータ（省略時のデフォルト: グローバル temperature=0.7, max_tokens=8192、
 # grouper/summarizer は temperature低め+reasoning_effort=low、digest は reasoning_effort=medium）
 # reasoning_effort は reasoning model（GPT-5系等）のみ有効。非対応モデルでは無視されるか

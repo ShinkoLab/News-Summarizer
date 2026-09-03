@@ -28,6 +28,11 @@ llm:
   #  options:
   #    num_ctx: 4096
 
+  # 特定プロバイダーが要求するセッション追跡用ヘッダー名（省略可能）。
+  # 設定するとプロセス起動時に生成した安定IDをこのヘッダー名で送信する。
+  # 例: OpenCode Zen (go) が要求する x-opencode-session
+  #session_header: "x-opencode-session"
+
   # thinking フラグ: temperature の自動除外にのみ使用（disable_temperature_with_thinking と組み合わせる）
   # ※ thinking 自体の有効化は extra_body で行ってください
   #thinking: true

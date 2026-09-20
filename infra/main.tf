@@ -124,6 +124,13 @@ resource "google_firestore_index" "article_summary_embedding_knn" {
   collection  = "articleSummaries"
   query_scope = "COLLECTION"
 
+  // Firestore はベクトルフィールドの**直前**に暗黙の __name__ を差し込んで返す。
+  // 設定側に書かないと state と食い違い、apply のたびにインデックスが
+  // destroy → create され、そのたびに検索が落ちる窓ができる（差分が収束しない）。
+  fields {
+    field_path = "__name__"
+    order      = "ASCENDING"
+  }
   fields {
     field_path = "embedding"
     vector_config {
@@ -146,6 +153,11 @@ resource "google_firestore_index" "article_summary_category_embedding_knn" {
 
   fields {
     field_path = "category"
+    order      = "ASCENDING"
+  }
+  // 上と同じ理由で __name__ を明示する。
+  fields {
+    field_path = "__name__"
     order      = "ASCENDING"
   }
   fields {

@@ -3,6 +3,16 @@ locals {
   # Viewer 側に順序を複製しないよう、ここで読み取って環境変数として渡す。
   category_order = [for c in yamldecode(file("${path.module}/../categories.yaml")).categories : c.name]
 
+  # Viewer の意味検索は OpenAI 互換の embedding エンドポイントを前提にしている。
+  # llm_provider = "vertex" のとき Job は Vertex の embed_content を呼び、
+  # embedding_base_url を無視する（summarizer/embedder.py）。この組み合わせでは
+  # 記事と検索語が別のモデルでベクトル化され、検索結果が静かに無意味になる。
+  #
+  # 以前はここで apply 自体を止めていたが、「検索結果が悪い」ことの代償として
+  # 「スタック全体がデプロイできない」は重すぎる。EMBEDDING_* を渡さないだけにして、
+  # Viewer 側を素直にキーワード一致へ縮退させる（readConfig() が対応済み）。
+  viewer_search_enabled = var.llm_provider != "vertex"
+
   required_services = toset([
     "artifactregistry.googleapis.com",
     "billingbudgets.googleapis.com",
@@ -60,12 +70,17 @@ resource "google_firestore_database" "default" {
   depends_on = [google_project_service.required]
 }
 
-// embedding は1536要素の配列で、Firestore は配列要素を1件ずつ自動インデックスする。
+// embedding の「自動の単一フィールドインデックス」を外す。下の KNN インデックスとは別物で、
+// 両者は共存する（こちらは有害な自動索引の停止、あちらは findNearest 専用の索引）。
+//
+// embedding は1536要素のベクトルで、Firestore は配列要素を1件ずつ自動インデックスする。
 // 1ドキュメントあたり約1536のインデックスエントリが生まれ、80記事の一括コミットが
 // 「Transaction too big」（上限10MiB）で失敗した。ドキュメント本体は80件でも1.37MiBしか
-// 無く、超過分はすべてインデックス書き込み。類似記事の統合はアプリ側がベクトルを
-// 取り出してコサイン類似度を計算しており、Firestore のインデックスは一切使わないため、
-// このフィールドはインデックス対象から外す。
+// 無く、超過分はすべてインデックス書き込み。
+//
+// サマライザの類似記事統合はアプリ側でコサイン類似度を計算しており自動索引を使わない。
+// Viewer のベクトル検索が使うのは下の google_firestore_index だけで、これも自動索引とは
+// 無関係。したがってこの除外を外す理由はどこにも無い。
 resource "google_firestore_field" "article_summary_embedding" {
   project    = var.project_id
   database   = google_firestore_database.default.name
@@ -74,6 +89,96 @@ resource "google_firestore_field" "article_summary_embedding" {
 
   // 空の index_config は「単一フィールドインデックスを作らない」を意味する
   index_config {}
+}
+
+// 上の除外を `embedding.value` にも張る。
+//
+// この除外は embedding が素の array<double> だった頃に実測したもので、field path は
+// `embedding` を指している。現在 outputs/firestore_database.py は Vector 型で書いており、
+// SDK はこれを {"__type__": "__vector__", "value": [...]} という**マップ**へ直列化する。
+// Firestore がマップの下の配列を `embedding.value` として自動インデックスするなら、
+// 事例9の Transaction too big が 80記事規模のコミットで再発する。
+// バックエンドが Vector を専用の値型として扱っていればこの除外は単なる空振りで、
+// 実害はゼロ。非対称なので念のため張っておく。
+//
+// apply がこの field path を拒否した場合は「Vector はマップとして索引されない」ことの
+// 裏付けなので、そのときはこのリソースを削除してよい。
+resource "google_firestore_field" "article_summary_embedding_value" {
+  project    = var.project_id
+  database   = google_firestore_database.default.name
+  collection = "articleSummaries"
+  field      = "embedding.value"
+
+  index_config {}
+}
+
+// Viewer のセマンティック検索（findNearest）用の KNN インデックス。
+// 上の単一フィールド索引の除外とは別物で、両立する。
+//
+// ベクトル検索は VectorValue 型のフィールドしか対象にしない。素の配列で保存された
+// ドキュメントはエラーにならずに結果から黙って除外されるため、
+// scripts/backfill_embedding_vectors.py で既存データを変換したうえで使うこと。
+resource "google_firestore_index" "article_summary_embedding_knn" {
+  project     = var.project_id
+  database    = google_firestore_database.default.name
+  collection  = "articleSummaries"
+  query_scope = "COLLECTION"
+
+  fields {
+    field_path = "embedding"
+    vector_config {
+      dimension = var.embedding_dimension
+      flat {}
+    }
+  }
+}
+
+// カテゴリ絞り込み付きの findNearest 用。ベクトルフィールドは必ず最後に置く。
+//
+// 期間の絞り込みは事前フィルタにできない（findNearest は不等式の事前フィルタを
+// 受け付けない）ので、Viewer 側で結合後に事後フィルタしている。ここに
+// batch_id を足しても効かない。
+resource "google_firestore_index" "article_summary_category_embedding_knn" {
+  project     = var.project_id
+  database    = google_firestore_database.default.name
+  collection  = "articleSummaries"
+  query_scope = "COLLECTION"
+
+  fields {
+    field_path = "category"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "embedding"
+    vector_config {
+      dimension = var.embedding_dimension
+      flat {}
+    }
+  }
+}
+
+// 検索のクラスタ補完（batch_id == b AND group_id in [...]）と
+// 期間内走査（batch_id in [...] AND category == x）には複合インデックスを**張らない**。
+// どちらも等価だけの条件で、Firestore は自動の単一フィールド索引をマージして引ける。
+// 効かないインデックスを足すと、事例9を起こしたこのコレクションの書き込みに
+// インデックスエントリを増やすだけになる。
+//
+// キーワード完全一致（記事カードのキーワードChipクリック）を新しい順で引くための索引。
+// array-contains 単体なら keywords の自動索引で足りるが、order_by を足すと複合索引が要る。
+resource "google_firestore_index" "article_summary_keywords_recent" {
+  project     = var.project_id
+  database    = google_firestore_database.default.name
+  collection  = "articleSummaries"
+  query_scope = "COLLECTION"
+
+  fields {
+    field_path   = "keywords"
+    array_config = "CONTAINS"
+  }
+  fields {
+    field_path = "batch_id"
+    order      = "DESCENDING"
+  }
 }
 
 resource "google_service_account" "summarizer" {
@@ -155,6 +260,14 @@ resource "google_secret_manager_secret_iam_member" "summarizer_secrets" {
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.summarizer.email}"
+}
+
+// Viewer も検索語の embedding を作るため、Job と同じ鍵を読む。
+resource "google_secret_manager_secret_iam_member" "viewer_embedding_secret" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.embedding_api_key.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.viewer.email}"
 }
 
 resource "google_cloud_run_v2_job" "summarizer" {
@@ -401,10 +514,49 @@ resource "google_cloud_run_v2_service" "viewer" {
         name  = "CATEGORY_ORDER"
         value = join(",", local.category_order)
       }
+
+      # セマンティック検索。Viewer は検索語をここで embedding し、
+      # articleSummaries.embedding と同じベクトル空間で比較する。
+      #
+      # モデルかエンドポイントが Job 側と1文字でも違えばベクトルは比較不能になり、
+      # 検索結果は静かにデタラメになる（例外もログも出ない）。CATEGORY_ORDER と
+      # 同じく「変数ひとつを Job と Service の両方が参照する」形にして複製を作らない。
+      #
+      # var.embedding_model を変えるときは再デプロイだけでは済まない。
+      # 既存 articleSummaries の embedding 全件を作り直す必要がある（DEPLOYMENT.md 参照）。
+      #
+      # local.viewer_search_enabled が false（llm_provider = "vertex"）のときは
+      # 何も渡さない。Viewer は EMBEDDING_* が無ければキーワード一致へ縮退する。
+      dynamic "env" {
+        for_each = local.viewer_search_enabled ? {
+          EMBEDDING_BASE_URL  = var.embedding_base_url
+          LLM_EMBEDDING_MODEL = var.embedding_model
+          EMBEDDING_DIMENSION = tostring(var.embedding_dimension)
+        } : {}
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+      dynamic "env" {
+        for_each = local.viewer_search_enabled ? [1] : []
+        content {
+          name = "EMBEDDING_API_KEY"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.embedding_api_key.secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
     }
   }
 
-  depends_on = [google_firestore_database.default]
+  depends_on = [
+    google_firestore_database.default,
+    google_secret_manager_secret_iam_member.viewer_embedding_secret,
+  ]
 }
 
 resource "google_cloud_run_v2_service_iam_member" "iap_invoker" {

@@ -73,6 +73,24 @@ variable "embedding_model" {
   default     = "openai/text-embedding-3-small"
 }
 
+variable "embedding_dimension" {
+  description = <<-EOT
+    Output dimension of embedding_model. Used for the Firestore KNN index and for the
+    Viewer's sanity check on the query vector it receives.
+    Changing embedding_model requires changing this AND re-embedding every stored
+    articleSummaries.embedding — the index is built for a fixed dimension and vectors
+    from a different model are not comparable. See infra/DEPLOYMENT.md.
+  EOT
+  type        = number
+  default     = 1536
+
+  validation {
+    # Firestore のベクトルインデックスの上限。超えるとindex作成がAPIエラーで落ちる。
+    condition     = var.embedding_dimension > 0 && var.embedding_dimension <= 2048
+    error_message = "embedding_dimension は 1〜2048 の範囲で指定してください（Firestore のベクトルインデックスの上限）。"
+  }
+}
+
 variable "llm_temperature" {
   description = "Global default temperature for llm.parameters"
   type        = number

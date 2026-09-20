@@ -12,6 +12,8 @@ from outputs.firestore_database import (
     estimate_document_size,
     make_document_id,
 )
+from google.cloud.firestore_v1.vector import Vector
+
 from urls import url_key
 
 
@@ -112,6 +114,46 @@ def test_estimate_document_size_is_dominated_by_the_embedding():
         {"summary_text": "あ" * 100, "embedding": [0.1] * 1536}
     )
     assert with_embedding - small >= 1536 * 8
+
+
+def test_estimate_document_size_handles_vector():
+    """Vector が list/tuple 分岐に掛からず repr 経路へ落ちていないことを確かめる。
+
+    落ちると 1536要素ぶんの repr 文字列を毎回組み立てたうえ、見積もりが
+    浮動小数点の桁数次第で上にも下にもぶれる（0.1 の並びなら過小、
+    実際の embedding のような 0.023871... の並びなら過大）。
+    コミットの分割はこの値で決まるので、要素数だけで決まる形に揃える。
+    """
+    as_list = estimate_document_size({"embedding": [0.1] * 1536})
+    as_vector = estimate_document_size({"embedding": Vector([0.1] * 1536)})
+
+    assert as_vector == as_list
+    assert as_vector >= 1536 * 8
+
+
+def test_embedding_is_written_as_a_vector():
+    """素の配列で保存すると Viewer の findNearest から黙って除外される。
+
+    エラーもログも出ずに検索結果が0件になるだけなので、ここで止めるしかない。
+    """
+    database, fake = _build()
+    embeddings = np.zeros((1, 8))
+
+    database.save_batch(_summaries(1), _digest(), embeddings)
+
+    _, data = fake.batches[0].create.call_args.args
+    assert isinstance(data["embedding"], Vector)
+    assert len(data["embedding"]) == 8
+
+
+def test_embedding_is_none_when_grouping_produced_no_vectors():
+    """グルーピング失敗時は embeddings=None で呼ばれる。Vector(None) にしない。"""
+    database, fake = _build()
+
+    database.save_batch(_summaries(1), _digest(), None)
+
+    _, data = fake.batches[0].create.call_args.args
+    assert data["embedding"] is None
 
 
 def test_save_batch_writes_article_and_email_documents():

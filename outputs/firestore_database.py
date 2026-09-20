@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 from google.cloud import firestore
+from google.cloud.firestore_v1.vector import Vector
 
 from logger import get_logger
 from models import Article, ArticleSummary, DigestResult, SaveResult
@@ -48,6 +49,11 @@ def estimate_document_size(value) -> int:
             len(str(key).encode("utf-8")) + 1 + estimate_document_size(item)
             for key, item in value.items()
         )
+    # Vector は collections.abc.Sequence のサブクラスで list/tuple ではないため、
+    # この分岐が無いと最後の str() に落ちる。1536要素ぶんの repr を毎回組み立てた
+    # うえ、見積もりが浮動小数点の桁数次第で上下にぶれてコミットの分割が安定しない。
+    if isinstance(value, Vector):
+        return len(value) * 8
     if isinstance(value, (list, tuple)):
         return sum(estimate_document_size(item) for item in value)
     return len(str(value).encode("utf-8")) + 1
@@ -137,7 +143,10 @@ class FirestoreDatabase:
                     "group_topic": group_topic,
                     "published_at": article.published_at,
                     "created_at": now,
-                    "embedding": embedding,
+                    # Firestore のベクトル検索（findNearest）は VectorValue 型しか
+                    # 対象にしない。素の配列で入れると Viewer の kNN から
+                    # 黙って除外される（エラーにはならない）。
+                    "embedding": Vector(embedding) if embedding is not None else None,
                     "url_key": key,
                     "feed_title": article.feed_title,
                 },

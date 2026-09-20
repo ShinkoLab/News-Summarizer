@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-09-20
+
 ### Added
 
 - `scripts/backfill_embedding_vectors.py` — 保存済み `articleSummaries.embedding` を
@@ -35,6 +37,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `collections.abc.Sequence` のサブクラスなので、分岐が無いと `str(value)` 経路へ落ち、
   1536要素ぶんの repr を毎回組み立てたうえコミットの分割サイズが浮動小数点の
   桁数次第でぶれる
+
+### Fixed
+
+- ベクトルインデックスが `terraform apply` のたびに destroy → create されていた問題。
+  Firestore はベクトルフィールドの**直前**に `__name__ ASCENDING` を自動挿入して返すため、
+  設定に書いていないと state と食い違い、差分が収束しない。適用のたびに索引が作り直され、
+  その間 `findNearest` が失敗して Viewer の検索がキーワード一致へ縮退する
+- バックフィルの進捗が出力されなかった問題。`print()` はパイプやファイルへ向けると
+  ブロックバッファリングされるため、本番規模（8451件・20分以上）では終わるまで1行も
+  出ず、動いているのか固まっているのか判別できなかった
+
+### Migration
+
+**このバージョンへ上げたら `scripts/backfill_embedding_vectors.py` を一度流すこと。**
+既存の `articleSummaries.embedding` は素の `array<double>` のままで、Firestore の
+ベクトル検索から**エラーも警告も出さずに除外される**。再 embedding はしないので
+embedding API のコストは発生しない。手順は `infra/DEPLOYMENT.md` を参照。
 
 ## [2.4.0] - 2026-08-13
 

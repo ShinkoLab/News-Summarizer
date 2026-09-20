@@ -20,6 +20,7 @@ embedding API の呼び出しもコストも発生しない。
 from __future__ import annotations
 
 import argparse
+import time
 from dataclasses import dataclass
 
 from google.cloud import firestore
@@ -34,6 +35,16 @@ _DEFAULT_BATCH_SIZE = 20
 
 # 1回のクエリで取得するドキュメント数。読み取りは書き込みより軽いので大きめ。
 _PAGE_SIZE = 200
+
+
+def log(message: str) -> None:
+    """必ずフラッシュして出力する。
+
+    print() はパイプやファイルへ向けるとブロックバッファリングされる。
+    8000件規模で数分かかる処理なので、流し込み先が端末でないと
+    進捗が一切見えないまま終了まで待つことになる。
+    """
+    print(message, flush=True)
 
 
 @dataclass
@@ -92,6 +103,7 @@ def backfill(
     client = firestore.Client(project=project_id, database=database_id)
     collection = client.collection("articleSummaries")
     stats = Stats()
+    started = time.perf_counter()
     seen = 0
     pending: list[tuple[object, list[float]]] = []
 
@@ -116,8 +128,8 @@ def backfill(
         except Exception as e:  # noqa: BLE001 - 途中で止めず、残りを処理する
             stats.failed += len(pending)
             ids = ", ".join(ref.id for ref, _ in pending)
-            print(f"  コミット失敗 ({len(pending)}件): {e}")
-            print(f"  失敗したドキュメント: {ids}")
+            log(f"  コミット失敗 ({len(pending)}件): {e}")
+            log(f"  失敗したドキュメント: {ids}")
             had_failure = True
         else:
             stats.converted += len(pending)
@@ -152,7 +164,7 @@ def backfill(
                 mark_safe(doc.id)
                 continue
             if not isinstance(value, (list, tuple)):
-                print(f"  {doc.id}: embedding が {type(value).__name__} なのでスキップ")
+                log(f"  {doc.id}: embedding が {type(value).__name__} なのでスキップ")
                 stats.skipped_other += 1
                 mark_safe(doc.id)
                 continue
@@ -169,6 +181,7 @@ def backfill(
                 flush(doc.id)
 
         flush(last_processed_id)
+        log(f"  {seen}件処理 ({time.perf_counter() - started:.0f}秒) — {stats.report()}")
         if limit is not None and seen >= limit:
             break
 
@@ -178,10 +191,10 @@ def backfill(
     stats.had_failure = had_failure
 
     if last_safe_id is not None:
-        print(f"安全に再開できるドキュメントID: {last_safe_id}")
-        print(f"  続きから流すには --start-after {last_safe_id}")
+        log(f"安全に再開できるドキュメントID: {last_safe_id}")
+        log(f"  続きから流すには --start-after {last_safe_id}")
     if had_failure:
-        print(
+        log(
             "コミットに失敗したドキュメントがあります。上の「失敗したドキュメント」を"
             "個別に確認するか、--start-after を使わず先頭から流し直してください"
             "（変換済みはスキップされます）。"
@@ -223,7 +236,7 @@ def main() -> None:
         parser.error("--batch-size は1以上にしてください。")
 
     if args.dry_run:
-        print("--dry-run: 書き込みは行いません。")
+        log("--dry-run: 書き込みは行いません。")
 
     stats = backfill(
         args.project,
@@ -233,10 +246,10 @@ def main() -> None:
         args.limit,
         args.start_after,
     )
-    print(stats.report())
+    log(stats.report())
 
     if stats.skipped_none:
-        print(
+        log(
             f"embedding を持たない記事が {stats.skipped_none} 件あります。"
             "これらはベクトル検索に出ず、キーワード一致でのみ引けます。"
         )

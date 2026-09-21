@@ -109,6 +109,9 @@ config source (see **Deployment** below). For the full design spec see `README.m
   - `digest.py` — category digest generation
 - **`outputs/`** — `create_database()` returns `Database` (SQLite) or `FirestoreDatabase` depending on `database.backend`; both expose `save_batch()` / `is_article_processed()` / `is_email_processed()` / `execution_lock()`. Plus `DiscordOutput` (webhook embeds, description truncated at the 4096-char Discord limit)
 - **`scripts/`** — `migrate_sqlite_to_firestore.py` (one-shot data migration, supports `--dry-run`);
+  `backfill_embedding_vectors.py` (one-shot conversion of `articleSummaries.embedding` from a plain
+  array to Firestore's `Vector` type — required before the Viewer's kNN search can see a document;
+  idempotent, `--dry-run` / `--limit` / `--start-after`);
   `skip_stale_backlog.py` (marks-as-read/deletes Miniflux/POP3 backlog older than a cutoff after an
   outage, so the pipeline doesn't have to grind through days of stale entries; dry-run by default,
   `--execute` + confirmation prompt required to actually change anything — see its module docstring)
@@ -227,6 +230,15 @@ pairs actually persisted, and a failure count — so mark-as-read and email book
 act on what really landed in the database.
 
 `scripts/migrate_sqlite_to_firestore.py` moves existing data across.
+
+**Firestore writes `embedding` as `Vector`, not as a list.** Firestore's vector search
+(`findNearest`, used by the Viewer) only considers fields of type `VectorValue`; a plain
+`array<double>` is **silently excluded from results** — no error, no log. `_article_writes()`
+therefore wraps the value in `google.cloud.firestore_v1.vector.Vector`, and
+`estimate_document_size()` has an explicit `Vector` branch because `Vector` subclasses
+`collections.abc.Sequence` rather than `list`, and would otherwise fall through to the
+`str(value)` path and size commits by the length of a 1536-element repr. The SQLite backend
+is unaffected and still stores JSON.
 
 ## Deployment
 

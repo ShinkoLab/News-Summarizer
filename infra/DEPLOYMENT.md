@@ -353,6 +353,28 @@ google.api_core.exceptions.InvalidArgument: 400 Transaction too big. Decrease tr
 類似記事の統合はアプリ側がベクトルを読み出して numpy でコサイン類似度を計算しており、
 Firestore のインデックスは元から使っていないため、機能的な影響はない。
 
+> **この除外は Viewer のベクトル検索（KNN）を入れた後も外さないこと。**
+> KNN で使うのは `google_firestore_index` の**複合**ベクトルインデックスで、
+> 1ドキュメントあたり1エントリしか作らない。ここで止めているのは
+> 「配列要素を1件ずつ張る自動の単一フィールド索引」で、まったくの別物。
+> 外すと本節の `Transaction too big` がそのまま再発する。
+>
+> **⚠ ただし上の実測は `embedding` が素の `array<double>` だった頃のもので、
+> Vector 型に変えた後は未検証。** Vector は
+> `{"__type__": "__vector__", "value": [...]}` というマップとして直列化されるため、
+> 自動索引が `embedding.value` の側に付く可能性がある。予防として
+> `google_firestore_field.article_summary_embedding_value` を張ってあるが、
+> **Vector 化して最初に80件規模のバッチを保存したときに必ず確認すること**
+> （`save_batch()` の `flush()` は失敗をログに出して続行するので、
+> 気づかないと記事だけが静かに欠ける）。
+>
+> ```bash
+> # 除外が両方効いているか
+> gcloud firestore indexes fields list --database='(default)' --format=yaml
+> # 実行ログに Transaction too big が出ていないか
+> gcloud logging read 'resource.type="cloud_run_job" AND "Transaction too big"' --limit=5
+> ```
+
 **この変更でベクトルデータは失われない。** 消えるのはインデックスエントリだけで、
 ドキュメントの `embedding` フィールドはそのまま残る（適用後に実測して
 137件中56件・1536次元が変更前と同数で保持されていることを確認済み）。
@@ -503,6 +525,86 @@ grouper_similarity_threshold     = 0.7   # embedding グルーピングのコサ
 
 `infra/variables.tf` のデフォルトはローカル `config.yaml` の値に揃えてあるため、
 同じ値で運用するなら `terraform.tfvars` への記載は不要。
+
+### 埋め込み（embedding）モデルを変更する
+
+**再デプロイだけでは済まない。保存済みベクトルを全件作り直す必要がある。**
+
+`articleSummaries.embedding` は特定のモデルが張るベクトル空間の座標でしかなく、
+別モデルのベクトルとは比較できない。Viewer の検索は検索語を同じモデルで
+embedding して kNN するので、モデルがズレると **API も findNearest も成功したまま、
+無関係な記事が返る**（例外もログも出ない）。ベクトルインデックスも次元が固定なので、
+次元の違うモデルへ変えるとインデックスの作り直しも要る。
+
+手順:
+
+1. `terraform.tfvars` を更新
+   ```hcl
+   embedding_model     = "..."   # Job と Viewer の両方へ同じ値が注入される
+   embedding_dimension = 1536    # 新モデルの出力次元。変わるならここも必ず変える
+   ```
+2. `terraform apply`（インデックスが作り直される。READY まで数分）
+3. `articleSummaries` の `embedding` を全件作り直す。現状これを行うスクリプトは無い
+   （`backfill_embedding_vectors.py` は**型の変換専用**で、再 embedding はしない）。
+   作り直すまで過去記事はベクトル検索に出ない
+
+**`llm_provider = "vertex"` のときは Viewer の意味検索を自動で無効化する。**
+Job は Vertex の `embed_content(task_type="CLUSTERING")` を使い `embedding_base_url` を
+無視するが、Viewer は OpenAI 互換の `{EMBEDDING_BASE_URL}/embeddings` しか呼べない。
+別々のモデルでベクトルを作れば検索結果は静かに無意味になるので、
+`local.viewer_search_enabled` が `EMBEDDING_*` の注入ごと落とし、Viewer は
+キーワード一致だけで動く（`terraform apply` は通る）。Vertex のまま意味検索を使いたい
+場合は Viewer 側を Vertex 対応にする必要がある。
+
+次元だけ揃っていれば動いてしまう点に注意。動作確認は「ある記事の
+`summary_title + summary_text` をそのまま検索して、その記事が一致度ほぼ100%で
+返ってくるか」を見るのが確実。70%程度なら Job と Viewer でモデルがズレている。
+
+### 保存済み embedding を Vector 型へ変換する（一度だけ）
+
+Firestore のベクトル検索は `VectorValue` 型のフィールドしか対象にしない。
+素の `array<double>` で保存されたドキュメントは**エラーにならずに結果から黙って
+除外される**ため、Viewer の検索を有効にする前に一度だけ変換する。
+
+再 embedding は行わないので、embedding API の呼び出しもコストも発生しない。
+
+```bash
+cd News-Summarizer
+# 1. 対象件数を数える（書き込まない）
+uv run python scripts/backfill_embedding_vectors.py --project <PROJECT> --dry-run
+# 2. 少数で試す
+uv run python scripts/backfill_embedding_vectors.py --project <PROJECT> --limit 20
+# 3. 全件
+uv run python scripts/backfill_embedding_vectors.py --project <PROJECT>
+# 4. 再実行して「変換=0 / 変換済みのためスキップ=全件」になれば完了（冪等）
+uv run python scripts/backfill_embedding_vectors.py --project <PROJECT> --dry-run
+```
+
+- 途中で失敗したら、ログ末尾の「安全に再開できるドキュメントID」を
+  `--start-after` に渡して再開できる。これは**確実にコミット済み**のIDで、
+  コミットに失敗したドキュメントより手前で止まる（失敗分を飛び越えない）。
+  コミット失敗が出ている場合は、ログの「失敗したドキュメント」を確認するか、
+  `--start-after` を使わず先頭から流し直すのが確実（変換済みはスキップされる）
+- `embeddingなし` の件数は、グルーピングに失敗した実行やベクトル導入前の記事。
+  **これらはベクトル検索に永久に出ない**（キーワード完全一致でのみ引ける）
+- 1コミット20件に絞ってある。1書き込みが1536要素を運ぶうえ、事例9の前例があるため
+
+インデックスが実際に提供されているかの確認:
+
+```bash
+# KNNインデックスが READY か
+gcloud firestore indexes composite list --database='(default)' --format=yaml
+# 自動索引の除外が残っているか（articleSummaries/embedding の indexConfig が空であること）
+gcloud firestore indexes fields list --database='(default)' --format=yaml
+```
+
+`terraform apply` が使えない場合の手動作成（通常は不要）:
+
+```bash
+gcloud firestore indexes composite create \
+  --collection-group=articleSummaries --query-scope=COLLECTION \
+  --field-config=field-path=embedding,vector-config='{"dimension":1536,"flat":{}}'
+```
 
 ### カテゴリ一覧を変更する
 

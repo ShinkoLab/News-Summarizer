@@ -13,6 +13,11 @@ venv/
 
 # 設定ファイル（機密情報を含む）
 config.yaml
+# docker/ の Miniflux・LLM・Discord の資格情報が入る。
+# 除外しないと git add -A でそのままコミットされる。
+.env
+.env.*
+!.env.example
 
 # データファイル
 data/

@@ -345,6 +345,63 @@ class TestEnvironmentOverrides:
         assert cfg.miniflux is not None
         assert cfg.miniflux.fetch_limit == 100
 
+    def test_miniflux_strip_html_defaults_to_true(self, tmp_path, monkeypatch):
+        """未指定なら True。本文をテキスト化して LLM 入力トークンを削る。"""
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("MINIFLUX_BASE_URL", "https://miniflux.example.com")
+        monkeypatch.setenv("MINIFLUX_API_KEY", "secret-manager-value")
+
+        cfg = load_runtime_config(str(tmp_path / "missing.yaml"))
+
+        assert cfg.miniflux is not None
+        assert cfg.miniflux.strip_html is True
+
+    def test_miniflux_strip_html_from_yaml(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            textwrap.dedent(
+                """
+                llm:
+                  model: "yaml-model"
+                miniflux:
+                  base_url: "https://miniflux.example.com"
+                  api_key: "k"
+                  strip_html: false
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        cfg = load_config(str(config_path))
+
+        assert cfg.miniflux is not None
+        assert cfg.miniflux.strip_html is False
+
+    @pytest.mark.parametrize("raw", ["false", "0"])
+    def test_miniflux_strip_html_false_from_environment(
+        self, tmp_path, monkeypatch, raw
+    ):
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("MINIFLUX_BASE_URL", "https://miniflux.example.com")
+        monkeypatch.setenv("MINIFLUX_API_KEY", "secret-manager-value")
+        monkeypatch.setenv("MINIFLUX_STRIP_HTML", raw)
+
+        cfg = load_runtime_config(str(tmp_path / "missing.yaml"))
+
+        assert cfg.miniflux is not None
+        assert cfg.miniflux.strip_html is False
+
+    def test_miniflux_strip_html_alone_does_not_build_broken_section(
+        self, tmp_path, monkeypatch
+    ):
+        """STRIP_HTML 単独では miniflux セクションを作らない（FETCH_LIMIT と同じ理由）。"""
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("MINIFLUX_STRIP_HTML", "false")
+
+        cfg = load_runtime_config(str(tmp_path / "missing.yaml"))
+
+        assert cfg.miniflux is None
+
     def test_email_max_fetch_attempts_from_environment(self, tmp_path, monkeypatch):
         monkeypatch.setenv("LLM_MODEL", "env-model")
         monkeypatch.setenv("EMAIL_HOST", "pop.example.com")

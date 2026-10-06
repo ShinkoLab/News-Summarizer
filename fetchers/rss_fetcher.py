@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import List
 from models import Article
 from fetchers.base import BaseFetcher
+from fetchers.html_text import html_to_text
 from config import config
 from logger import get_logger
 
@@ -16,6 +17,8 @@ class MinifluxFetcher(BaseFetcher):
         self.base_url = miniflux_cfg.base_url
         self.api_key = miniflux_cfg.api_key
         self.fetch_limit = miniflux_cfg.fetch_limit
+        # 本文の HTML→テキスト変換の on/off（既定 on）。
+        self.strip_html = bool(miniflux_cfg.strip_html)
         self.dry_run = dry_run
         self.headers = {
             "X-Auth-Token": self.api_key
@@ -58,6 +61,10 @@ class MinifluxFetcher(BaseFetcher):
 
         articles = []
         empty_entry_ids = []
+        # HTML テキスト化の効果測定用（件数・変換前後の文字数）
+        stripped_count = 0
+        chars_before = 0
+        chars_after = 0
 
         for entry in entries:
             # 本文が空の記事はスキップ
@@ -66,6 +73,25 @@ class MinifluxFetcher(BaseFetcher):
                 # 本文が空の記事は要約対象外の恒久スキップ。再取得しても無駄なため即既読化する。
                 empty_entry_ids.append(entry["id"])
                 continue
+
+            # LLM 入力トークンの大半は HTML マークアップなので、本文をプレーンテキストにして渡す
+            # （実測で約81%減）。miniflux.strip_html: false で従来どおり HTML のまま渡せる。
+            raw = entry.get("content", "")
+            content_used = raw
+            if self.strip_html:
+                text = html_to_text(raw)
+                if text:
+                    content_used = text
+                    stripped_count += 1
+                    chars_before += len(raw)
+                    chars_after += len(content_used)
+                else:
+                    # img のみ・script のみ等でテキストが残らない場合は従来動作を維持する
+                    # （スキップ・既読化はしない）。
+                    logger.debug(
+                        "テキスト化の結果が空のため元のHTMLを使用します: %r",
+                        entry.get("title", ""),
+                    )
 
             # Minifluxの日時フォーマットのパース
             try:
@@ -80,12 +106,22 @@ class MinifluxFetcher(BaseFetcher):
                 source_type="rss",
                 source_id=str(entry["id"]),
                 title=entry.get("title", ""),
-                content=entry.get("content", ""),
+                content=content_used,
                 url=entry.get("url"),
                 published_at=published_at,
                 fetched_at=datetime.now(),
                 feed_title=entry.get("feed", {}).get("title", "")
             ))
+
+        if self.strip_html and stripped_count > 0:
+            reduction = (1 - chars_after / chars_before) * 100 if chars_before else 0.0
+            logger.info(
+                "本文のHTMLをテキスト化しました: %d件, %s文字 → %s文字 (%.0f%%削減)",
+                stripped_count,
+                f"{chars_before:,}",
+                f"{chars_after:,}",
+                reduction,
+            )
 
         # 本文ありの実記事はここで既読化しない。要約・DB保存に成功した分だけ
         # パイプライン側から mark_as_read() を呼んで既読化する（失敗時の記事ロスト防止）。

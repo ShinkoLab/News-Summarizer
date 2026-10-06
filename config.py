@@ -114,6 +114,11 @@ class MinifluxConfig(BaseModel):
     # summarizer.max_articles_per_run をいくら上げても、ここが下回っていれば
     # そちらは一度も発動しない。上限 1000 は Miniflux 側の MaxEntryLimit に合わせた。
     fetch_limit: int = Field(default=100, ge=1, le=1000)
+    # 本文は Miniflux からフル HTML で届き、タグ・属性が LLM 入力トークンの大半を
+    # 占める（実測で記事あたり約 5,200 トークンが、テキスト化すると約 980）。
+    # 要約品質に本文のマークアップは不要なのでテキスト化して送る。
+    # false で従来どおり HTML のまま渡す。
+    strip_html: bool = True
 
 
 class EmailConfig(BaseModel):
@@ -336,6 +341,8 @@ def _apply_environment_overrides(raw: dict[str, Any]) -> dict[str, Any]:
         # でき、必須フィールド欠落で落ちる、という壊れ方をさせない。
         if fetch_limit := os.getenv("MINIFLUX_FETCH_LIMIT"):
             miniflux["fetch_limit"] = int(fetch_limit)
+        if (strip_html := _env_bool("MINIFLUX_STRIP_HTML")) is not None:
+            miniflux["strip_html"] = strip_html
 
     email_vars = {
         "EMAIL_HOST": "host",

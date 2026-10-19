@@ -96,7 +96,14 @@ config source (see **Deployment** below). For the full design spec see `README.m
 ### Key modules
 
 - **`main.py`** — CLI entry point only; parses arguments into `RunOptions` and calls `run_pipeline()`
-- **`pipeline.py`** — Orchestrates the full pipeline; defines `RunOptions` (frozen dataclass), `run_pipeline()`, and internal step functions (`fetch_articles`, `summarize_all`, `group_pairs`, `build_digest`, `persist_and_publish`); error isolation is per-source and per-article. The whole run is wrapped in `db.execution_lock()`, and already-processed articles are skipped via `db.is_article_processed()` before summarization
+- **`pipeline.py`** — Orchestrates the full pipeline; defines `RunOptions` (frozen dataclass), `run_pipeline()`, and internal step functions (`fetch_articles`, `summarize_all`, `group_pairs`, `build_digest`, `persist_and_publish`); error isolation is per-source and per-article. The whole run is wrapped in `db.execution_lock()`, and already-processed articles are skipped via `db.is_article_processed()` before summarization. If articles were
+  attempted but **not a single one** was summarized (e.g. an expired LLM API key), or summaries
+  exist but **not a single one** was saved while the run writes to the DB (e.g. a Firestore
+  outage), `run_pipeline()` raises `RunFailedError` and `main.py` exits with status 1 — per-article
+  error isolation would otherwise end the run normally and Cloud Run would record it as a success.
+  Such a total failure is environmental, so it does **not** count toward the email attempt limit
+  (otherwise an outage alone would exhaust `max_fetch_attempts` and give up on every message).
+  A partial failure (at least one summary saved) still exits 0
 - **`config.py`** / **`config.yaml`** — Pydantic config layer; `config.yaml` is gitignored, use `config.yaml.example` as template. Every key can also be supplied via environment variables (see **Configuration**)
 - **`models.py`** — All data structures: `Article` (common fetch format, dataclass), plus Pydantic models for LLM structured outputs (`ArticleGroup`, `GroupingResult`, `ArticleSummary`, `CategoryDigest`, `TopicLabel`, `TopicNamingResult`, `DigestResult`)
 - **`logger.py`** — Logging setup (`setup_logging()` / `get_logger()`); outputs to stderr only, level controlled by `logging.level` in config

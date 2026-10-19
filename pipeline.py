@@ -31,6 +31,16 @@ from summarizer.digest import generate_digest
 logger = get_logger(__name__)
 
 
+class RunFailedError(RuntimeError):
+    """処理対象の記事があったのに、1件も要約できなかった／1件も保存できなかった。
+
+    APIキー失効やDB障害のような全件に効く障害でも、記事ごと・チャンクごとの
+    エラー分離によってパイプライン自体は正常終了してしまい、Cloud Run Job が
+    「成功」扱いになる。障害に気付けるよう、呼び出し側（main.py）で異常終了させる
+    ために送出する。
+    """
+
+
 # ---------------------------------------------------------------------------
 # RunOptions — frozen options object threaded through the pipeline
 # ---------------------------------------------------------------------------
@@ -502,17 +512,26 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
             article.source_id for article in articles if article.source_type == "email"
         }
         save_result = SaveResult(batch_id=None, saved=[])
+        # 全件失敗＝個々の記事ではなく環境（APIキー失効・DB障害など）の問題
+        total_failure = False
         try:
             save_result = _process(articles, db, options, rss_fetcher)
+            total_failure = options.run_db and not save_result.saved
+        except RunFailedError:
+            total_failure = True
+            raise
         finally:
             saved_uidls = {
                 source_id
                 for source_type, source_id in save_result.saved
                 if source_type == "email"
             }
+            # 全件失敗はメールの試行回数に数えない。数えると障害が続くだけで
+            # メールが上限に達して打ち切られ（設定次第ではサーバからも削除され）、
+            # 障害復旧後も二度と処理されなくなる。
             given_up_uidls = reconcile_email_attempts(
                 db,
-                attempted_email_uidls,
+                set() if total_failure else attempted_email_uidls,
                 saved_uidls,
                 options,
                 config.email.max_fetch_attempts if config.email else 3,
@@ -521,6 +540,12 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
             # 削除する。失敗して次回に回すメールはサーバに残す。
             delete_processed_emails(
                 fetched.email_fetcher, saved_uidls | given_up_uidls
+            )
+
+        # 要約できなかった場合は _process() 内で送出済み。ここに来るのは保存の全件失敗。
+        if total_failure:
+            raise RunFailedError(
+                "要約した記事を1件も保存できませんでした。"
             )
 
     logger.info("プロセス完了")
@@ -533,8 +558,9 @@ def _process(
     """Summarize → group → digest → output. Returns what was persisted."""
     pairs = summarize_all(articles, options)
     if not pairs:
-        logger.warning("要約に成功した記事がありませんでした。処理を終了します。")
-        return SaveResult(batch_id=None, saved=[])
+        raise RunFailedError(
+            f"{len(articles)}件の記事を要約しようとしましたが、1件も成功しませんでした。"
+        )
 
     article_group_map, embeddings = group_pairs(pairs, options)
 

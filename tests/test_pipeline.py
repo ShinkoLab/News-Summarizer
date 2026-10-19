@@ -18,6 +18,7 @@ from models import (
     SaveResult,
 )
 from pipeline import (
+    RunFailedError,
     RunOptions,
     reconcile_email_attempts,
     run_pipeline,
@@ -172,6 +173,88 @@ class TestEmptyArticles:
             run_pipeline(minimal_config, options)
 
         mock_summarize.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# A run that summarizes or saves nothing is an error, not a quiet success
+# ---------------------------------------------------------------------------
+
+class TestTotalFailure:
+    """APIキー失効のような全件障害で、Job が「成功」扱いにならないようにする。"""
+
+    def _run_all_failing(self, config, articles, db_instance):
+        with (
+            patch("pipeline.MinifluxFetcher") as MockRss,
+            patch("pipeline.EmailFetcher") as MockEmail,
+            patch("pipeline.summarize_article", side_effect=RuntimeError("401")),
+            patch("pipeline.create_database", return_value=db_instance),
+            patch("pipeline.DiscordOutput") as MockDiscord,
+        ):
+            MockRss.return_value.fetch.return_value = [
+                a for a in articles if a.source_type == "rss"
+            ]
+            MockEmail.return_value.fetch.return_value = [
+                a for a in articles if a.source_type == "email"
+            ]
+            with pytest.raises(RunFailedError):
+                run_pipeline(config, RunOptions(dry_run=False))
+        return MockDiscord
+
+    def test_all_summaries_failing_raises(self, minimal_config):
+        db_instance = _make_db(saved_source_ids=[])
+
+        discord = self._run_all_failing(
+            minimal_config, [_make_article("1"), _make_article("2")], db_instance
+        )
+
+        db_instance.save_batch.assert_not_called()
+        discord.return_value.post.assert_not_called()
+
+    def test_all_summaries_failing_records_no_email_attempt(self, minimal_config):
+        """全件失敗は環境側の障害。メールの試行回数を消費させない。"""
+        db_instance = _make_db(saved_source_ids=[])
+
+        self._run_all_failing(
+            minimal_config,
+            [_make_article(source_id="mail-1", source_type="email")],
+            db_instance,
+        )
+
+        db_instance.record_email_attempt.assert_not_called()
+        db_instance.mark_email_processed.assert_not_called()
+
+    def test_all_saves_failing_raises(self, minimal_config):
+        """要約できても1件も保存できなければ（DB障害など）異常終了する。"""
+        db_instance = _make_db(saved_source_ids=[])
+
+        with pytest.raises(RunFailedError):
+            _run_with_db(
+                minimal_config,
+                RunOptions(dry_run=False),
+                [_make_article("1"), _make_article(source_id="mail-1", source_type="email")],
+                db_instance,
+            )
+
+        db_instance.record_email_attempt.assert_not_called()
+
+    def test_dry_run_without_db_does_not_raise(self, minimal_config):
+        """DBに書かない実行では、保存0件は失敗ではない。"""
+        _run_with_db(
+            minimal_config, RunOptions(dry_run=True), [_make_article("1")], _make_db()
+        )
+
+    def test_partial_failure_does_not_raise(self, minimal_config):
+        """1件でも要約できれば従来どおり正常終了する。"""
+        articles = [_make_article("1"), _make_article("2")]
+
+        db_mock, _ = _run_with_patches(
+            minimal_config,
+            RunOptions(dry_run=False),
+            articles,
+            summaries=[_make_summary(), RuntimeError("401")],
+        )
+
+        db_mock.save_batch.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -645,9 +728,14 @@ class TestUnifyGroupCategories:
 # ---------------------------------------------------------------------------
 
 class TestEmailAttemptReconciliation:
+    # 全件失敗は試行回数に数えない（TestTotalFailure）ため、ここでは別の記事を1件
+    # 保存させて「そのメールだけが失敗した」部分失敗を作る。
     def test_unsaved_email_records_an_attempt(self, minimal_config):
-        articles = [_make_article(source_id="mail-1", source_type="email")]
-        db_instance = _make_db(saved_source_ids=[])  # 保存に失敗した
+        articles = [
+            _make_article(source_id="mail-ok", source_type="email"),
+            _make_article(source_id="mail-1", source_type="email"),
+        ]
+        db_instance = _make_db(saved_source_ids=["mail-ok"])  # 保存に失敗した
 
         _run_with_db(minimal_config, RunOptions(dry_run=False), articles, db_instance)
 
@@ -667,8 +755,11 @@ class TestEmailAttemptReconciliation:
         minimal_config.email = EmailConfig(
             host="pop.example.com", username="u", password="p", max_fetch_attempts=2
         )
-        articles = [_make_article(source_id="mail-1", source_type="email")]
-        db_instance = _make_db(saved_source_ids=[])
+        articles = [
+            _make_article(source_id="mail-ok", source_type="email"),
+            _make_article(source_id="mail-1", source_type="email"),
+        ]
+        db_instance = _make_db(saved_source_ids=["mail-ok"])
         db_instance.record_email_attempt.return_value = 2
 
         _run_with_db(minimal_config, RunOptions(dry_run=False), articles, db_instance)
@@ -680,8 +771,11 @@ class TestEmailAttemptReconciliation:
         minimal_config.email = EmailConfig(
             host="pop.example.com", username="u", password="p", max_fetch_attempts=10
         )
-        articles = [_make_article(source_id="mail-1", source_type="email")]
-        db_instance = _make_db(saved_source_ids=[])
+        articles = [
+            _make_article(source_id="mail-ok", source_type="email"),
+            _make_article(source_id="mail-1", source_type="email"),
+        ]
+        db_instance = _make_db(saved_source_ids=["mail-ok"])
         db_instance.record_email_attempt.return_value = 4
 
         _run_with_db(minimal_config, RunOptions(dry_run=False), articles, db_instance)
@@ -690,25 +784,34 @@ class TestEmailAttemptReconciliation:
 
     def test_carried_over_email_records_no_attempt(self, minimal_config):
         """繰り越された（要約すら試みていない）メールでリトライ枠を消費しない。"""
-        minimal_config.summarizer.max_articles_per_run = 1
+        minimal_config.summarizer.max_articles_per_run = 2
         articles = [
+            _make_article(source_id="mail-ok", source_type="email"),
             _make_article(source_id="mail-1", source_type="email"),
             _make_article(source_id="mail-2", source_type="email"),
         ]
-        db_instance = _make_db(saved_source_ids=[])
+        db_instance = _make_db(saved_source_ids=["mail-ok"])
 
         _run_with_db(minimal_config, RunOptions(dry_run=False), articles, db_instance)
 
         db_instance.record_email_attempt.assert_called_once_with("mail-1")
 
     def test_summarize_failure_records_an_attempt(self, minimal_config):
-        articles = [_make_article(source_id="mail-1", source_type="email")]
+        articles = [
+            _make_article(source_id="mail-ok", source_type="email"),
+            _make_article(source_id="mail-1", source_type="email"),
+        ]
         db_instance = _make_db()
 
         with (
             patch("pipeline.MinifluxFetcher"),
             patch("pipeline.EmailFetcher") as MockEmail,
-            patch("pipeline.summarize_article", side_effect=RuntimeError("boom")),
+            patch(
+                "pipeline.summarize_article",
+                side_effect=[_make_summary(), RuntimeError("boom")],
+            ),
+            patch("pipeline.group_articles", return_value=_make_grouping(1)),
+            patch("pipeline.generate_digest", return_value=_make_digest(1)),
             patch("pipeline.create_database", return_value=db_instance),
             patch("pipeline.DiscordOutput"),
         ):

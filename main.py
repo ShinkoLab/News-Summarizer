@@ -1,9 +1,10 @@
 import argparse
+import sys
 
 import config as config_module
 from config import reload_config
-from logger import setup_logging
-from pipeline import RunOptions, run_pipeline
+from logger import get_logger, setup_logging
+from pipeline import RunFailedError, RunOptions, run_pipeline
 
 
 def main():
@@ -58,7 +59,13 @@ def main():
         debug=args.debug,
     )
 
-    run_pipeline(config_module.config, options)
+    try:
+        run_pipeline(config_module.config, options)
+    except RunFailedError as e:
+        # 記事ごとのエラーは握りつぶされるため、全件失敗でもここまで正常に戻ってくる。
+        # 終了コードを非0にして Cloud Run Job を「失敗」として記録させる。
+        get_logger(__name__).error("%s 処理を異常終了します。", e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

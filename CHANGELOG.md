@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-10-19
+
+### Fixed
+
+- 処理対象の記事があるのに要約が1件も成功しなかった実行、または DB に1件も保存できなかった
+  実行を終了コード 1 で異常終了させる。従来は記事ごとのエラー分離により正常終了し、
+  API キー失効のような全件障害でも Cloud Run Job が「成功」扱いになっていた
+- 上記の全件失敗をメールの試行回数（`email.max_fetch_attempts`）に数えない。
+  障害が続くだけでメールが打ち切られるのを防ぐ
+
 ## [2.6.0] - 2026-10-19
 
 ### Added

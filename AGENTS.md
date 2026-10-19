@@ -24,7 +24,8 @@ This file provides guidance to coding agents (Claude Code, Codex, etc.) when wor
 
 ```bash
 git fetch origin
-git switch -c feature/<feature-name> origin/main   # worktree 内でも main を checkout せずに切れる
+git switch --no-track -c feature/<feature-name> origin/main   # worktree 内でも main を checkout せずに切れる
+git push -u origin HEAD                                        # 初回 push で upstream を作業ブランチ自身に設定
 ```
 
 ### コミットメッセージ（Conventional Commits）

@@ -4,21 +4,97 @@ This file provides guidance to coding agents (Claude Code, Codex, etc.) when wor
 
 ## Git Workflow
 
-Always create a branch before implementing any new features.
+### ブランチ戦略（`main` 一本化）
+
+| ブランチ | 役割 | 分岐元 | マージ先 |
+| --- | --- | --- | --- |
+| `main` | 本番リリース用。常にリリース可能な状態を保つ | - | - |
+| `feature/<name>` | 新機能の開発 | `main` | `main` |
+| `fix/<name>` | 不具合の修正 | `main` | `main` |
+| `docs/<name>` | ドキュメントのみの変更 | `main` | `main` |
+
+- 恒久ブランチは **`main` だけ**。`dev` は廃止した（2026-10 時点で `main` より 39 コミット
+  遅れ、`dev` 固有のコミットはなかった）。統合ブランチは挟まず、作業ブランチは必ず
+  最新の `main` から切って `main` へ PR を出す。
+- 新しい作業を始める前に必ずブランチを切る。`main` に直接コミット・push しない。必ず PR を通す。
+  GitHub のブランチ保護（ルールセット）で `main` への直接 push を禁止する
+  （**現状は未設定**。CI も未導入なので、導入したらその成功をマージ条件にする）。
+- ブランチ名は英小文字のケバブケースにする（例: `feature/strip-html-content`、
+  `fix/opencode-session-header`）。
 
 ```bash
-git checkout -b feature/<feature-name>
+git switch main && git pull
+git switch -c feature/<feature-name>
 ```
 
-コミットメッセージは必ず**日本語**で記載すること。
+### コミットメッセージ（Conventional Commits）
 
-**PRをマージしたら、そのブランチをリモート・ローカルとも必ず削除すること。** 消し忘れると
-マージ済みブランチが溜まり、どれが生きているのか分からなくなる。`dev` と `main` は
-恒久ブランチなので削除しない。
+[Conventional Commits](https://www.conventionalcommits.org/) に従い、**英語** で書く
+（2026-10 までの履歴は日本語。過去のコミットは書き換えない）。
+
+```
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+```
+
+- `type` は次のいずれか:
+  - `feat`: 新機能
+  - `fix`: 不具合の修正
+  - `docs`: ドキュメントのみの変更
+  - `style`: 動作に影響しない書式の変更
+  - `refactor`: 機能追加・修正を伴わないリファクタリング
+  - `perf`: パフォーマンス改善
+  - `test`: テストの追加・修正
+  - `build`: ビルドシステム・依存関係の変更（`pyproject.toml` / `uv.lock` / `Dockerfile`）
+  - `ci`: CI 設定の変更（`cloudbuild.yaml` など）
+  - `chore`: その他の雑務
+  - `revert`: コミットの取り消し
+- `scope` は任意。変更対象のモジュール名などを入れる（例: `pipeline`、`fetchers`、
+  `summarizer`、`grouper`、`digest`、`outputs`、`db`、`discord`、`config`、`infra`、`scripts`、`release`）。
+- `subject` は命令形・小文字始まり・末尾ピリオドなしで、50 文字程度に収める。
+- 破壊的変更（config キーの削除・改名、DB スキーマの非互換変更など）は `type!:` とするか、
+  footer に `BREAKING CHANGE:` を書く。
+- 1 コミットには 1 つの論理的な変更だけを含める。
+
+例:
+
+```
+feat(fetchers): strip html from miniflux entries before summarizing
+fix(pipeline): exit non-zero when no article was summarized
+docs: consolidate branch strategy into main only
+chore(release): v2.6.0
+```
+
+### PR 前のコードレビュー
+
+PR を作る**前に**コードレビューを回し、**重要度「中」以上の指摘が 0 件になってから** PR を出す。
+
+1. 変更をコミットした状態で `/code-review high` を実行する（Claude Code 以外のエージェントは
+   同等の観点 —— 正しさ・回帰・テスト不足 —— でセルフレビューする）
+2. 中以上の指摘を修正してコミットし、再度レビューする。0 件になるまで繰り返す
+3. 「低」の指摘は対応するか、見送る理由を PR 本文に書く
+4. PR 作成後に追加でコミットした場合も、その差分に同じ基準を適用する
+
+`uv run pytest` が通っていることも PR の前提とする。
+
+### リリース
+
+1. 機能 PR のブランチ上で `pyproject.toml` の `version` を上げ（`uv lock` で `uv.lock` も更新）、
+   `CHANGELOG.md` の `[Unreleased]` を新バージョンの節に移す（コミットは `chore(release): vX.Y.Z`）
+2. PR を `main` にマージしたら、そのマージコミットに `vX.Y.Z` タグを打って push する
+3. イメージはそのタグでビルドする（`infra/DEPLOYMENT.md` 参照）
+
+### マージ後のブランチ削除
+
+**PR をマージしたら、そのブランチをリモート・ローカルとも必ず削除すること。** 消し忘れると
+マージ済みブランチが溜まり、どれが生きているのか分からなくなる。`main` は恒久ブランチなので削除しない。
 
 ```bash
 gh pr merge <番号> --merge --delete-branch   # リモートはこれで消える
-git checkout main && git pull
+git switch main && git pull
 git branch -d <branch-name>                  # ローカルも消す
 ```
 
@@ -26,8 +102,8 @@ git branch -d <branch-name>                  # ローカルも消す
 
 ```bash
 git fetch -p
-git branch -r --merged origin/main | grep -vE 'origin/(main|dev)$'
-git branch   --merged main         | grep -vE '^\*|(main|dev)$'
+git branch -r --merged origin/main | grep -vE 'origin/(HEAD|main)'
+git branch   --merged main         | grep -vE '^\*|^ +main$'
 ```
 
 ## Development Commands

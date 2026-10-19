@@ -545,7 +545,7 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
         # 要約できなかった場合は _process() 内で送出済み。ここに来るのは保存の全件失敗。
         if total_failure:
             raise RunFailedError(
-                f"{len(articles)}件の記事を要約しましたが、1件も保存できませんでした。"
+                "要約した記事を1件も保存できませんでした。"
             )
 
     logger.info("プロセス完了")

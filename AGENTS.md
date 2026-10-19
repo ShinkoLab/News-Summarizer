@@ -23,8 +23,8 @@ This file provides guidance to coding agents (Claude Code, Codex, etc.) when wor
   `fix/opencode-session-header`）。
 
 ```bash
-git switch main && git pull
-git switch -c feature/<feature-name>
+git fetch origin
+git switch -c feature/<feature-name> origin/main   # worktree 内でも main を checkout せずに切れる
 ```
 
 ### コミットメッセージ（Conventional Commits）
@@ -85,6 +85,12 @@ PR を作る**前に**コードレビューを回し、**重要度「中」以�
 1. 機能 PR のブランチ上で `pyproject.toml` の `version` を上げ（`uv lock` で `uv.lock` も更新）、
    `CHANGELOG.md` の `[Unreleased]` を新バージョンの節に移す（コミットは `chore(release): vX.Y.Z`）
 2. PR を `main` にマージしたら、そのマージコミットに `vX.Y.Z` タグを打って push する
+   （作業ブランチの HEAD ではなく `origin/main` を指定する）
+
+   ```bash
+   git fetch origin
+   git tag vX.Y.Z origin/main && git push origin vX.Y.Z
+   ```
 3. イメージはそのタグでビルドする（`infra/DEPLOYMENT.md` 参照）
 
 ### マージ後のブランチ削除
@@ -102,8 +108,8 @@ git branch -d <branch-name>                  # ローカルも消す
 
 ```bash
 git fetch -p
-git branch -r --merged origin/main | grep -vE 'origin/(HEAD|main)'
-git branch   --merged main         | grep -vE '^\*|^ +main$'
+git branch -r --merged origin/main | grep -vE 'origin/HEAD|origin/main$'
+git branch   --merged main         | grep -vE '^\*|^[+ ] main$'   # `+` は別 worktree で checkout 中
 ```
 
 ## Development Commands

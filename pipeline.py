@@ -31,6 +31,15 @@ from summarizer.digest import generate_digest
 logger = get_logger(__name__)
 
 
+class NoSummariesError(RuntimeError):
+    """要約対象の記事があったのに、1件も要約できなかった。
+
+    APIキー失効のような全件に効く障害でも、記事ごとのエラー分離によって
+    パイプライン自体は正常終了してしまい、Cloud Run Job が「成功」扱いになる。
+    障害に気付けるよう、呼び出し側（main.py）で異常終了させるために送出する。
+    """
+
+
 # ---------------------------------------------------------------------------
 # RunOptions — frozen options object threaded through the pipeline
 # ---------------------------------------------------------------------------
@@ -533,8 +542,9 @@ def _process(
     """Summarize → group → digest → output. Returns what was persisted."""
     pairs = summarize_all(articles, options)
     if not pairs:
-        logger.warning("要約に成功した記事がありませんでした。処理を終了します。")
-        return SaveResult(batch_id=None, saved=[])
+        raise NoSummariesError(
+            f"{len(articles)}件の記事を要約しようとしましたが、1件も成功しませんでした。"
+        )
 
     article_group_map, embeddings = group_pairs(pairs, options)
 

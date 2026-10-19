@@ -18,6 +18,7 @@ from models import (
     SaveResult,
 )
 from pipeline import (
+    NoSummariesError,
     RunOptions,
     reconcile_email_attempts,
     run_pipeline,
@@ -172,6 +173,55 @@ class TestEmptyArticles:
             run_pipeline(minimal_config, options)
 
         mock_summarize.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Every summary failing is an error, not a quiet success
+# ---------------------------------------------------------------------------
+
+class TestNoSummaries:
+    """APIキー失効のような全件障害で、Job が「成功」扱いにならないようにする。"""
+
+    def _run_all_failing(self, config, articles, db_instance):
+        with (
+            patch("pipeline.MinifluxFetcher") as MockRss,
+            patch("pipeline.EmailFetcher") as MockEmail,
+            patch("pipeline.summarize_article", side_effect=RuntimeError("401")),
+            patch("pipeline.create_database", return_value=db_instance),
+            patch("pipeline.DiscordOutput") as MockDiscord,
+        ):
+            MockRss.return_value.fetch.return_value = [
+                a for a in articles if a.source_type == "rss"
+            ]
+            MockEmail.return_value.fetch.return_value = [
+                a for a in articles if a.source_type == "email"
+            ]
+            with pytest.raises(NoSummariesError):
+                run_pipeline(config, RunOptions(dry_run=False))
+        return MockDiscord
+
+    def test_all_summaries_failing_raises(self, minimal_config):
+        db_instance = _make_db(saved_source_ids=[])
+
+        discord = self._run_all_failing(
+            minimal_config, [_make_article("1"), _make_article("2")], db_instance
+        )
+
+        db_instance.save_batch.assert_not_called()
+        discord.return_value.post.assert_not_called()
+
+    def test_partial_failure_does_not_raise(self, minimal_config):
+        """1件でも要約できれば従来どおり正常終了する。"""
+        articles = [_make_article("1"), _make_article("2")]
+
+        db_mock, _ = _run_with_patches(
+            minimal_config,
+            RunOptions(dry_run=False),
+            articles,
+            summaries=[_make_summary(), RuntimeError("401")],
+        )
+
+        db_mock.save_batch.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +763,11 @@ class TestEmailAttemptReconciliation:
             patch("pipeline.DiscordOutput"),
         ):
             MockEmail.return_value.fetch.return_value = articles
-            run_pipeline(minimal_config, RunOptions(dry_run=False, sources=frozenset({"email"})))
+            # 全件失敗は NoSummariesError になるが、試行回数の記録は finally で行われる
+            with pytest.raises(NoSummariesError):
+                run_pipeline(
+                    minimal_config, RunOptions(dry_run=False, sources=frozenset({"email"}))
+                )
 
         db_instance.record_email_attempt.assert_called_once_with("mail-1")
 

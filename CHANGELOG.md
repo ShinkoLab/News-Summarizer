@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-19
+
 ### Added
 
 - `miniflux.strip_html`（既定 `true`、環境変数 `MINIFLUX_STRIP_HTML` /

@@ -52,6 +52,9 @@ miniflux_base_url = "https://miniflux.example.com"
 # 取得後の重複除去で1割前後落ちるので、fetch_limit は多めに取る。
 # max_articles_per_run = 200
 # miniflux_fetch_limit = 250
+# Miniflux 記事本文の HTML をテキスト化してから LLM に渡す（既定 true）。
+# 入力トークンが約8割減る。デバッグ・比較用に HTML のまま渡したいときだけ false。
+# miniflux_strip_html = false
 # メールを使わない場合もダミー値を設定してください（フェッチ失敗はソース単位で握りつぶされます）
 email_host        = "pop.example.com"
 email_username    = "news@example.com"

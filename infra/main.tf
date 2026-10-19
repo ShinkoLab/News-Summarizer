@@ -404,6 +404,10 @@ resource "google_cloud_run_v2_job" "summarizer" {
           value = tostring(var.miniflux_fetch_limit)
         }
         env {
+          name  = "MINIFLUX_STRIP_HTML"
+          value = tostring(var.miniflux_strip_html)
+        }
+        env {
           name  = "EMAIL_HOST"
           value = var.email_host
         }

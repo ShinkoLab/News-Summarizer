@@ -126,6 +126,12 @@ miniflux:
   # summarizer.max_articles_per_run を上げるときはこちらも併せて上げること。
   # 取得後の重複除去で1割前後が落ちるので、max_articles_per_run より多めが目安。
   #fetch_limit: 100
+  # 記事本文の HTML をテキスト化してから LLM に渡すか（既定 true）。
+  # Miniflux の本文はフル HTML で届き、タグ・属性が入力トークンの大半を占める。
+  # テキスト化すると記事あたり約 5,200 → 約 980 トークン（約 80% 減）になり、
+  # 要約品質への影響はほぼない。false にすると従来どおり HTML のまま渡す。
+  # デバッグ・比較用や、HTML 構造に依存した要約が欲しい場合のみ false にする。
+  #strip_html: true
 
 # POP3 メールサーバーの設定
 email:

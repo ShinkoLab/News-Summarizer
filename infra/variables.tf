@@ -159,6 +159,12 @@ variable "miniflux_fetch_limit" {
   }
 }
 
+variable "miniflux_strip_html" {
+  description = "Miniflux 記事本文の HTML をテキスト化してから LLM に渡す。入力トークンが約8割減る。false で HTML のまま渡す（デバッグ・比較用）"
+  type        = bool
+  default     = true
+}
+
 variable "grouper_similarity_threshold" {
   description = "Cosine similarity threshold for embedding-based grouping"
   type        = number

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-19
+
+### Added
+
+- `miniflux.strip_html`（既定 `true`、環境変数 `MINIFLUX_STRIP_HTML` /
+  Terraform 変数 `miniflux_strip_html`）で Miniflux 記事本文の HTML をテキスト化してから
+  LLM に渡す。実測で記事あたり入力トークンが約 5,200 → 約 980（約 81% 減）。
+  `false` で従来どおり HTML のまま渡す
+
 ## [2.5.0] - 2026-09-20
 
 ### Added

@@ -171,8 +171,8 @@ config source (see **Deployment** below). For the full design spec see `README.m
 
 ### Key modules
 
-- **`main.py`** — CLI entry point only; parses arguments into `RunOptions` and calls `run_pipeline()`
-- **`pipeline.py`** — Orchestrates the full pipeline; defines `RunOptions` (frozen dataclass), `run_pipeline()`, and internal step functions (`fetch_articles`, `summarize_all`, `group_pairs`, `build_digest`, `persist_and_publish`); error isolation is per-source and per-article. The whole run is wrapped in `db.execution_lock()`, and already-processed articles are skipped via `db.is_article_processed()` before summarization. If articles were
+- **`main.py`** — CLI entry point; parses arguments into `RunOptions`, calls `run_pipeline()`, and turns `RunFailedError` into exit status 1
+- **`pipeline.py`** — Orchestrates the full pipeline; defines `RunOptions` (frozen dataclass), `run_pipeline()`, and internal step functions (`fetch_articles`, `summarize_all`, `group_pairs`, `build_digest`, `persist_and_publish`); error isolation is per-source and per-article. The whole run is wrapped in `db.execution_lock()` whenever it writes to the DB (a plain `--dry-run` takes no lock), and already-processed articles are skipped via `db.is_article_processed()` before summarization. If articles were
   attempted but **not a single one** was summarized (e.g. an expired LLM API key), or summaries
   exist but **not a single one** was saved while the run writes to the DB (e.g. a Firestore
   outage), `run_pipeline()` raises `RunFailedError` and `main.py` exits with status 1 — per-article
@@ -180,10 +180,11 @@ config source (see **Deployment** below). For the full design spec see `README.m
   Such a total failure is environmental, so it does **not** count toward the email attempt limit
   (otherwise an outage alone would exhaust `max_fetch_attempts` and give up on every message).
   A partial failure (at least one summary saved) still exits 0
-- **`config.py`** / **`config.yaml`** — Pydantic config layer; `config.yaml` is gitignored, use `config.yaml.example` as template. Every key can also be supplied via environment variables (see **Configuration**)
-- **`models.py`** — All data structures: `Article` (common fetch format, dataclass), plus Pydantic models for LLM structured outputs (`ArticleGroup`, `GroupingResult`, `ArticleSummary`, `CategoryDigest`, `TopicLabel`, `TopicNamingResult`, `DigestResult`)
+- **`config.py`** / **`config.yaml`** — Pydantic config layer; `config.yaml` is gitignored, use `config.yaml.example` as template. Most keys can also be supplied via environment variables (see **Configuration**)
+- **`models.py`** — All data structures: `Article` (common fetch format, dataclass), `SaveResult` (what `save_batch()` actually persisted), plus Pydantic models for LLM structured outputs (`ArticleGroup`, `GroupingResult`, `ArticleSummary`, `CategoryDigest`, `TopicLabel`, `TopicNamingResult`, `DigestResult`)
 - **`logger.py`** — Logging setup (`setup_logging()` / `get_logger()`); outputs to stderr only, level controlled by `logging.level` in config
-- **`fetchers/`** — `MinifluxFetcher` (REST API) and `EmailFetcher` (POP3); both normalize to `Article`
+- **`urls.py`** — URL normalization for cross-feed dedup (`normalize_url()` / `url_key()`; see **Deduplication**)
+- **`fetchers/`** — `MinifluxFetcher` (REST API) and `EmailFetcher` (POP3), both subclasses of `BaseFetcher` (`base.py`); both normalize to `Article`
   - `html_text.py` — stdlib `html.parser`-based HTML→text conversion (`html_to_text()`); used by `MinifluxFetcher` when `miniflux.strip_html` is on
 - **`summarizer/`** — LLM steps; structured output via Pydantic
   - `llm_client.py` — shared LLM call logic, retry handling, step config resolution; OpenAI-compatible and Vertex AI paths
@@ -191,14 +192,14 @@ config source (see **Deployment** below). For the full design spec see `README.m
   - `grouper.py` — topic grouping (LLM-based or embedding-based)
   - `embedder.py` — embedding retrieval (separate endpoint from the chat LLM)
   - `digest.py` — category digest generation
-- **`outputs/`** — `create_database()` returns `Database` (SQLite) or `FirestoreDatabase` depending on `database.backend`; both expose `save_batch()` / `is_article_processed()` / `is_email_processed()` / `execution_lock()`. Plus `DiscordOutput` (webhook embeds, description truncated at the 4096-char Discord limit)
-- **`scripts/`** — `migrate_sqlite_to_firestore.py` (one-shot data migration, supports `--dry-run`);
+- **`outputs/`** — `create_database()` returns `Database` (SQLite) or `FirestoreDatabase` depending on `database.backend`; both expose `save_batch()` / `is_article_processed()` / `is_url_processed()` / `is_email_processed()` / `mark_email_processed()` / `record_email_attempt()` / `execution_lock()`. Plus `DiscordOutput` (webhook embeds, description truncated at the 4096-char Discord limit)
+- **`scripts/`** — `migrate_sqlite_to_firestore.py` (one-shot data migration; `--database` / `--project` required, supports `--dry-run`);
   `backfill_embedding_vectors.py` (one-shot conversion of `articleSummaries.embedding` from a plain
   array to Firestore's `Vector` type — required before the Viewer's kNN search can see a document;
-  idempotent, `--dry-run` / `--limit` / `--start-after`);
+  idempotent; `--project` required, plus `--dry-run` / `--limit` / `--start-after` / `--batch-size`);
   `skip_stale_backlog.py` (marks-as-read/deletes Miniflux/POP3 backlog older than a cutoff after an
   outage, so the pipeline doesn't have to grind through days of stale entries; dry-run by default,
-  `--execute` + confirmation prompt required to actually change anything — see its module docstring)
+  `--execute` + confirmation prompt (skippable with `--yes`) required to actually change anything — see its module docstring)
 - **`infra/`** — Terraform for the Google Cloud deployment; see `infra/README.md` and `infra/DEPLOYMENT.md`
 
 ### LLM integration
@@ -380,8 +381,13 @@ overrides where it looks. This split is deliberate: ambient environment variable
 (`GOOGLE_CLOUD_PROJECT` is set by common `gcloud`/ADC tooling, for instance) must not
 silently override a config file the user pointed at.
 
-`_apply_environment_overrides()` covers **every** config key. The authoritative
-env-var → config-key mapping is the Cloud Run Job definition in `infra/main.tf`.
+`_apply_environment_overrides()` covers the keys the Cloud Run Job needs, **not every key**:
+`llm.extra_body`, `llm.gemma4_think`, `summarizer.digest_max_length`,
+`summarizer.category_max_retries`, `summarizer.steps.<step>.thinking`, most step `parameters`
+(only temperature / reasoning effort), and the `discord.*` embed tuning keys have no environment
+variable — on Cloud Run they stay at their defaults. Adding a key there means extending
+`_apply_environment_overrides()` *and* `infra/main.tf`. The authoritative env-var → config-key
+mapping is the Cloud Run Job definition in `infra/main.tf`.
 
 > Note: with no `config.yaml` present, the env-only defaults target Vertex AI. Local runs should
 > always have a `config.yaml`.

@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import main
-from pipeline import NoSummariesError
+from pipeline import RunFailedError
 
 
 def _run_main(monkeypatch, **patch_kwargs):
@@ -20,7 +20,7 @@ def _run_main(monkeypatch, **patch_kwargs):
 
 def test_no_summaries_exits_with_status_1(monkeypatch):
     with pytest.raises(SystemExit) as excinfo:
-        _run_main(monkeypatch, side_effect=NoSummariesError("0件"))
+        _run_main(monkeypatch, side_effect=RunFailedError("0件"))
 
     assert excinfo.value.code == 1
 

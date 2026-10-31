@@ -71,8 +71,9 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          # リリース時は main との祖先関係を確認するため全履歴が要る
-          fetch-depth: ${{ env.IS_RELEASE == 'true' && 0 || 1 }}
+          # リリース時は main との祖先関係を確認するため全履歴が要る。
+          # `cond && 0 || 1` は 0 が falsy で常に 1 になるため、条件分岐させず常に全履歴を取る
+          fetch-depth: 0
           persist-credentials: false
       - name: Require the tagged commit to be on main (before any push)
         if: env.IS_RELEASE == 'true'

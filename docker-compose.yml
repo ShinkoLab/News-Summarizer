@@ -1,12 +1,22 @@
+# このファイルは「Summarizer + Viewer」だけを定義する。同梱の Miniflux（miniflux-db /
+# miniflux）は compose.miniflux.yml にあり、.env の COMPOSE_FILE で一緒に読み込む:
+#   COMPOSE_FILE=docker-compose.yml:compose.miniflux.yml   # 同梱 Miniflux（既定）
+#   COMPOSE_FILE=docker-compose.yml                        # 手元の既存 Miniflux に接続
+# 分けてあるのは、使わないサービスへの depends_on / profiles がエラーや強制起動に
+# ならないようにするため（compose.miniflux.yml が summarizer の depends_on を足す）。
+
 # summarizer / summarizer-once 共通の環境変数
 x-summarizer-environment: &summarizer-environment
     DATABASE_BACKEND: sqlite
     SQLITE_DATABASE_PATH: /data/news_summarizer.db
-    # MINIFLUX_BASE_URL はここで渡さない: entrypoint.sh が既定（http://miniflux:8080）を
-    # 使い、API キーが確定した場合にだけ export する（メールのみの実行を壊さないため）。
+    # 空なら entrypoint.sh が既定（同梱 Miniflux の http://miniflux:8080）を使う。
+    # main.py へは API キーが確定した場合にだけ export する（config.py は MINIFLUX_* が
+    # 1つでもあると api_key 欠落で起動時に落ちるため、メールのみの実行を壊さない）。
+    # 既存の Miniflux に接続する場合は .env でこの2つを設定する。
+    MINIFLUX_BASE_URL: ${MINIFLUX_BASE_URL:-}
     MINIFLUX_API_KEY: ${MINIFLUX_API_KEY:-}
-    MINIFLUX_ADMIN_USERNAME: ${MINIFLUX_ADMIN_USERNAME:-admin}
-    MINIFLUX_ADMIN_PASSWORD: ${MINIFLUX_ADMIN_PASSWORD:-miniflux}
+    # 空 = 同梱 Miniflux なら true、既存 Miniflux なら false（compose.miniflux.yml 参照）
+    MINIFLUX_IMPORT_STARTER_FEEDS: ${MINIFLUX_IMPORT_STARTER_FEEDS:-}
     LLM_PROVIDER: ${LLM_PROVIDER:-openai}
     LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
     LLM_MODEL: ${LLM_MODEL:-}
@@ -18,11 +28,12 @@ x-summarizer-environment: &summarizer-environment
     EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
     EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
     GROUPER_USE_EMBEDDINGS: ${GROUPER_USE_EMBEDDINGS:-false}
-    # config.py の _apply_environment_overrides() に対応する環境変数。空なら未設定
-    # 扱い（既定 100 / 100 / true）。MAX_ARTICLES_PER_RUN と MINIFLUX_FETCH_LIMIT は
-    # 対で、小さい方が効く（AGENTS.md 参照）。
-    MAX_ARTICLES_PER_RUN: ${MAX_ARTICLES_PER_RUN:-}
-    MINIFLUX_FETCH_LIMIT: ${MINIFLUX_FETCH_LIMIT:-}
+    # config.py の _apply_environment_overrides() に対応する環境変数。MAX_ARTICLES_PER_RUN と
+    # MINIFLUX_FETCH_LIMIT は対で、小さい方が効く（AGENTS.md 参照）。お試し向けに少なめ
+    # （20 / 25）を既定にしている。1 回の実行で記事ごとに LLM を呼ぶので、有料 API では
+    # 件数がそのまま費用になる。
+    MAX_ARTICLES_PER_RUN: ${MAX_ARTICLES_PER_RUN:-20}
+    MINIFLUX_FETCH_LIMIT: ${MINIFLUX_FETCH_LIMIT:-25}
     MINIFLUX_STRIP_HTML: ${MINIFLUX_STRIP_HTML:-true}
     # メールソース（POP3）。EMAIL_HOST / USERNAME / PASSWORD が揃ったときだけ有効。
     EMAIL_HOST: ${EMAIL_HOST:-}
@@ -33,59 +44,19 @@ x-summarizer-environment: &summarizer-environment
     EMAIL_MAX_FETCH_ATTEMPTS: ${EMAIL_MAX_FETCH_ATTEMPTS:-}
     EMAIL_DELETE_AFTER_PROCESSING: ${EMAIL_DELETE_AFTER_PROCESSING:-false}
     DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
-    NEWS_SUMMARIZER_SOURCE: ${NEWS_SUMMARIZER_SOURCE:-rss}
+    NEWS_SUMMARIZER_SOURCE: ${NEWS_SUMMARIZER_SOURCE:-all}
     LOG_LEVEL: ${LOG_LEVEL:-INFO}
     TZ: ${TZ:-Asia/Tokyo}
 
 services:
-  miniflux-db:
-    image: ${MINIFLUX_POSTGRES_IMAGE:-postgres:17-alpine}
-    environment:
-      POSTGRES_USER: miniflux
-      POSTGRES_PASSWORD: ${MINIFLUX_POSTGRES_PASSWORD:-miniflux}
-      POSTGRES_DB: miniflux
-    volumes:
-      - miniflux-db:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U miniflux -d miniflux"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
-    restart: unless-stopped
-
-  miniflux:
-    image: ${MINIFLUX_IMAGE:-miniflux/miniflux:latest}
-    depends_on:
-      miniflux-db:
-        condition: service_healthy
-    ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${MINIFLUX_PORT:-8080}:8080"
-    environment:
-      DATABASE_URL: postgres://miniflux:${MINIFLUX_POSTGRES_PASSWORD:-miniflux}@miniflux-db/miniflux?sslmode=disable
-      RUN_MIGRATIONS: "1"
-      CREATE_ADMIN: "1"
-      ADMIN_USERNAME: ${MINIFLUX_ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${MINIFLUX_ADMIN_PASSWORD:-miniflux}
-    healthcheck:
-      test: ["CMD", "/usr/bin/miniflux", "-healthcheck", "auto"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
-    restart: unless-stopped
-
   summarizer:
     # summarizer-once と同じイメージ名にして、--build で再ビルドされたものを両方が使う
     image: news-summarizer:local
     build:
       context: .
-    depends_on:
-      miniflux:
-        condition: service_healthy
     environment:
       <<: *summarizer-environment
-      NEWS_SUMMARIZER_INTERVAL_SECONDS: ${NEWS_SUMMARIZER_INTERVAL_SECONDS:-3600}
+      NEWS_SUMMARIZER_INTERVAL_SECONDS: ${NEWS_SUMMARIZER_INTERVAL_SECONDS:-10800}
     volumes:
       - summarizer-data:/data
     extra_hosts:
@@ -98,9 +69,6 @@ services:
     image: news-summarizer:local
     build:
       context: .
-    depends_on:
-      miniflux:
-        condition: service_healthy
     environment:
       <<: *summarizer-environment
     volumes:
@@ -111,9 +79,9 @@ services:
 
   web:
     build:
-      # News-Viewer は別リポジトリ。このリポジトリと同じ階層に clone しておく
-      # 前提の相対パス（`git clone` で兄弟ディレクトリになる運用）。
-      context: ../News-Viewer
+      # News-Viewer は別リポジトリ。Compose が URL から直接ビルドするので clone は不要。
+      # Viewer 側を手元で開発しているときは NEWS_VIEWER_CONTEXT=../News-Viewer で差し替える。
+      context: ${NEWS_VIEWER_CONTEXT:-https://github.com/ShinkoLab/News-Viewer.git#v1.5.0}
     depends_on:
       - summarizer
     ports:
@@ -130,5 +98,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  miniflux-db:
   summarizer-data:

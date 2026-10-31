@@ -3,8 +3,61 @@
 ローカル環境またはGoogle Cloud上で動作する、AIを活用したニュース記事の自動要約・配信システム。
 複数ソース（RSS / メールマガジン）から記事を収集し、LLMで要約・分類した上で、Discord等への通知やWebアプリ連携用のデータとして提供する。
 
+## クイックスタート（Docker Compose）
+
+このリポジトリを clone して、`.env` を数行直し、`docker compose up -d` するだけで試せる。
+Miniflux（RSS リーダー）・要約バッチ・Web ビューアがまとめて起動する。必要なのは Docker と、
+OpenAI 互換の LLM（ホストの Ollama など）だけ。
+
+```bash
+git clone https://github.com/ShinkoLab/News-Summarizer.git
+cd News-Summarizer
+
+# 1. 設定ファイルを作る
+cp .env.example .env
+
+# 2. .env を編集する。必須なのは LLM_MODEL（と、使う LLM に応じた LLM_BASE_URL / LLM_API_KEY）だけ
+#    - 無料: ホストの Ollama   → LLM_MODEL に `ollama list` のモデル名（既定の LLM_BASE_URL のまま）
+#    - 有料: OpenRouter など → .env 内の (b)(c) のコメントを外して API キーとモデル名を入れる
+
+# 3. 起動（初回は Viewer のビルドで数分かかる）
+docker compose up -d
+
+# 4. ブラウザで開く
+#    http://localhost:3080  Viewer（最初の要約が出るまで数分〜。それまでは「バッチがありません」）
+#    http://localhost:8080  Miniflux（ログインは .env の MINIFLUX_ADMIN_USERNAME / PASSWORD）
+```
+
+- **Miniflux は同梱が既定**。初回に定番の RSS フィード5件（`docker/feeds.opml`）を自動登録するので、
+  すぐに動く。フィードの追加・削除は Miniflux の画面（http://localhost:8080）で行う。
+  **すでに自前の Miniflux があるなら**、`.env` を `COMPOSE_FILE=docker-compose.yml` に変えて
+  `MINIFLUX_BASE_URL`（コンテナから届く URL。ホスト上なら `http://host.docker.internal:8080`）と
+  `MINIFLUX_API_KEY` を設定する。同梱の Miniflux / PostgreSQL は起動せず、フィードも触らない
+- **費用に注意**: 1 回の実行で記事ごとに LLM を呼ぶ（個別要約 + グルーピング + ダイジェスト）。
+  有料の API では実行ごとに料金がかかる。お試し向けに既定は「1 回 20 件、3 時間おき」。
+  慣れたら `.env` の `MAX_ARTICLES_PER_RUN` / `MINIFLUX_FETCH_LIMIT`（対で、小さい方が効く）と
+  `NEWS_SUMMARIZER_INTERVAL_SECONDS` で増やす。Ollama なら無料
+- **この構成の Viewer は検索がキーワード検索のみ**。意味検索（ベクトル検索）は
+  Firestore を使う Google Cloud 構成が前提
+- 止めるとき: `docker compose down`（データも消すなら `down -v`）。ログは `docker compose logs -f summarizer`
+
+詳細は後述の[フルスタック](#フルスタックdocker-compose-up)の節を参照。
+
+## 本格運用（Google Cloud）
+
+家族だけが利用する低固定費構成として、SummarizerをCloud Run Job、Viewerを最小インスタンス0の
+Cloud Run、永続化をFirestore、生成AIをVertex AIへ移します。Viewerは直接IAPで許可した
+Googleアカウントだけが閲覧できます。サービスアカウント鍵は作らず、Secret Managerと
+Application Default Credentialsを使用します。
+
+構築、コンテナ配布、SQLite履歴移行、切替確認の具体的な手順は
+[`infra/README.md`](infra/README.md)を参照してください。Terraformには月額予算通知、
+Viewer最大1インスタンス、Job再試行なし、Artifact Registryの世代削除も含まれます。
+
 ## 目次
 
+- [クイックスタート](#クイックスタートdocker-compose)
+- [本格運用（Google Cloud）](#本格運用google-cloud)
 - [システム概要](#システム概要)
 - [アーキテクチャ](#アーキテクチャ)
 - [技術スタック](#技術スタック)
@@ -18,7 +71,6 @@
 - [実行方式](#実行方式)
 - [ディレクトリ構成](#ディレクトリ構成)
 - [セットアップ](#セットアップ)
-- [Google Cloudへの移行](#google-cloudへの移行)
 - [将来の拡張](#将来の拡張)
 
 
@@ -679,36 +731,34 @@ docker run --rm -v news-data:/data \
 
 ### フルスタック（`docker compose up`）
 
-Miniflux・PostgreSQL・Summarizer・Viewer を1コマンドでまとめて起動できる。`docker-compose.yml`
-の `web` サービスは [`News-Viewer`](https://github.com/ShinkoLab/News-Viewer) を
-`../News-Viewer` という相対パスでビルドするため、**このリポジトリと同じ階層に
-`News-Viewer` を clone しておく**必要がある（同一 GitHub Organization の別リポジトリで、
-Compose 定義だけをどちらかに同梱する形にした。両リポジトリを1つの Compose ファイルから
-ビルドする都合上、この兄弟ディレクトリ配置が前提になる）。
+最短手順は冒頭の[クイックスタート](#クイックスタートdocker-compose)。ここは仕組みと運用の詳細。
 
-```bash
-git clone https://github.com/ShinkoLab/News-Summarizer.git
-git clone https://github.com/ShinkoLab/News-Viewer.git
-cd News-Summarizer
+構成は2ファイルに分かれていて、`.env` の `COMPOSE_FILE` が読み込む組み合わせを決める:
 
-cp .env.example .env
-# .env の LLM_MODEL・パスワード・必要なら DISCORD_WEBHOOK_URL を設定
-docker compose up --build
-```
+| `COMPOSE_FILE` | 起動するもの |
+| --- | --- |
+| `docker-compose.yml:compose.miniflux.yml`（`.env.example` の既定） | PostgreSQL + Miniflux（同梱）+ `summarizer` + `web` |
+| `docker-compose.yml` | `summarizer` + `web` だけ。`MINIFLUX_BASE_URL` / `MINIFLUX_API_KEY` の既存 Miniflux に接続 |
 
-- News Viewer: http://localhost:3080
-- Miniflux: http://localhost:8080（`.env` の `MINIFLUX_ADMIN_USERNAME` / `MINIFLUX_ADMIN_PASSWORD`
-  で初期管理者アカウントが作られる。起動後、UI にログインして RSS フィードを手動登録する
-  ——フィード登録だけは自動化されていない）
+`docker-compose.yml` が Summarizer と Viewer、`compose.miniflux.yml` が同梱 Miniflux と
+`summarizer` の `depends_on: miniflux` を持つ。1ファイルにまとめて `profiles` で切り替えない
+のは、起動しないサービスへの `depends_on` がエラーになり、依存先のプロファイルは強制的に
+起動されてしまうため。Windows ではファイルの区切りが `;` になる。
 
-LLM 自体は Compose に含まれていない。ホスト上の Ollama / llama-swap など、コンテナから
-到達可能な OpenAI 互換エンドポイントが必要（Docker Desktop なら既定の
-`LLM_BASE_URL=http://host.docker.internal:11434/v1` のままで到達できる。ネイティブ Linux でも
-`docker-compose.yml` に `extra_hosts: host.docker.internal:host-gateway` を設定済みなので同じ
-URL で到達できるはず）。
+- `web` は [News-Viewer](https://github.com/ShinkoLab/News-Viewer) のリリースタグ（`v1.5.0`）を
+  Compose が URL から直接ビルドする。clone は不要。手元の News-Viewer を開発しているときは
+  `.env` に `NEWS_VIEWER_CONTEXT=../News-Viewer` を設定して差し替える
+- Viewer: http://localhost:3080、Miniflux（同梱時）: http://localhost:8080
+- 同梱 Miniflux のイメージは `2.3.4` に固定している（`MINIFLUX_IMAGE` で変更可）
+- LLM は Compose に含まれない。ホスト上の Ollama / llama-swap か、クラウドの OpenAI 互換
+  エンドポイントを `.env` で指定する。`.env.example` に Ollama・OpenRouter・その他の設定例がある。
+  サーバーが `response_format` を受け付けない／無視するモデルでは `LLM_STRUCTURED_OUTPUT=false`
+  にする（プレーンテキスト JSON のフォールバックに切り替わる）
+- ネイティブ Linux でも `docker-compose.yml` の `extra_hosts: host.docker.internal:host-gateway`
+  で `host.docker.internal` が引ける
 
-`summarizer` サービスは `NEWS_SUMMARIZER_INTERVAL_SECONDS` 間隔で定期実行し続ける。手動で
-一度だけ実行したい場合や CLI オプションを渡したい場合は `summarizer-once`（`profiles: manual`）を使う:
+`summarizer` サービスは `NEWS_SUMMARIZER_INTERVAL_SECONDS`（既定 3 時間）間隔で定期実行し続ける。
+手動で一度だけ実行したい場合や CLI オプションを渡したい場合は `summarizer-once`（`profiles: manual`）を使う:
 
 ```bash
 docker compose run --rm summarizer-once
@@ -716,12 +766,29 @@ docker compose run --rm summarizer-once --dry-run
 docker compose run --rm summarizer-once --source email
 ```
 
-`.env` の `MINIFLUX_API_KEY` が空の場合、summarizer コンテナは起動時（run-loop は各周回の頭でも未取得なら）Miniflux の
-管理者ユーザーで API key を自動発行してから `main.py` を実行する（`docker/provision_miniflux_key.py`）。
-既存の API key を使い回したい場合は `MINIFLUX_API_KEY` に設定する。
+**二重実行の防止**: SQLite には実行ロックが無いため、`docker/entrypoint.sh` は `main.py` を
+`/data` 上のロックファイル（`docker/with_lock.py`、`flock`）経由で起動して直列化する。
+`summarizer-once` を `summarizer` の実行中に走らせると、終わるまで待つ
+（`NEWS_SUMMARIZER_LOCK_WAIT_SECONDS`、既定 3600 秒で諦めて終了コード 75）。定期実行側は、
+手動実行中なら今回の周回をスキップして次の間隔に回す。したがって `docker compose stop summarizer`
+は不要。
 
-`summarizer-once` を実行する前に `docker compose stop summarizer` で定期実行を止めること。
-SQLite バックエンドには実行ロックが無く、同時に走ると同じ記事を二重に要約・投稿してしまう。
+**取得元**: `NEWS_SUMMARIZER_SOURCE` の既定は `all`（RSS + メール）。`EMAIL_*` が未設定ならメールは
+自動的に無視される。`rss` / `email` で絞ることもできる。
+
+**同梱 Miniflux のとき**:
+
+- `.env` の `MINIFLUX_API_KEY` が空なら、起動時（run-loop は各周回の頭でも未取得なら）管理者
+  ユーザーで API key を自動発行してから `main.py` を実行する（`docker/provision_miniflux_key.py`）
+- フィードが 0 件のときだけ `docker/feeds.opml` のスターターフィードを取り込む
+  （`docker/import_starter_feeds.py`）。一度済んだら `/data` のマーカーで再取り込みしない。
+  `MINIFLUX_IMPORT_STARTER_FEEDS=false` で無効化できる。失敗しても警告だけで続行する
+- 起動時に SQLite のスキーマを作るので、最初の実行が終わる前でも Viewer は
+  「バッチがありません」と表示する（エラーにはならない）
+
+**既存の Miniflux に接続するとき**: 管理者パスワードでの API key 自動発行はしない
+（`MINIFLUX_API_KEY` は必須）。スターターフィードも既定では登録しない
+（`MINIFLUX_IMPORT_STARTER_FEEDS=true` を明示したときだけ、フィードが 0 件のユーザーに登録する）。
 
 Miniflux と Viewer のポートは既定でループバック（`127.0.0.1`）にだけ公開する。LAN など外へ
 出す場合は `.env` に `BIND_ADDRESS=0.0.0.0` を設定し、**先に管理者・Postgres のパスワードを
@@ -740,16 +807,14 @@ API key の自動発行が失敗している可能性がある。`docker compose
 （`depends_on: condition: service_healthy` で通常は防がれるが、Miniflux 側の管理者アカウント
 作成が想定より遅れた場合に発生し得る）。
 
-取り込み量は `.env` の `MAX_ARTICLES_PER_RUN` / `MINIFLUX_FETCH_LIMIT`（対で、小さい方が効く）、
-HTML 除去は `MINIFLUX_STRIP_HTML` で調整できる（意味は上の設定項目の節を参照）。
-全記事の要約が1件も成功しなかった実行は `main.py` が終了コード1で終わるが、`summarizer`
-（run-loop）は止まらず次の間隔で再試行する。`summarizer-once` は終了コードをそのまま返す。
+取り込み量は `.env` の `MAX_ARTICLES_PER_RUN` / `MINIFLUX_FETCH_LIMIT`（対で、小さい方が効く。
+お試し向けの既定は 20 / 25）、HTML 除去は `MINIFLUX_STRIP_HTML` で調整できる
+（意味は上の設定項目の節を参照）。全記事の要約が1件も成功しなかった実行は `main.py` が
+終了コード1で終わるが、`summarizer`（run-loop）は止まらず次の間隔で再試行する。
+`summarizer-once` は終了コードをそのまま返す。
 
 Viewer のカテゴリ表示順（`CATEGORY_ORDER`）は `categories.yaml` の定義順の写しで、
 `docker-compose.yml` に直書きしてある（本番は Terraform が注入）。並べ替えたら合わせて更新する。
-
-初回起動時は、最初のパイプライン実行が終わって DB ファイルができるまで Viewer は
-エラー／空表示になる（ローカル LLM だと数分かかる）。しばらく待ってから再読み込みする。
 
 Summarizer と Viewer は `summarizer-data` volume の `/data/news_summarizer.db` を共有する。
 Summarizer は書き込み、Viewer は読み取り専用で参照する。
@@ -798,8 +863,9 @@ News-Summarizer/
 ├── Dockerfile                # Dockerイメージ（Cloud Run Job・Compose 共用。ENTRYPOINT は docker/entrypoint.sh）
 ├── .dockerignore             # イメージから除外するファイル
 ├── cloudbuild.yaml           # Artifact Registryへのビルド
-├── docker/                   # Docker実行用エントリポイント・APIキー自動発行スクリプト
-├── docker-compose.yml        # フルスタック構成（Miniflux + Summarizer + Viewer）
+├── docker/                   # Docker実行用エントリポイント・APIキー自動発行・スターターフィード（feeds.opml）・実行ロック
+├── docker-compose.yml        # Summarizer + Viewer
+├── compose.miniflux.yml      # 同梱 Miniflux（PostgreSQL + Miniflux）。COMPOSE_FILE で追加する
 ├── .env.example              # docker-compose.yml 用の設定テンプレート
 ├── tests/                     # pytest テストスイート
 └── data/                      # データディレクトリ（自動生成）
@@ -819,17 +885,6 @@ cp config.yaml.example config.yaml
 # 動作確認（ドライラン）
 uv run python main.py --dry-run
 ```
-
-## Google Cloudへの移行
-
-家族だけが利用する低固定費構成として、SummarizerをCloud Run Job、Viewerを最小インスタンス0の
-Cloud Run、永続化をFirestore、生成AIをVertex AIへ移します。Viewerは直接IAPで許可した
-Googleアカウントだけが閲覧できます。サービスアカウント鍵は作らず、Secret Managerと
-Application Default Credentialsを使用します。
-
-構築、コンテナ配布、SQLite履歴移行、切替確認の具体的な手順は
-[`infra/README.md`](infra/README.md)を参照してください。Terraformには月額予算通知、
-Viewer最大1インスタンス、Job再試行なし、Artifact Registryの世代削除も含まれます。
 
 ## 将来の拡張
 

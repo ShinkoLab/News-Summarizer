@@ -125,6 +125,16 @@ provision_api_key() {
   fi
 }
 
+# 変数が「設定されているが空」のときは LLM_MODEL の入れ忘れ（Compose は未設定でも
+# 空文字を渡す）。空のモデル名で LLM を叩き続けて延々と失敗するより、起動時に落とす。
+# `down` / `ps` など他の compose コマンドを巻き込まないよう、Compose 側ではなくここで検査する。
+require_llm_model() {
+  if [ "${LLM_MODEL-unset}" = "" ]; then
+    echo "[entrypoint] LLM_MODEL が空です。.env に OpenAI 互換エンドポイントのモデル名を設定してください" >&2
+    exit 1
+  fi
+}
+
 has_source_arg() {
   for arg in "$@"; do
     case "$arg" in
@@ -151,6 +161,7 @@ fi
 case "$1" in
   run-loop)
     shift
+    require_llm_model
     interval="$(validate_positive_int "${NEWS_SUMMARIZER_INTERVAL_SECONDS:-3600}" NEWS_SUMMARIZER_INTERVAL_SECONDS 3600)"
     while true; do
       provision_api_key
@@ -169,10 +180,12 @@ case "$1" in
     ;;
   run-once)
     shift
+    require_llm_model
     provision_api_key
     run_summarizer "$@"
     ;;
   -*)
+    require_llm_model
     provision_api_key
     run_summarizer "$@"
     ;;

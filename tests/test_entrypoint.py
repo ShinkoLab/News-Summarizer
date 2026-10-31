@@ -111,3 +111,10 @@ def test_sigterm_during_run_once_exits_nonzero(sandbox):
     time.sleep(1)
     proc.send_signal(signal.SIGTERM)
     assert proc.wait(timeout=10) != 0
+
+
+def test_empty_llm_model_fails_fast(sandbox):
+    _, script, log = sandbox
+    result = subprocess.run(["sh", str(script), "run-once"], env=_env(LLM_MODEL=""), timeout=20)
+    assert result.returncode == 1
+    assert not log.exists()

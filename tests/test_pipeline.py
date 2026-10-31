@@ -119,6 +119,7 @@ def _run_with_patches(
     *,
     db_mock=None,
     discord_mock=None,
+    failed_email_uidls: set[str] | None = None,
 ):
     """Run run_pipeline with all external I/O patched out."""
     if summaries is None:
@@ -146,6 +147,7 @@ def _run_with_patches(
 
         email_instance = MagicMock()
         email_instance.fetch.return_value = [a for a in articles if a.source_type == "email"]
+        email_instance.failed_uidls = failed_email_uidls or set()
         MockEmail.return_value = email_instance
 
         run_pipeline(config, options)
@@ -702,6 +704,17 @@ class TestUnifyGroupCategories:
 
         assert [s.category for _, s in pairs] == ["社会", "社会"]
 
+    def test_tie_ignores_the_oldest_article_of_a_losing_category(self):
+        """A2・B2・C1 で C が最古でも、勝つのは同票の A か B。C に寄せてはいけない。"""
+        pairs = self._pairs(
+            ["環境", "環境", "社会", "社会", "科学"], published=[4, 5, 2, 3, 1]
+        )
+        group_map = {i: (0, "topic") for i in range(5)}
+
+        unify_group_categories(pairs, group_map)
+
+        assert {s.category for _, s in pairs} == {"社会"}
+
     def test_separate_groups_are_untouched(self):
         pairs = self._pairs(["環境", "社会"])
         group_map = {0: (0, "a"), 1: (1, "b")}
@@ -741,6 +754,74 @@ class TestEmailAttemptReconciliation:
 
         db_instance.record_email_attempt.assert_called_once_with("mail-1")
         db_instance.mark_email_processed.assert_not_called()
+
+    def test_unparsable_email_records_an_attempt_even_with_no_articles(self, minimal_config):
+        """解析に失敗したメールは Article にならない。新着なしの早期returnでも数える。"""
+        db_instance = _make_db()
+
+        _run_with_patches(
+            minimal_config,
+            RunOptions(dry_run=False),
+            [],
+            db_mock=db_instance,
+            failed_email_uidls={"mail-broken"},
+        )
+
+        db_instance.record_email_attempt.assert_called_once_with("mail-broken")
+
+    def test_unparsable_email_is_given_up_at_the_limit(self, minimal_config):
+        minimal_config.email = EmailConfig(
+            host="pop.example.com", username="u", password="p", max_fetch_attempts=2
+        )
+        db_instance = _make_db()
+        db_instance.record_email_attempt.return_value = 2
+
+        _run_with_patches(
+            minimal_config,
+            RunOptions(dry_run=False),
+            [],
+            db_mock=db_instance,
+            failed_email_uidls={"mail-broken"},
+        )
+
+        db_instance.mark_email_processed.assert_called_once_with("mail-broken")
+
+    def test_unparsable_email_give_up_failure_does_not_abort_the_run(self, minimal_config):
+        """打ち切りの書き込みが失敗しても、RSS を含む残りの処理は続ける。"""
+        minimal_config.email = EmailConfig(
+            host="pop.example.com", username="u", password="p", max_fetch_attempts=1
+        )
+        db_instance = _make_db()
+        db_instance.mark_email_processed.side_effect = RuntimeError("firestore down")
+
+        _run_with_patches(
+            minimal_config,
+            RunOptions(dry_run=False),
+            [_make_article(source_id="1")],
+            db_mock=db_instance,
+            failed_email_uidls={"mail-broken"},
+        )
+
+        db_instance.save_batch.assert_called_once()
+
+    def test_unparsable_given_up_email_is_deleted_with_the_saved_ones(self, minimal_config):
+        """打ち切った分の削除は保存後の削除と1回のPOP3セッションにまとめる。"""
+        minimal_config.email = EmailConfig(
+            host="pop.example.com", username="u", password="p", max_fetch_attempts=1
+        )
+        db_instance = _make_db()
+
+        with patch("pipeline.delete_processed_emails") as mock_delete:
+            _run_with_patches(
+                minimal_config,
+                RunOptions(dry_run=False),
+                [_make_article(source_id="mail-ok", source_type="email")],
+                db_mock=db_instance,
+                failed_email_uidls={"mail-broken"},
+            )
+
+        mock_delete.assert_called_once()
+        assert mock_delete.call_args.args[1] == {"mail-ok", "mail-broken"}
 
     def test_saved_email_records_no_attempt(self, minimal_config):
         articles = [_make_article(source_id="mail-1", source_type="email")]

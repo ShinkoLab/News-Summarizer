@@ -191,7 +191,7 @@ config source (see **Deployment** below). For the full design spec see `README.m
 - **`models.py`** — All data structures: `Article` (common fetch format, dataclass), `SaveResult` (what `save_batch()` actually persisted), plus Pydantic models for LLM structured outputs (`ArticleGroup`, `GroupingResult`, `ArticleSummary`, `CategoryDigest`, `TopicLabel`, `TopicNamingResult`, `DigestResult`)
 - **`logger.py`** — Logging setup (`setup_logging()` / `get_logger()`); outputs to stderr only, level controlled by `logging.level` in config
 - **`urls.py`** — URL normalization for cross-feed dedup (`normalize_url()` / `url_key()`; see **Deduplication**)
-- **`fetchers/`** — `MinifluxFetcher` (REST API) and `EmailFetcher` (POP3), both subclasses of `BaseFetcher` (`base.py`); both normalize to `Article`
+- **`fetchers/`** — `MinifluxFetcher` (REST API) and `EmailFetcher` (POP3), both subclasses of `BaseFetcher` (`base.py`); both normalize to `Article` with timezone-aware **UTC** datetimes (`to_utc()` in `base.py`) — mixing naive and aware values makes any later comparison raise `TypeError`
   - `html_text.py` — stdlib `html.parser`-based HTML→text conversion (`html_to_text()`); used by `MinifluxFetcher` when `miniflux.strip_html` is on
 - **`summarizer/`** — LLM steps; structured output via Pydantic
   - `llm_client.py` — shared LLM call logic, retry handling, step config resolution; OpenAI-compatible and Vertex AI paths
@@ -271,7 +271,11 @@ the Viewer renders it under two headings.
   every run, `reconcile_email_attempts()` (`pipeline.py`) counts attempts in `email_attempts` /
   `emailAttempts` and gives up on a message once it reaches `email.max_fetch_attempts`
   (default `3`), marking it processed. Articles merely carried over by
-  `max_articles_per_run` are never counted — they were not attempted.
+  `max_articles_per_run` are never counted — they were not attempted. A message whose
+  **parsing** fails never becomes an `Article`, so `EmailFetcher.fetch()` isolates it (the rest
+  of the mailbox is still fetched), records it in `failed_uidls`, and `run_pipeline()` counts it
+  right after fetching — before the "no new articles" early return. A `RETR` failure is a
+  connection problem and still aborts the fetch without counting anything
   Setting `email.delete_after_processing: true` makes `delete_processed_emails()` (`pipeline.py`)
   remove messages from the mailbox after persistence, via `EmailFetcher.delete_messages()`. Only two
   kinds are deleted: those in `SaveResult.saved`, and the ones `reconcile_email_attempts()` just gave
@@ -336,7 +340,7 @@ is unaffected and still stores JSON.
 
 - **`Dockerfile`** — builds on a pinned `uv` image, installs with `uv sync --frozen --no-dev`,
   runs as `nobody`. It does a plain `COPY . .`, so anything not listed in `.dockerignore`
-  (which excludes `config.yaml`, `data`, `tests`, `infra`, `.git`, `.venv`, caches) is baked
+  (which excludes `config.yaml`, `.env*`, `data`, `tests`, `infra`, `.git`, `.venv`, local tool dirs, caches) is baked
   into the image
 - **`cloudbuild.yaml`** — Cloud Build config for the summarizer image
 - **`infra/`** — Terraform: Cloud Run Job, Cloud Scheduler, Firestore, Secret Manager, IAM.

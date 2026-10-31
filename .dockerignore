@@ -7,3 +7,9 @@ config.yaml
 data
 tests
 infra
+# ローカルの資格情報・ツール設定。COPY . . でイメージに焼き込まれないようにする。
+# gcloud builds submit は .gitignore を見るが、ローカルの docker build は見ない。
+.env
+.env.*
+.antigravitycli
+.claude

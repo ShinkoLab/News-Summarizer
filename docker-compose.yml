@@ -50,8 +50,11 @@ x-summarizer-environment: &summarizer-environment
 
 services:
   summarizer:
-    # summarizer-once と同じイメージ名にして、--build で再ビルドされたものを両方が使う
-    image: news-summarizer:local
+    # 既定では GHCR の公開イメージを pull する（ビルド不要）。手元のコードで動かすときは
+    # `docker compose up -d --build` で、この名前のままソースからビルドしたものに置き換わる。
+    # summarizer-once と同じイメージ名にして、--build で再ビルドされたものを両方が使う。
+    # タグはリリース（chore(release)）のたびに新しい版へ上げる。
+    image: ${NEWS_SUMMARIZER_IMAGE:-ghcr.io/shinkolab/news-summarizer:2.7.0}
     build:
       context: .
     environment:
@@ -66,7 +69,7 @@ services:
 
   summarizer-once:
     profiles: ["manual"]
-    image: news-summarizer:local
+    image: ${NEWS_SUMMARIZER_IMAGE:-ghcr.io/shinkolab/news-summarizer:2.7.0}
     build:
       context: .
     environment:
@@ -78,6 +81,9 @@ services:
     command: ["run-once"]
 
   web:
+    # 既定では GHCR の公開イメージを pull する。`--build` を付けたときだけ下の context から
+    # ビルドする（image と context の版は揃えておく）。
+    image: ${NEWS_VIEWER_IMAGE:-ghcr.io/shinkolab/news-viewer:1.5.3}
     build:
       # News-Viewer は別リポジトリ。Compose が URL から直接ビルドするので clone は不要。
       # Viewer 側を手元で開発しているときは NEWS_VIEWER_CONTEXT=../News-Viewer で差し替える。

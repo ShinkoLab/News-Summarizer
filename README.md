@@ -20,7 +20,7 @@ cp .env.example .env
 #    - 無料: ホストの Ollama   → LLM_MODEL に `ollama list` のモデル名（既定の LLM_BASE_URL のまま）
 #    - 有料: OpenRouter など → .env 内の (b)(c) のコメントを外して API キーとモデル名を入れる
 
-# 3. 起動（初回は Viewer のビルドで数分かかる）
+# 3. 起動（GHCR の公開イメージを pull するのでビルドは不要）
 docker compose up -d
 
 # 4. ブラウザで開く
@@ -745,9 +745,18 @@ docker run --rm -v news-data:/data \
 のは、起動しないサービスへの `depends_on` がエラーになり、依存先のプロファイルは強制的に
 起動されてしまうため。既定では `COMPOSE_FILE` を使わないので、Windows のパス区切り（`;`）も気にしなくてよい。
 
-- `web` は [News-Viewer](https://github.com/ShinkoLab/News-Viewer) のリリースタグ（`v1.5.3`）を
-  Compose が URL から直接ビルドする。clone は不要。手元の News-Viewer を開発しているときは
-  `.env` に `NEWS_VIEWER_CONTEXT=../News-Viewer` を設定して差し替える
+- `summarizer` / `web` は既定で GHCR の公開イメージ（`ghcr.io/shinkolab/news-summarizer:2.7.0` /
+  `ghcr.io/shinkolab/news-viewer:1.5.3`）を pull する。公開イメージは、gitleaks・Trivy・禁止ファイル検査を
+  通ったものだけが GitHub Actions から配布される
+- 手元のコードで動かすときは `docker compose up -d --build`。Summarizer はこのリポジトリから、
+  Viewer は [News-Viewer](https://github.com/ShinkoLab/News-Viewer) のリリースタグ（`v1.5.3`）を
+  Compose が URL から直接ビルドする（clone は不要）。手元の News-Viewer を開発しているときは
+  `.env` に `NEWS_VIEWER_CONTEXT=../News-Viewer` を設定して差し替える。別の版を pull したいときは
+  `NEWS_SUMMARIZER_IMAGE` / `NEWS_VIEWER_IMAGE` で指定する
+- `--build` したイメージは公開イメージと同じ名前（例: `news-summarizer:2.7.0`）で手元に残り、以後の
+  `docker compose up -d` もそれを使い続ける。公開イメージに戻すときは `docker compose pull` する
+- pull に失敗した（オフライン・GHCR の障害など）ときは、Compose がソースからのビルドに切り替える
+  （数分かかる）
 - Viewer: http://localhost:3080、Miniflux（同梱時）: http://localhost:8080
 - 同梱 Miniflux のイメージは `2.3.4` に固定している（`MINIFLUX_IMAGE` で変更可）。すでに新しい版で作った Miniflux の volume を使い回す場合は、同じ版を `MINIFLUX_IMAGE` に指定する（DB スキーマを戻せないため）
 - LLM は Compose に含まれない。ホスト上の Ollama / llama-swap か、クラウドの OpenAI 互換

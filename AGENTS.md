@@ -84,7 +84,10 @@ PR を作る**前に**コードレビューを回し、**重要度「中」以�
 ### リリース
 
 1. 機能 PR のブランチ上で `pyproject.toml` の `version` を上げ（`uv lock` で `uv.lock` も更新）、
-   `CHANGELOG.md` の `[Unreleased]` を新バージョンの節に移す（コミットは `chore(release): vX.Y.Z`）
+   `CHANGELOG.md` の `[Unreleased]` を新バージョンの節に移す（コミットは `chore(release): vX.Y.Z`）。
+   `docker-compose.yml` の `summarizer` / `summarizer-once` の既定イメージ
+   （`ghcr.io/shinkolab/news-summarizer:X.Y.Z`）と、同じ版を書いている README・`.env.example` の例も上げる。News-Viewer を新しくリリースしたら
+   `web` の `image` と `build.context` の `#vX.Y.Z` もそろえて上げる
 2. PR を `main` にマージしたら、そのマージコミットに `vX.Y.Z` タグを打って push する
    （作業ブランチの HEAD ではなく `origin/main` を指定する）
 
@@ -94,7 +97,10 @@ PR を作る**前に**コードレビューを回し、**重要度「中」以�
    ```
 3. Cloud Run 用イメージはそのタグでビルドする（`infra/DEPLOYMENT.md` 参照）。あわせて安定版タグ（`vX.Y.Z`）の push で
    GitHub Actions（`.github/workflows/publish-image.yml`）が、gitleaks（全履歴）・Trivy・禁止ファイル検査を
-   通過した場合だけ `ghcr.io/shinkolab/news-summarizer` へ multi-arch イメージを公開する（Cloud Build の流れとは別の配布経路）
+   通過した場合だけ `ghcr.io/shinkolab/news-summarizer` へ multi-arch イメージを公開する（Cloud Build の流れとは別の配布経路）。
+   再ビルドはせず、検査したイメージそのものを `news-summarizer-staging` に push して digest を照合し、
+   publish ジョブがその digest にタグを付けて本番パッケージへ載せる。ステージングも公開リポジトリに
+   リンクされるため Public だが、入るのは検査を通ったイメージだけ
 
 ### マージ後のブランチ削除
 

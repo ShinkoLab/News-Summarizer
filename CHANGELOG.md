@@ -48,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   実行間隔が 3 時間になった（`.env` に明示していればそちらが優先）
 - Compose の `NEWS_SUMMARIZER_SOURCE` の既定を `rss` から `all` に変更した（`EMAIL_*` を渡しても
   メールが黙って無視されていた）。`all` でメール未設定の場合、`pipeline.fetch_articles()` は
-  ERROR とスタックトレースを出さず INFO でスキップする（`--source email` で未設定なら従来どおりエラー）
+  スタックトレースつきの ERROR ではなく WARNING でスキップする（`--source email` で未設定なら従来どおりエラー）
 - `llm.structured_output: false`（プレーンテキスト JSON フォールバック）のプロンプトで、
   生の JSON Schema ではなく具体的な JSON の例を示す。小型ローカルモデルがスキーマ断片を
   そのまま返す問題への対処

@@ -370,7 +370,7 @@ is unaffected and still stores JSON.
   import (`docker/import_starter_feeds.py` + `docker/feeds.opml`, only when the user has zero
   feeds, once, marker in `/data`; `MINIFLUX_IMPORT_STARTER_FEEDS` overrides) never run against an
   external Miniflux. Defaults are trial-friendly: `MAX_ARTICLES_PER_RUN=20`,
-  `MINIFLUX_FETCH_LIMIT=25`, 3h interval, `NEWS_SUMMARIZER_SOURCE=all` (email is skipped quietly
+  `MINIFLUX_FETCH_LIMIT=25`, 3h interval, `NEWS_SUMMARIZER_SOURCE=all` (email is skipped with a WARNING
   when `EMAIL_*` is unset, but `--source email` without config still errors)
 - **`docker/entrypoint.sh`** — `run-once` / `run-loop`, signal forwarding via `run_bg`. SQLite has
   no execution lock, so `main.py` always starts through `docker/with_lock.py` (an `fcntl.flock` on

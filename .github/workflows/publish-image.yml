@@ -1,11 +1,11 @@
 name: Publish image
 
-# v* タグの push で GHCR へイメージを公開する。
-# 公開は「履歴の秘密情報スキャン」「イメージのスキャンとファイル検査」を全て通過した後だけ。
-# PR では検証（スキャンまで）だけを行い、ログインも push もしない。
+# 安定版タグ（vX.Y.Z）の push で GHCR へイメージを公開する。
+# 公開は「履歴の秘密情報スキャン」「両アーキテクチャのイメージスキャンとファイル検査」を
+# 全て通過した後だけ。PR では検証（スキャンまで）だけを行い、ログインも push もしない。
 on:
   push:
-    tags: ["v*"]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -37,8 +37,19 @@ jobs:
             git --redact --verbose --exit-code 1 /repo
 
   scan:
-    name: Build and scan image (linux/amd64)
-    runs-on: ubuntu-latest
+    name: Build and scan image (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          # ネイティブ arm64 ランナー（public リポジトリでは無料）。公開する arm64 も同じ検査にかける
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -48,12 +59,13 @@ jobs:
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: .
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           load: true
           push: false
           tags: scan-target:ci
-          cache-from: type=gha,scope=amd64
-          cache-to: type=gha,scope=amd64,mode=max
+          # publish ジョブがこのキャッシュを再利用するので、公開物はスキャンしたレイヤーと一致する
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
       - name: Trivy secret scan (blocking)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -77,11 +89,12 @@ jobs:
         if: always()
         run: |
           {
-            echo '### Trivy vulnerability report (CRITICAL,HIGH / fixed only / non-blocking)'
+            echo "### Trivy vulnerability report: ${{ matrix.platform }} (CRITICAL,HIGH / fixed only / non-blocking)"
             echo '```'
-            cat trivy-vuln.txt 2>/dev/null || echo 'no report'
+            # step summary は 1 MiB 上限。超えても公開を止めないよう切り詰める
+            head -c 60000 trivy-vuln.txt 2>/dev/null || echo 'no report'
             echo '```'
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY" || true
       - name: Guard - forbidden files in image
         run: |
           set -euo pipefail
@@ -89,7 +102,7 @@ jobs:
           trap 'docker rm -f "$cid" >/dev/null' EXIT
           docker export "$cid" | tar -t > image-files.txt
           echo "files in image: $(wc -l < image-files.txt)"
-          # 依存物 (site-packages / node_modules) と OS 提供の証明書ストアは対象外
+          # 依存物 (site-packages / node_modules)、OS の証明書ストア、uv の依存キャッシュは対象外
           hits=$(grep -vE '(^|/)(node_modules|site-packages)/|^(etc/ssl|usr/share/ca-certificates|usr/lib/ssl|root/\.cache/uv)/' image-files.txt \
             | grep -E '(^|/)\.env(\..*)?/?$|(^|/)config\.yaml$|\.db$|\.sqlite[^/]*$|\.pem$|\.key$|(^|/)\.git(/|$)|terraform\.tfstate|\.tfvars$' \
             | grep -vE '(^|/)\.env\.(example|local\.example)$' || true)
@@ -111,7 +124,15 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          fetch-depth: 0
           persist-credentials: false
+      - name: Require the tagged commit to be on main
+        run: |
+          git fetch --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME is not on main; refusing to publish"
+            exit 1
+          fi
       - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
       - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
@@ -140,5 +161,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=multiarch
-          cache-to: type=gha,scope=multiarch,mode=max
+          # scan ジョブがスキャンしたレイヤーのキャッシュをそのまま使う
+          cache-from: |
+            type=gha,scope=amd64
+            type=gha,scope=arm64

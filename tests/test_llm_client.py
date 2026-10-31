@@ -463,3 +463,17 @@ class TestExampleInstance:
         content = out[-1]["content"]
         assert "\"keywords\": [" in content
         assert "$defs" not in content and "\"properties\"" not in content
+
+
+class TestExampleValueTypes:
+    def test_optional_literal_dict_datetime(self):
+        from datetime import datetime
+        from typing import Literal, Optional
+
+        from summarizer.llm_client import _example_value
+
+        assert _example_value(Optional[int]) == 0
+        assert _example_value(str | None) == "..."
+        assert _example_value(Literal["a", "b"]) == "a"
+        assert _example_value(dict[str, int]) == {}
+        assert isinstance(_example_value(datetime), str)

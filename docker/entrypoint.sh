@@ -21,7 +21,7 @@ export MINIFLUX_BASE_URL="${MINIFLUX_BASE_URL:-http://miniflux:8080}"
 validate_positive_int() {
   # $1=値 $2=環境変数名（メッセージ用） $3=既定値
   case "$1" in
-    ''|*[!0-9]*|0)
+    ''|*[!0-9]*|0|00*|0[0-9]*)
       echo "[entrypoint] ${2}=\"$1\" は不正な値です。既定の${3}を使います" >&2
       echo "$3"
       ;;
@@ -77,7 +77,11 @@ run_bg() {
 # 効かないため、各ステップの後で明示的にチェックする。
 exit_if_terminating() {
   if [ "$terminating" -eq 1 ]; then
-    exit 0
+    # 中断された run-once を「成功」に見せない（128+SIGTERM）。一時ファイルも消す。
+    if [ -n "${key_tmp:-}" ]; then
+      rm -f "$key_tmp"
+    fi
+    exit 143
   fi
 }
 

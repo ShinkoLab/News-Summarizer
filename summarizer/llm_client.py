@@ -1,7 +1,9 @@
 import json
 import re
-from typing import Any, get_args, get_origin
 import uuid
+from datetime import datetime
+from types import UnionType
+from typing import Any, Literal, Union, get_args, get_origin
 from google import genai
 from google.genai import types as genai_types
 from openai import OpenAI
@@ -107,6 +109,15 @@ def _inject_thinking_token(messages: list[dict]) -> list[dict]:
 def _example_value(annotation: Any) -> Any:
     """型注釈から JSON の例示値を1つ生成する（ネストされた BaseModel も再帰的に処理）。"""
     origin = get_origin(annotation)
+    if origin is Union or origin is UnionType:  # Optional[X] / X | None
+        non_none = [a for a in get_args(annotation) if a is not type(None)]
+        return _example_value(non_none[0]) if non_none else None
+    if origin is Literal:
+        return get_args(annotation)[0]
+    if origin is dict or annotation is dict:
+        return {}
+    if annotation is datetime:
+        return "2026-01-01T00:00:00Z"
     if origin is list:
         args = get_args(annotation)
         item_type = args[0] if args else str

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `docker compose up` は GHCR の公開イメージ（`news-summarizer:2.7.0` / `news-viewer:1.5.3`）を pull
+  するようになり、初回のビルドが不要になった。手元のコードで動かすときは `--build` を付ける。
+  `NEWS_SUMMARIZER_IMAGE` / `NEWS_VIEWER_IMAGE` で版を差し替えられる
+- GHCR 公開ワークフローは再ビルドせず、検査したイメージそのものをステージングパッケージ経由で公開する
+
 ## [2.7.0] - 2026-11-01
 
 ### Added

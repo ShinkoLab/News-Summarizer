@@ -1,7 +1,7 @@
 # 同梱の Miniflux（PostgreSQL + Miniflux）と、summarizer からそれを使うための差分。
-# .env の COMPOSE_FILE=docker-compose.yml:compose.miniflux.yml で docker-compose.yml と
-# 一緒に読み込まれる。既存の Miniflux に接続するときは、このファイルを COMPOSE_FILE から外す。
-# （Windows の区切り文字は `;`。COMPOSE_PATH_SEPARATOR で変更できる）
+# `docker-compose.override.yml` という名前なので、COMPOSE_FILE が未設定なら Compose が
+# docker-compose.yml に自動で重ねて読み込む。既存の Miniflux に接続するときは .env に
+# COMPOSE_FILE=docker-compose.yml を書く（明示すると override は読まれない）。
 
 x-miniflux-client-environment: &miniflux-client-environment
     # 同梱 Miniflux であることを entrypoint.sh に伝える。管理者アカウントでの API キー自動発行と

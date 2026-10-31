@@ -356,15 +356,15 @@ is unaffected and still stores JSON.
   `web`'s `CATEGORY_ORDER` is a hardcoded copy of `categories.yaml`'s order (Terraform derives it
   in production); update it when reordering categories. See README "フルスタック"
 - **`cloudbuild.yaml`** — Cloud Build config for the summarizer image
-- **`docker-compose.yml` + `compose.miniflux.yml`** — self-host stack for trying the project
+- **`docker-compose.yml` + `docker-compose.override.yml`** — self-host stack for trying the project
   (clone → edit `.env` → `docker compose up -d`). `docker-compose.yml` holds `summarizer`
   (run-loop), `summarizer-once` (`manual` profile) and `web` (News-Viewer built straight from a
   repository URL pinned to a release tag via `NEWS_VIEWER_CONTEXT`, `DB_BACKEND=sqlite`, shared
   `summarizer-data` volume read-only). The bundled Miniflux + Postgres live in
-  `compose.miniflux.yml`, which adds `depends_on: miniflux` to the summarizer services;
-  `.env`'s `COMPOSE_FILE` chooses bundled (`docker-compose.yml:compose.miniflux.yml`, the
-  `.env.example` default) or "existing Miniflux" (`docker-compose.yml` + `MINIFLUX_BASE_URL` /
-  `MINIFLUX_API_KEY`). It is split into two files — not `profiles` — because a `depends_on` on an
+  `docker-compose.override.yml`, which Compose auto-loads when `COMPOSE_FILE` is unset (so
+  an old `.env` keeps the bundled stack) and which adds `depends_on: miniflux` to the summarizer
+  services; setting `COMPOSE_FILE=docker-compose.yml` in `.env` skips it for "existing Miniflux"
+  (plus `MINIFLUX_BASE_URL` / `MINIFLUX_API_KEY`). It is split into two files — not `profiles` — because a `depends_on` on an
   undefined service is an error and a profiled dependency is force-started. Only the bundled file
   sets `MINIFLUX_BUNDLED=1` and the admin credentials, so admin-key provisioning and starter-feed
   import (`docker/import_starter_feeds.py` + `docker/feeds.opml`, only when the user has zero

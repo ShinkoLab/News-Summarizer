@@ -21,6 +21,8 @@ spec.loader.exec_module(helper)
 class FakeMiniflux:
     def __init__(self, feeds):
         self.feeds = feeds
+        # 取り込み直後に全フィードが取得済みになるよう、未来の時刻を返す（ナノ秒つき）
+        self.checked_at = "2999-01-01T00:00:00.123456789Z"
         self.requests = []
         outer = self
 
@@ -43,7 +45,10 @@ class FakeMiniflux:
                 if self.path == "/v1/feeds":
                     self._reply(outer.feeds)
                 elif self.path == "/v1/import":
-                    outer.feeds = [{"id": 1}, {"id": 2}]
+                    outer.feeds = [
+                        {"id": 1, "checked_at": outer.checked_at},
+                        {"id": 2, "checked_at": outer.checked_at, "parsing_error_count": 0},
+                    ]
                     self._reply({"message": "Feeds imported successfully"}, 201)
                 elif self.path.startswith("/v1/entries"):
                     self._reply({"total": 3, "entries": []})
@@ -109,18 +114,33 @@ def test_opml_has_valid_feed_urls():
     assert all(u.startswith("https://") for u in urls)
 
 
-def test_returns_false_when_first_entries_do_not_arrive(miniflux, tmp_path):
+def test_waits_until_every_feed_was_checked(miniflux, tmp_path, monkeypatch):
+    """1フィードだけ取得済みでは足りない。最後の1つが済むまで待つ。"""
     server = miniflux([])
-    # entries を常に空にして待ちきれないケースを作る
+    polls = {"n": 0}
     original = helper._request
 
     def fake(method, url, token, body=None, content_type="application/json"):
-        if url.endswith("/v1/entries?status=unread&limit=1"):
-            return {"total": 0}
-        return original(method, url, token, body, content_type)
+        result = original(method, url, token, body, content_type)
+        if method == "GET" and url.endswith("/v1/feeds") and server.feeds:
+            polls["n"] += 1
+            if polls["n"] < 3:  # 取り込み直後の確認 + 最初の待機は2つ目が未取得
+                return [dict(server.feeds[0]), {"id": 2, "checked_at": "0001-01-01T00:00:00Z"}]
+        return result
 
-    helper._request = fake
-    try:
-        assert helper.import_starter_feeds(server.url, "tok", OPML, tmp_path / "m", wait_seconds=1) is False
-    finally:
-        helper._request = original
+    monkeypatch.setattr(helper, "_request", fake)
+    monkeypatch.setattr(helper.time, "sleep", lambda *_: None)
+    assert helper.import_starter_feeds(server.url, "tok", OPML, tmp_path / "m", wait_seconds=30) is True
+    assert polls["n"] >= 3
+
+
+def test_returns_false_when_feeds_are_never_checked(miniflux, tmp_path):
+    server = miniflux([])
+    server.checked_at = "0001-01-01T00:00:00Z"
+    assert helper.import_starter_feeds(server.url, "tok", OPML, tmp_path / "m", wait_seconds=1) is False
+
+
+def test_feed_with_parsing_error_counts_as_checked():
+    since = helper.datetime.now(helper.timezone.utc)
+    feeds = [{"checked_at": "0001-01-01T00:00:00Z", "parsing_error_count": 2}]
+    assert helper._all_checked(feeds, since) is True

@@ -91,7 +91,7 @@ class FetchResult:
     email_fetcher: EmailFetcher | None
 
 
-def fetch_articles(options: RunOptions, db, email_configured: bool = True) -> FetchResult:
+def fetch_articles(options: RunOptions, db, *, email_configured: bool) -> FetchResult:
     """Fetch articles from enabled sources with per-source error isolation."""
     articles: list[Article] = []
     rss_fetcher: MinifluxFetcher | None = None

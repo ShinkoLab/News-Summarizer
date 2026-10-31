@@ -1,9 +1,9 @@
 # このファイルは「Summarizer + Viewer」だけを定義する。同梱の Miniflux（miniflux-db /
-# miniflux）は compose.miniflux.yml にあり、.env の COMPOSE_FILE で一緒に読み込む:
-#   COMPOSE_FILE=docker-compose.yml:compose.miniflux.yml   # 同梱 Miniflux（既定）
-#   COMPOSE_FILE=docker-compose.yml                        # 手元の既存 Miniflux に接続
+# miniflux）は docker-compose.override.yml にあり、Compose が自動で一緒に読み込む:
+#   （COMPOSE_FILE 未設定）                  # 同梱 Miniflux（既定）
+#   COMPOSE_FILE=docker-compose.yml          # 手元の既存 Miniflux に接続（override を読まない）
 # 分けてあるのは、使わないサービスへの depends_on / profiles がエラーや強制起動に
-# ならないようにするため（compose.miniflux.yml が summarizer の depends_on を足す）。
+# ならないようにするため（override が summarizer の depends_on を足す）。
 
 # summarizer / summarizer-once 共通の環境変数
 x-summarizer-environment: &summarizer-environment
@@ -15,7 +15,7 @@ x-summarizer-environment: &summarizer-environment
     # 既存の Miniflux に接続する場合は .env でこの2つを設定する。
     MINIFLUX_BASE_URL: ${MINIFLUX_BASE_URL:-}
     MINIFLUX_API_KEY: ${MINIFLUX_API_KEY:-}
-    # 空 = 同梱 Miniflux なら true、既存 Miniflux なら false（compose.miniflux.yml 参照）
+    # 空 = 同梱 Miniflux なら true、既存 Miniflux なら false（docker-compose.override.yml 参照）
     MINIFLUX_IMPORT_STARTER_FEEDS: ${MINIFLUX_IMPORT_STARTER_FEEDS:-}
     LLM_PROVIDER: ${LLM_PROVIDER:-openai}
     LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
@@ -81,7 +81,7 @@ services:
     build:
       # News-Viewer は別リポジトリ。Compose が URL から直接ビルドするので clone は不要。
       # Viewer 側を手元で開発しているときは NEWS_VIEWER_CONTEXT=../News-Viewer で差し替える。
-      context: ${NEWS_VIEWER_CONTEXT:-https://github.com/ShinkoLab/News-Viewer.git#v1.5.2}
+      context: ${NEWS_VIEWER_CONTEXT:-https://github.com/ShinkoLab/News-Viewer.git#v1.5.3}
     depends_on:
       - summarizer
     ports:

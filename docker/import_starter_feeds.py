@@ -16,8 +16,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+import re
 import time
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # 取り込み直後の最初の取得を待つ上限（秒）。Miniflux はバックグラウンドでフィードを取得するため、
@@ -44,6 +46,31 @@ def _request(method: str, url: str, token: str, body: bytes | None = None, conte
         return None
 
 
+def _parse_time(value) -> datetime | None:
+    """Miniflux の ISO 8601 時刻（ナノ秒つき・Z/オフセットつき）を aware な datetime にする。"""
+    if not isinstance(value, str):
+        return None
+    value = re.sub(r"(\.\d{6})\d+", r"\1", value.replace("Z", "+00:00"))
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _all_checked(feeds, since: datetime) -> bool:
+    """取り込んだ全フィードが一度取得された（または取得エラーが付いた）か。"""
+    if not isinstance(feeds, list) or not feeds:
+        return False
+    for feed in feeds:
+        if not isinstance(feed, dict):
+            return False
+        checked = _parse_time(feed.get("checked_at"))
+        if (checked is None or checked < since) and not feed.get("parsing_error_count"):
+            return False
+    return True
+
+
 def _touch(marker: Path) -> None:
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -53,7 +80,7 @@ def _touch(marker: Path) -> None:
 
 
 def import_starter_feeds(base_url: str, token: str, opml_path: Path, marker: Path, wait_seconds: int = FIRST_FETCH_WAIT_SECONDS) -> bool:
-    """取り込み後、最初の記事が届いたら True。待ちきれなかった場合は False（取り込み不要な場合も True）。"""
+    """取り込み後、全フィードの最初の取得が済んだら True。待ちきれなかった場合は False（取り込み不要な場合も True）。"""
     base_url = base_url.rstrip("/")
     feeds = _request("GET", f"{base_url}/v1/feeds", token)
     if not isinstance(feeds, list):
@@ -64,6 +91,8 @@ def import_starter_feeds(base_url: str, token: str, opml_path: Path, marker: Pat
         _touch(marker)
         return True
 
+    # サーバーとの時計のずれに備えて少し巻き戻す。
+    started = datetime.now(timezone.utc) - timedelta(seconds=5)
     _request("POST", f"{base_url}/v1/import", token, opml_path.read_bytes(), "application/xml")
     _touch(marker)
     imported = _request("GET", f"{base_url}/v1/feeds", token)
@@ -76,14 +105,16 @@ def import_starter_feeds(base_url: str, token: str, opml_path: Path, marker: Pat
     except Exception as exc:  # noqa: BLE001
         print(f"[starter-feeds] フィードの更新依頼に失敗しました（次の自動更新を待ちます）: {exc}", file=sys.stderr)
         return False
+    # 最速の1フィード分だけで main.py が走らないよう、取り込んだ全フィードが一度
+    # 取得される（checked_at が取り込み時刻より後、または取得エラー）まで待つ。
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
-        entries = _request("GET", f"{base_url}/v1/entries?status=unread&limit=1", token)
-        if isinstance(entries, dict) and entries.get("total", 0) > 0:
-            print(f"[starter-feeds] 最初の記事を取得済み（未読 {entries['total']} 件）", file=sys.stderr)
+        current = _request("GET", f"{base_url}/v1/feeds", token)
+        if _all_checked(current, started):
+            print(f"[starter-feeds] 全 {len(current)} フィードの最初の取得が済みました", file=sys.stderr)
             return True
         time.sleep(3)
-    print("[starter-feeds] 最初の記事の取得待ちがタイムアウトしました。次の周回で拾われます", file=sys.stderr)
+    print("[starter-feeds] 全フィードの最初の取得待ちがタイムアウトしました。次の周回で拾われます", file=sys.stderr)
     return False
 
 

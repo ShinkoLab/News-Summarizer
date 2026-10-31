@@ -30,7 +30,7 @@ docker compose up -d
 
 - **Miniflux は同梱が既定**。初回に定番の RSS フィード5件（`docker/feeds.opml`）を自動登録するので、
   すぐに動く。フィードの追加・削除は Miniflux の画面（http://localhost:8080）で行う。
-  **すでに自前の Miniflux があるなら**、`.env` を `COMPOSE_FILE=docker-compose.yml` に変えて
+  **すでに自前の Miniflux があるなら**、`.env` に `COMPOSE_FILE=docker-compose.yml` を書いて
   `MINIFLUX_BASE_URL`（コンテナから届く URL。ホスト上なら `http://host.docker.internal:8080`）と
   `MINIFLUX_API_KEY` を設定する。同梱の Miniflux / PostgreSQL は起動せず、フィードも触らない
 - **費用に注意**: 1 回の実行で記事ごとに LLM を呼ぶ（個別要約 + グルーピング + ダイジェスト）。
@@ -733,19 +733,19 @@ docker run --rm -v news-data:/data \
 
 最短手順は冒頭の[クイックスタート](#クイックスタートdocker-compose)。ここは仕組みと運用の詳細。
 
-構成は2ファイルに分かれていて、`.env` の `COMPOSE_FILE` が読み込む組み合わせを決める:
+構成は2ファイルに分かれている:
 
-| `COMPOSE_FILE` | 起動するもの |
+| `.env` の `COMPOSE_FILE` | 起動するもの |
 | --- | --- |
-| `docker-compose.yml:compose.miniflux.yml`（`.env.example` の既定） | PostgreSQL + Miniflux（同梱）+ `summarizer` + `web` |
+| 未設定（既定） | PostgreSQL + Miniflux（同梱）+ `summarizer` + `web`（`docker-compose.override.yml` を Compose が自動で読む） |
 | `docker-compose.yml` | `summarizer` + `web` だけ。`MINIFLUX_BASE_URL` / `MINIFLUX_API_KEY` の既存 Miniflux に接続 |
 
-`docker-compose.yml` が Summarizer と Viewer、`compose.miniflux.yml` が同梱 Miniflux と
+`docker-compose.yml` が Summarizer と Viewer、`docker-compose.override.yml` が同梱 Miniflux と
 `summarizer` の `depends_on: miniflux` を持つ。1ファイルにまとめて `profiles` で切り替えない
 のは、起動しないサービスへの `depends_on` がエラーになり、依存先のプロファイルは強制的に
-起動されてしまうため。Windows ではファイルの区切りが `;` になる。
+起動されてしまうため。既定では `COMPOSE_FILE` を使わないので、Windows のパス区切り（`;`）も気にしなくてよい。
 
-- `web` は [News-Viewer](https://github.com/ShinkoLab/News-Viewer) のリリースタグ（`v1.5.2`）を
+- `web` は [News-Viewer](https://github.com/ShinkoLab/News-Viewer) のリリースタグ（`v1.5.3`）を
   Compose が URL から直接ビルドする。clone は不要。手元の News-Viewer を開発しているときは
   `.env` に `NEWS_VIEWER_CONTEXT=../News-Viewer` を設定して差し替える
 - Viewer: http://localhost:3080、Miniflux（同梱時）: http://localhost:8080
@@ -866,7 +866,7 @@ News-Summarizer/
 ├── cloudbuild.yaml           # Artifact Registryへのビルド
 ├── docker/                   # Docker実行用エントリポイント・APIキー自動発行・スターターフィード（feeds.opml）・実行ロック
 ├── docker-compose.yml        # Summarizer + Viewer
-├── compose.miniflux.yml      # 同梱 Miniflux（PostgreSQL + Miniflux）。COMPOSE_FILE で追加する
+├── docker-compose.override.yml # 同梱 Miniflux（PostgreSQL + Miniflux）。Compose が自動で重ねる
 ├── .env.example              # docker-compose.yml 用の設定テンプレート
 ├── tests/                     # pytest テストスイート
 └── data/                      # データディレクトリ（自動生成）

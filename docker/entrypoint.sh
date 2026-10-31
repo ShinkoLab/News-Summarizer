@@ -215,6 +215,16 @@ run_summarizer() {
   else
     set -- main.py --source "$SOURCE" "$@"
   fi
+  # --dry-run / --help は DB にも Miniflux にも書かない（pipeline の plain --dry-run はロックを
+  # 取らない）ので、実行中の本番ジョブを待たずにすぐ走らせる。
+  for arg in "$@"; do
+    case "$arg" in
+      --dry-run|-h|--help)
+        run_bg "$PYTHON" "$@"
+        return
+        ;;
+    esac
+  done
   run_bg "$LOCK_RUNNER" "$SCRIPT_DIR/with_lock.py" "$LOCK_FILE" "$lock_mode" "$lock_wait" -- "$PYTHON" "$@"
 }
 

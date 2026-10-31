@@ -487,3 +487,16 @@ def test_external_email_only_setup_without_base_url_still_runs(sandbox):
     result = subprocess.run(["sh", str(script), "run-once"], env=env, timeout=20)
     assert result.returncode == 0
     assert _main_calls(log)
+
+
+def test_dry_run_bypasses_the_run_lock(sandbox):
+    """--dry-run は書き込まないので、実行中のジョブを待たずに走る。"""
+    tmp_path, script, log = sandbox
+    holder = _hold_lock(tmp_path)
+    try:
+        result = subprocess.run(["sh", str(script), "run-once", "--dry-run"], env=_env(tmp_path), timeout=10)
+        assert result.returncode == 0
+        assert _main_calls(log) == ["main.py --source all --dry-run"]
+    finally:
+        holder.kill()
+        holder.wait()

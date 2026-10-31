@@ -419,3 +419,29 @@ def test_starter_feeds_never_attempted_without_api_key(sandbox):
     env.pop("MINIFLUX_API_KEY")
     subprocess.run(["sh", str(script), "run-once"], env=env, timeout=20)
     assert _starter_calls(log) == []
+
+
+@pytest.mark.parametrize("flag", ["--dry-run", "--help"])
+def test_starter_feeds_not_imported_for_dry_run_or_help(sandbox, flag):
+    tmp_path, script, log = sandbox
+    subprocess.run(
+        ["sh", str(script), "run-once", flag], env=_env(tmp_path, MINIFLUX_BUNDLED="1"), timeout=20
+    )
+    assert _starter_calls(log) == []
+    assert _main_calls(log)
+
+
+def test_run_loop_does_not_run_main_without_api_key(sandbox):
+    """鍵が無いのに main.py を回すと「成功に見えて空振り」する。飛ばして短い間隔で再挑戦する。"""
+    tmp_path, script, log = sandbox
+    env = _env(tmp_path, NEWS_SUMMARIZER_SOURCE="rss", NEWS_SUMMARIZER_INTERVAL_SECONDS="1")
+    env.pop("MINIFLUX_API_KEY")
+    proc = subprocess.Popen(["sh", str(script), "run-loop"], env=env, stderr=subprocess.PIPE, text=True)
+    try:
+        time.sleep(3)
+        assert proc.poll() is None
+        assert _main_calls(log) == []
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout=10)
+    assert proc.stderr.read().count("API キーがありません") >= 2

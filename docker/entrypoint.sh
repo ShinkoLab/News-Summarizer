@@ -76,6 +76,11 @@ run_bg() {
   return "$rc"
 }
 
+# 再試行までの待ち時間（秒）。通常の間隔より長くならないよう、上限 60 秒。
+short_retry_seconds() {
+  if [ "$1" -lt 60 ]; then echo "$1"; else echo 60; fi
+}
+
 # 終了要求が来ていたらここで抜ける。set -e は `||`/`if` の条件式の中では
 # 効かないため、各ステップの後で明示的にチェックする。
 exit_if_terminating() {
@@ -218,6 +223,12 @@ init_database() {
 import_starter_feeds() {
   [ -n "${MINIFLUX_API_KEY:-}" ] || return 0
   [ "$(effective_source "$@")" = "email" ] && return 0
+  # --dry-run / --help は Miniflux を書き換えない約束なので、取り込みもしない。
+  for arg in "$@"; do
+    case "$arg" in
+      --dry-run|-h|--help) return 0 ;;
+    esac
+  done
   flag="${MINIFLUX_IMPORT_STARTER_FEEDS:-}"
   if [ -z "$flag" ]; then
     if [ "${MINIFLUX_BUNDLED:-}" = "1" ]; then flag=true; else flag=false; fi
@@ -243,22 +254,30 @@ case "$1" in
     interval="$(validate_positive_int "${NEWS_SUMMARIZER_INTERVAL_SECONDS:-3600}" NEWS_SUMMARIZER_INTERVAL_SECONDS 3600)"
     init_database
     while true; do
-      provision_api_key "$@" || true  # 次の周回で再挑戦する（警告は出力済み）
-      import_starter_feeds "$@"
-      # main.py が失敗しても set -e でループごと落ちないようにする。
-      # 一過性の障害（LLM/DBの一時エラー等）でコンテナが停止し、次回間隔まで
-      # 何も実行されなくなるのを防ぐ。SIGTERM/SIGINT による意図的な停止は
-      # 「異常終了」扱いにせず、そのままループを抜けて終了する。
-      # ロックが取れない（summarizer-once が実行中）ときは待たずにこの周回を飛ばす。
-      rc=0
-      run_summarizer skip "$@" || rc=$?
-      exit_if_terminating
-      if [ "$rc" -eq 75 ]; then
-        echo "[entrypoint] 別の実行が進行中のため今回の周回をスキップしました" >&2
-      elif [ "$rc" -ne 0 ]; then
-        echo "[entrypoint] main.py が異常終了しました。次の間隔まで待って再試行します" >&2
+      wait_seconds="$interval"
+      # 鍵が得られない周回は main.py を走らせても何も処理できない（成功に見えて空振りする）ので
+      # 飛ばし、間隔を待たずに短い間隔で鍵の取得を再挑戦する。
+      if ! provision_api_key "$@"; then
+        wait_seconds="$(short_retry_seconds "$interval")"
+      else
+        import_starter_feeds "$@"
+        # main.py が失敗しても set -e でループごと落ちないようにする。
+        # 一過性の障害（LLM/DBの一時エラー等）でコンテナが停止し、次回間隔まで
+        # 何も実行されなくなるのを防ぐ。SIGTERM/SIGINT による意図的な停止は
+        # 「異常終了」扱いにせず、そのままループを抜けて終了する。
+        # ロックが取れない（summarizer-once が実行中）ときは待たずにこの周回を飛ばし、
+        # 次の間隔（数時間）ではなく短い間隔で取り直す。
+        rc=0
+        run_summarizer skip "$@" || rc=$?
+        exit_if_terminating
+        if [ "$rc" -eq 75 ]; then
+          echo "[entrypoint] 別の実行が進行中のため今回の周回をスキップしました。すぐに再試行します" >&2
+          wait_seconds="$(short_retry_seconds "$interval")"
+        elif [ "$rc" -ne 0 ]; then
+          echo "[entrypoint] main.py が異常終了しました。次の間隔まで待って再試行します" >&2
+        fi
       fi
-      run_bg sleep "$interval" || true
+      run_bg sleep "$wait_seconds" || true
       exit_if_terminating
     done
     ;;

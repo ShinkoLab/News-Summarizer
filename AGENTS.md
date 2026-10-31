@@ -348,13 +348,13 @@ is unaffected and still stores JSON.
   runs as `nobody`. It does a plain `COPY . .`, so anything not listed in `.dockerignore`
   (which excludes `config.yaml`, `.env*`, `data`, `tests`, `infra`, `.git`, `.venv`, local tool dirs, caches) is baked
   into the image
-- **`docker-compose.yml` / `.env.example`** — self-hosted full stack (Postgres + Miniflux +
-  `summarizer` run-loop + `summarizer-once` under the `manual` profile + `web` = News-Viewer built
-  from the sibling clone `../News-Viewer`, SQLite on a shared volume). The summarizer services are
-  configured purely by environment variables (no `config.yaml` in the image), so every variable
-  there must either exist in `_apply_environment_overrides()` or be consumed by `docker/` (`NEWS_SUMMARIZER_SOURCE`, `NEWS_SUMMARIZER_INTERVAL_SECONDS`, `MINIFLUX_ADMIN_*`) or the OS (`TZ`) — add config keys in both places together. `web`'s
-  `CATEGORY_ORDER` is a hardcoded copy of `categories.yaml`'s order (Terraform derives it in
-  production); update it when reordering categories. See README "フルスタック"
+- **Compose env rules** — the summarizer services are configured purely by environment variables
+  (no `config.yaml` in the image), so every variable in `docker-compose.yml` must either exist in
+  `_apply_environment_overrides()` or be consumed by `docker/` (`NEWS_SUMMARIZER_SOURCE`,
+  `NEWS_SUMMARIZER_INTERVAL_SECONDS`, `MINIFLUX_BUNDLED`, `MINIFLUX_ADMIN_*`,
+  `MINIFLUX_IMPORT_STARTER_FEEDS`) or the OS (`TZ`) — add config keys in both places together.
+  `web`'s `CATEGORY_ORDER` is a hardcoded copy of `categories.yaml`'s order (Terraform derives it
+  in production); update it when reordering categories. See README "フルスタック"
 - **`cloudbuild.yaml`** — Cloud Build config for the summarizer image
 - **`docker-compose.yml` + `compose.miniflux.yml`** — self-host stack for trying the project
   (clone → edit `.env` → `docker compose up -d`). `docker-compose.yml` holds `summarizer`

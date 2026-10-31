@@ -2,6 +2,7 @@
 set -eu
 
 PYTHON="/app/.venv/bin/python"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # main.py 自体の argparse 既定値（--source all）と合わせる。Cloud Run Job は
 # NEWS_SUMMARIZER_SOURCE を設定していないため、ここを rss 等にすると
 # email ソースの処理が本番から静かに消える。
@@ -13,6 +14,9 @@ SOURCE="${NEWS_SUMMARIZER_SOURCE:-all}"
 # セクションを作り、api_key 欠落で起動時に落ちるため、Miniflux を使わない
 # （メールのみの）実行に base_url だけを渡してはいけない。
 MINIFLUX_DEFAULT_BASE_URL="${MINIFLUX_BASE_URL:-http://miniflux:8080}"
+# Compose は未設定でも MINIFLUX_BASE_URL を（空か値で）渡してくる。元の環境変数は消しておき、
+# API キーが確定するまで main.py や SQLite 初期化の子プロセスに見せない。
+unset MINIFLUX_BASE_URL
 
 # 正の整数でなければ既定値にフォールバックし、警告を出す。
 # MINIFLUX_KEY_PROVISION_RETRIES と NEWS_SUMMARIZER_INTERVAL_SECONDS の
@@ -123,7 +127,7 @@ provision_api_key() {
     attempt=0
     max_attempts="$(validate_positive_int "${MINIFLUX_KEY_PROVISION_RETRIES:-5}" MINIFLUX_KEY_PROVISION_RETRIES 5)"
     while [ "$attempt" -lt "$max_attempts" ]; do
-      run_bg env "MINIFLUX_BASE_URL=$MINIFLUX_DEFAULT_BASE_URL" "$PYTHON" /app/docker/provision_miniflux_key.py > "$key_tmp" || true
+      run_bg env "MINIFLUX_BASE_URL=$MINIFLUX_DEFAULT_BASE_URL" "$PYTHON" "$SCRIPT_DIR/provision_miniflux_key.py" > "$key_tmp" || true
       exit_if_terminating
       provisioned_key="$(cat "$key_tmp")"
       if [ -n "$provisioned_key" ]; then
@@ -145,10 +149,11 @@ provision_api_key() {
   elif [ "$needs_miniflux" -eq 1 ]; then
     # キーが無いと miniflux 設定そのものが作られず、RSS 取得は「設定が見つかりません」と
     # ログに出るだけで終了コード 0 になる。見落とされないよう、ここで明示する。
-    echo "[entrypoint] Miniflux API キーがありません。RSS は取得されません（MINIFLUX_API_KEY か管理者情報を確認してください）" >&2
-    # RSS だけを指定した実行は何も処理できないので異常終了させる。all はメール側が
-    # 動けるため警告だけで続行する。
-    if [ "$(effective_source "$@")" = "rss" ]; then
+    echo "[entrypoint] Miniflux API キーがありません。RSS は取得されません（MINIFLUX_API_KEY を設定してください。同梱 Miniflux なら管理者情報から自動発行されます）" >&2
+    # RSS だけを指定した実行は何も処理できないので異常終了させる。all も、メールが
+    # 設定されていない（EMAIL_HOST が空）なら同じ。メールが動けるときだけ警告で続行する。
+    src="$(effective_source "$@")"
+    if [ "$src" = "rss" ] || { [ "$src" = "all" ] && [ -z "${EMAIL_HOST:-}" ]; }; then
       return 1
     fi
   fi
@@ -175,12 +180,56 @@ has_source_arg() {
   return 1
 }
 
+# SQLite には実行ロックが無い（Firestore の execution_lock() 相当が無い）ので、summarizer
+# （run-loop）と summarizer-once が同時に走ると二重に要約・投稿してしまう。main.py は
+# /data 上のロックファイル（docker/with_lock.py）経由で直列化する。
+# $1=wait|skip（取れないとき待つ / すぐ諦める）。取れなければ終了コード 75。
+LOCK_FILE="${NEWS_SUMMARIZER_LOCK_FILE:-/data/.news-summarizer.lock}"
+# テストで PYTHON をスタブに差し替えても、ロックのラッパーだけは本物の Python で動かす。
+LOCK_RUNNER="${NEWS_SUMMARIZER_LOCK_PYTHON:-$PYTHON}"
 run_summarizer() {
+  lock_mode="$1"
+  shift
+  lock_wait="$(validate_positive_int "${NEWS_SUMMARIZER_LOCK_WAIT_SECONDS:-3600}" NEWS_SUMMARIZER_LOCK_WAIT_SECONDS 3600)"
   if has_source_arg "$@"; then
-    run_bg "$PYTHON" main.py "$@"
+    set -- main.py "$@"
   else
-    run_bg "$PYTHON" main.py --source "$SOURCE" "$@"
+    set -- main.py --source "$SOURCE" "$@"
   fi
+  run_bg "$LOCK_RUNNER" "$SCRIPT_DIR/with_lock.py" "$LOCK_FILE" "$lock_mode" "$lock_wait" -- "$PYTHON" "$@"
+}
+
+# SQLite のスキーマを起動時に作っておく。Viewer は DB ファイルが無いとエラーになるので、
+# 最初のパイプライン実行（ローカル LLM だと数分）が終わる前でも空の DB を見せられるようにする。
+init_database() {
+  if [ "${DATABASE_BACKEND:-sqlite}" = "sqlite" ] && [ -n "${SQLITE_DATABASE_PATH:-}" ]; then
+    # MINIFLUX_* は base_url と api_key が揃わないと config.py が落ちる。DB の初期化には
+    # 不要なので、ここでは Miniflux の設定を見せない。
+    run_bg env -u MINIFLUX_API_KEY -u MINIFLUX_BASE_URL "$PYTHON" -c "from outputs.database import create_database; create_database()" || \
+      echo "[entrypoint] SQLite スキーマの初期化に失敗しました（main.py の実行時に再試行されます）" >&2
+    exit_if_terminating
+  fi
+}
+
+# 同梱 Miniflux にだけスターターフィードを初回取り込みする。
+# MINIFLUX_IMPORT_STARTER_FEEDS: 空なら同梱（MINIFLUX_BUNDLED=1）で true、既存 Miniflux では false。
+# 既存 Miniflux に取り込みたいときだけ明示的に true にする。フィードが 0 件のときだけ
+# 取り込み、一度済んだらマーカーで再取り込みしない。失敗しても警告のみ。
+import_starter_feeds() {
+  [ -n "${MINIFLUX_API_KEY:-}" ] || return 0
+  [ "$(effective_source "$@")" = "email" ] && return 0
+  flag="${MINIFLUX_IMPORT_STARTER_FEEDS:-}"
+  if [ -z "$flag" ]; then
+    if [ "${MINIFLUX_BUNDLED:-}" = "1" ]; then flag=true; else flag=false; fi
+  fi
+  case "$flag" in
+    true|TRUE|True|1|yes|on) ;;
+    *) return 0 ;;
+  esac
+  marker="${MINIFLUX_STARTER_FEEDS_MARKER:-/data/.starter-feeds-imported}"
+  [ -e "$marker" ] && return 0
+  run_bg env "MINIFLUX_BASE_URL=$MINIFLUX_DEFAULT_BASE_URL" "$PYTHON" "$SCRIPT_DIR/import_starter_feeds.py" "$SCRIPT_DIR/feeds.opml" "$marker" || true
+  exit_if_terminating
 }
 
 if [ "$#" -eq 0 ]; then
@@ -192,17 +241,23 @@ case "$1" in
     shift
     require_llm_model
     interval="$(validate_positive_int "${NEWS_SUMMARIZER_INTERVAL_SECONDS:-3600}" NEWS_SUMMARIZER_INTERVAL_SECONDS 3600)"
+    init_database
     while true; do
       provision_api_key "$@" || true  # 次の周回で再挑戦する（警告は出力済み）
+      import_starter_feeds "$@"
       # main.py が失敗しても set -e でループごと落ちないようにする。
       # 一過性の障害（LLM/DBの一時エラー等）でコンテナが停止し、次回間隔まで
       # 何も実行されなくなるのを防ぐ。SIGTERM/SIGINT による意図的な停止は
       # 「異常終了」扱いにせず、そのままループを抜けて終了する。
-      if ! run_summarizer "$@"; then
-        exit_if_terminating
+      # ロックが取れない（summarizer-once が実行中）ときは待たずにこの周回を飛ばす。
+      rc=0
+      run_summarizer skip "$@" || rc=$?
+      exit_if_terminating
+      if [ "$rc" -eq 75 ]; then
+        echo "[entrypoint] 別の実行が進行中のため今回の周回をスキップしました" >&2
+      elif [ "$rc" -ne 0 ]; then
         echo "[entrypoint] main.py が異常終了しました。次の間隔まで待って再試行します" >&2
       fi
-      exit_if_terminating
       run_bg sleep "$interval" || true
       exit_if_terminating
     done
@@ -210,14 +265,18 @@ case "$1" in
   run-once)
     shift
     require_llm_model
+    init_database
     # 鍵が無いまま走らせると RSS 0 件で「成功」に見える。run-once は異常終了にする。
     provision_api_key "$@" || exit 1
-    run_summarizer "$@"
+    import_starter_feeds "$@"
+    run_summarizer wait "$@"
     ;;
   -*)
     require_llm_model
+    init_database
     provision_api_key "$@" || exit 1
-    run_summarizer "$@"
+    import_starter_feeds "$@"
+    run_summarizer wait "$@"
     ;;
   *)
     exec "$@"

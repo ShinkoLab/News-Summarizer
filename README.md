@@ -665,11 +665,16 @@ uv run python main.py --debug
 ```bash
 docker build -t news-summarizer .
 
-# 単発実行
-docker run --rm -e MINIFLUX_BASE_URL=... -e MINIFLUX_API_KEY=... news-summarizer run-once
+# 単発実行（SQLite を使う例。保存先 /data は volume に載せ、パスを明示する。
+# LLM_* を渡さないと環境変数のみの既定（Vertex AI）になる）
+docker run --rm -v news-data:/data \
+  -e DATABASE_BACKEND=sqlite -e SQLITE_DATABASE_PATH=/data/news_summarizer.db \
+  -e MINIFLUX_BASE_URL=... -e MINIFLUX_API_KEY=... \
+  -e LLM_PROVIDER=openai -e LLM_BASE_URL=... -e LLM_MODEL=... \
+  news-summarizer run-once
 
-# 1時間おきに定期実行し続ける
-docker run --rm -e NEWS_SUMMARIZER_INTERVAL_SECONDS=3600 news-summarizer run-loop
+# 定期実行し続ける場合は、同じ引数でコマンドを run-loop にし、
+# -e NEWS_SUMMARIZER_INTERVAL_SECONDS=3600 を足す
 ```
 
 ### フルスタック（`docker compose up`）

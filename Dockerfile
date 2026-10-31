@@ -20,12 +20,9 @@ RUN chmod +x /app/docker/entrypoint.sh && mkdir -p /data && chown nobody:nogroup
 
 USER nobody
 
-# DATABASE_BACKEND=sqlite のとき、明示的に SQLITE_DATABASE_PATH を渡し忘れても
-# 下の VOLUME にきちんと書き込まれるようにする既定値（config.py 側の相対パス
-# デフォルト "data/news_summarizer.db" だと /app/data 配下＝コンテナの書き込み層に
-# 書かれてしまい、ボリュームを永続化しているつもりでも再作成時に消える）。
-ENV SQLITE_DATABASE_PATH=/data/news_summarizer.db
-
+# SQLite の保存先 /data は docker-compose.yml が SQLITE_DATABASE_PATH で明示する。
+# イメージ全体の ENV にすると、Cloud Run など環境変数のみの実行の既定の保存先まで
+# 変わってしまうため、ここでは設定しない。
 VOLUME ["/data"]
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]

@@ -88,8 +88,26 @@ exit_if_terminating() {
 # 起動時に1回だけでなく run-loop の各周回の頭でも呼ぶ（キーが空のままなら
 # 次の周回で再挑戦できる。Miniflux の起動が遅れて初回が全滅しても、コンテナを
 # 再起動しない限り永遠に認証エラーになる、という状態を避ける）。
+# 実効ソース（--source 引数 > NEWS_SUMMARIZER_SOURCE）。メールのみなら Miniflux は不要。
+effective_source() {
+  prev=""
+  for arg in "$@"; do
+    case "$arg" in
+      --source=*) echo "${arg#--source=}"; return ;;
+    esac
+    if [ "$prev" = "--source" ]; then echo "$arg"; return; fi
+    prev="$arg"
+  done
+  echo "$SOURCE"
+}
+
+# 鍵が必要なのに得られなかったら 1 を返す（呼び出し側が run-once で異常終了に使う）。
 provision_api_key() {
-  if [ -z "${MINIFLUX_API_KEY:-}" ] && [ -n "${MINIFLUX_ADMIN_USERNAME:-}" ] && [ -n "${MINIFLUX_ADMIN_PASSWORD:-}" ]; then
+  needs_miniflux=1
+  if [ "$(effective_source "$@")" = "email" ]; then
+    needs_miniflux=0
+  fi
+  if [ "$needs_miniflux" -eq 1 ] && [ -z "${MINIFLUX_API_KEY:-}" ] && [ -n "${MINIFLUX_ADMIN_USERNAME:-}" ] && [ -n "${MINIFLUX_ADMIN_PASSWORD:-}" ]; then
     # 管理者アカウント情報が最初から無い場合は provision_miniflux_key.py が
     # 即座に諦めて空を返す（ネットワークエラーではないので待っても変わらない）。
     # ここで先にチェックしておかないと、5回×5秒＝約25秒を意味もなく浪費する。
@@ -124,10 +142,11 @@ provision_api_key() {
   fi
   if [ -n "${MINIFLUX_API_KEY:-}" ]; then
     export MINIFLUX_BASE_URL="$MINIFLUX_DEFAULT_BASE_URL"
-  elif [ "$SOURCE" != "email" ]; then
+  elif [ "$needs_miniflux" -eq 1 ]; then
     # キーが無いと miniflux 設定そのものが作られず、RSS 取得は「設定が見つかりません」と
     # ログに出るだけで終了コード 0 になる。見落とされないよう、ここで明示する。
     echo "[entrypoint] Miniflux API キーがありません。RSS は取得されません（MINIFLUX_API_KEY か管理者情報を確認してください）" >&2
+    return 1
   fi
 }
 
@@ -170,7 +189,7 @@ case "$1" in
     require_llm_model
     interval="$(validate_positive_int "${NEWS_SUMMARIZER_INTERVAL_SECONDS:-3600}" NEWS_SUMMARIZER_INTERVAL_SECONDS 3600)"
     while true; do
-      provision_api_key
+      provision_api_key "$@" || true  # 次の周回で再挑戦する（警告は出力済み）
       # main.py が失敗しても set -e でループごと落ちないようにする。
       # 一過性の障害（LLM/DBの一時エラー等）でコンテナが停止し、次回間隔まで
       # 何も実行されなくなるのを防ぐ。SIGTERM/SIGINT による意図的な停止は
@@ -187,12 +206,13 @@ case "$1" in
   run-once)
     shift
     require_llm_model
-    provision_api_key
+    # 鍵が無いまま走らせると RSS 0 件で「成功」に見える。run-once は異常終了にする。
+    provision_api_key "$@" || exit 1
     run_summarizer "$@"
     ;;
   -*)
     require_llm_model
-    provision_api_key
+    provision_api_key "$@" || exit 1
     run_summarizer "$@"
     ;;
   *)

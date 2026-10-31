@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 同梱 Miniflux に初回だけ取り込むスターターフィード（docker/import_starter_feeds.py）。
+     件数が少なく、無料で読める定番のものだけ。取り込み後は Miniflux の画面で自由に変更できる。 -->
+<opml version="2.0">
+  <head>
+    <title>News Summarizer starter feeds</title>
+  </head>
+  <body>
+    <outline text="日本語" title="日本語">
+      <outline type="rss" text="Publickey" title="Publickey" xmlUrl="https://www.publickey1.jp/atom.xml" htmlUrl="https://www.publickey1.jp/"/>
+      <outline type="rss" text="ITmedia NEWS" title="ITmedia NEWS" xmlUrl="https://rss.itmedia.co.jp/rss/2.0/news_bursts.xml" htmlUrl="https://www.itmedia.co.jp/news/"/>
+      <outline type="rss" text="NHKニュース 主要" title="NHKニュース 主要" xmlUrl="https://www.nhk.or.jp/rss/news/cat0.xml" htmlUrl="https://www3.nhk.or.jp/news/"/>
+    </outline>
+    <outline text="English" title="English">
+      <outline type="rss" text="BBC News - Technology" title="BBC News - Technology" xmlUrl="https://feeds.bbci.co.uk/news/technology/rss.xml" htmlUrl="https://www.bbc.com/news/technology"/>
+      <outline type="rss" text="The Cloudflare Blog" title="The Cloudflare Blog" xmlUrl="https://blog.cloudflare.com/rss/" htmlUrl="https://blog.cloudflare.com/"/>
+    </outline>
+  </body>
+</opml>

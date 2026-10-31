@@ -7,8 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-11-01
+
 ### Added
 
+- 試しやすさの改善（clone → `.env` を数行直す → `docker compose up -d`）:
+  - README 冒頭に「クイックスタート」を追加。Google Cloud 構成の説明は「本格運用」に移した
+  - Viewer は Compose が URL（`News-Viewer` の `v1.5.3` タグ）から直接ビルドする。兄弟 clone は不要
+    （`NEWS_VIEWER_CONTEXT` で手元のディレクトリに差し替え可）
+  - 同梱 Miniflux を `docker-compose.override.yml` に分離（`COMPOSE_FILE` 未設定なら Compose が
+    自動で読むので、既定は同梱構成）。既存の Miniflux に接続するときは `.env` に
+    `COMPOSE_FILE=docker-compose.yml` と `MINIFLUX_BASE_URL` / `MINIFLUX_API_KEY` を書く。
+    Miniflux イメージは `2.3.4` に固定
+  - 同梱 Miniflux の初回起動時に `docker/feeds.opml` のスターターフィード5件を取り込む
+    （フィードが 0 件のときだけ。`MINIFLUX_IMPORT_STARTER_FEEDS` で制御。既存 Miniflux では既定オフ）
+  - `.env.example` に LLM のプリセット（ホストの Ollama / OpenRouter / OpenAI 互換）と
+    `LLM_STRUCTURED_OUTPUT=false` の使いどころを追記
+  - お試し向けの既定値: `MAX_ARTICLES_PER_RUN=20`、`MINIFLUX_FETCH_LIMIT=25`、実行間隔 3 時間
+  - 実行をスキップした周回は通常の間隔（3 時間）を待たずに再試行する（ロック競合は最大 60 秒、API キー未取得は
+    最大 5 分、スターターフィードの最初の記事待ちは最大 2 分）。`--dry-run` / `--help` ではスターターフィードを取り込まない。既存 Miniflux 接続で
+    `MINIFLUX_BASE_URL` が未設定なら異常終了する
 - Docker Compose によるセルフホスト構成（`docker-compose.yml` / `.env.example`）。
   PostgreSQL + Miniflux + `summarizer`（定期実行）+ `summarizer-once`（手動, `manual` プロファイル）
   + `web`（News-Viewer、SQLite を共有 volume 経由で参照）を `docker compose up` で起動できる
@@ -22,9 +40,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **アップグレード時の注意（PR #48 のスタックを使っていた場合）**: リポジトリを更新して
+  `docker compose up -d` するだけで、同梱 Miniflux のまま動く（`.env` の変更は不要）。
+  既存の volume はそのまま使われる。Miniflux は `latest` から `2.3.4` 固定になったので、
+  新しい版で作った volume を使い回すときは `.env` の `MINIFLUX_IMAGE` に同じ版を指定すること。
+  `NEWS_SUMMARIZER_SOURCE` の既定が `rss` から `all` に、取り込み量の既定が 20/25 件、
+  実行間隔が 3 時間になった（`.env` に明示していればそちらが優先）
+- Compose の `NEWS_SUMMARIZER_SOURCE` の既定を `rss` から `all` に変更した（`EMAIL_*` を渡しても
+  メールが黙って無視されていた）。`all` でメール未設定の場合、`pipeline.fetch_articles()` は
+  スタックトレースつきの ERROR ではなく WARNING でスキップする（`--source email` で未設定なら従来どおりエラー）
 - `llm.structured_output: false`（プレーンテキスト JSON フォールバック）のプロンプトで、
   生の JSON Schema ではなく具体的な JSON の例を示す。小型ローカルモデルがスキーマ断片を
   そのまま返す問題への対処
+
+### Fixed
+
+- SQLite 構成で `summarizer`（run-loop）と `summarizer-once` が同時に走ると二重に要約・投稿して
+  いた。`docker/with_lock.py` で `main.py` をロックファイル経由で直列化する（`summarizer-once` は
+  待機、定期実行は周回をスキップ）
+- コンテナ起動時に SQLite のスキーマを作成する。最初の実行が終わる前の Viewer がエラー／空表示になる問題
+- Discord の webhook が未設定でも「Discordへの送信が完了しました。」とログに出ていた
 
 ## [2.6.1] - 2026-10-19
 

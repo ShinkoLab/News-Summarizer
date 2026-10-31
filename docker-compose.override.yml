@@ -1,0 +1,66 @@
+# 同梱の Miniflux（PostgreSQL + Miniflux）と、summarizer からそれを使うための差分。
+# `docker-compose.override.yml` という名前なので、COMPOSE_FILE が未設定なら Compose が
+# docker-compose.yml に自動で重ねて読み込む。既存の Miniflux に接続するときは .env に
+# COMPOSE_FILE=docker-compose.yml を書く（明示すると override は読まれない）。
+
+x-miniflux-client-environment: &miniflux-client-environment
+    # 同梱 Miniflux であることを entrypoint.sh に伝える。管理者アカウントでの API キー自動発行と
+    # スターターフィードの取り込み（MINIFLUX_IMPORT_STARTER_FEEDS 既定 true）はこのときだけ有効。
+    MINIFLUX_BUNDLED: "1"
+    MINIFLUX_ADMIN_USERNAME: ${MINIFLUX_ADMIN_USERNAME:-admin}
+    MINIFLUX_ADMIN_PASSWORD: ${MINIFLUX_ADMIN_PASSWORD:-miniflux}
+
+services:
+  miniflux-db:
+    image: ${MINIFLUX_POSTGRES_IMAGE:-postgres:17-alpine}
+    environment:
+      POSTGRES_USER: miniflux
+      POSTGRES_PASSWORD: ${MINIFLUX_POSTGRES_PASSWORD:-miniflux}
+      POSTGRES_DB: miniflux
+    volumes:
+      - miniflux-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U miniflux -d miniflux"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  miniflux:
+    image: ${MINIFLUX_IMAGE:-miniflux/miniflux:2.3.4}
+    depends_on:
+      miniflux-db:
+        condition: service_healthy
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MINIFLUX_PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgres://miniflux:${MINIFLUX_POSTGRES_PASSWORD:-miniflux}@miniflux-db/miniflux?sslmode=disable
+      RUN_MIGRATIONS: "1"
+      CREATE_ADMIN: "1"
+      ADMIN_USERNAME: ${MINIFLUX_ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${MINIFLUX_ADMIN_PASSWORD:-miniflux}
+    healthcheck:
+      test: ["CMD", "/usr/bin/miniflux", "-healthcheck", "auto"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  summarizer:
+    depends_on:
+      miniflux:
+        condition: service_healthy
+    environment:
+      <<: *miniflux-client-environment
+
+  summarizer-once:
+    depends_on:
+      miniflux:
+        condition: service_healthy
+    environment:
+      <<: *miniflux-client-environment
+
+volumes:
+  miniflux-db:

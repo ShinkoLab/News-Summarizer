@@ -348,14 +348,36 @@ is unaffected and still stores JSON.
   runs as `nobody`. It does a plain `COPY . .`, so anything not listed in `.dockerignore`
   (which excludes `config.yaml`, `.env*`, `data`, `tests`, `infra`, `.git`, `.venv`, local tool dirs, caches) is baked
   into the image
-- **`docker-compose.yml` / `.env.example`** — self-hosted full stack (Postgres + Miniflux +
-  `summarizer` run-loop + `summarizer-once` under the `manual` profile + `web` = News-Viewer built
-  from the sibling clone `../News-Viewer`, SQLite on a shared volume). The summarizer services are
-  configured purely by environment variables (no `config.yaml` in the image), so every variable
-  there must either exist in `_apply_environment_overrides()` or be consumed by `docker/` (`NEWS_SUMMARIZER_SOURCE`, `NEWS_SUMMARIZER_INTERVAL_SECONDS`, `MINIFLUX_ADMIN_*`) or the OS (`TZ`) — add config keys in both places together. `web`'s
-  `CATEGORY_ORDER` is a hardcoded copy of `categories.yaml`'s order (Terraform derives it in
-  production); update it when reordering categories. See README "フルスタック"
+- **Compose env rules** — the summarizer services are configured purely by environment variables
+  (no `config.yaml` in the image), so every variable in `docker-compose.yml` must either exist in
+  `_apply_environment_overrides()` or be consumed by `docker/` (`NEWS_SUMMARIZER_SOURCE`,
+  `NEWS_SUMMARIZER_INTERVAL_SECONDS`, `MINIFLUX_BUNDLED`, `MINIFLUX_ADMIN_*`,
+  `MINIFLUX_IMPORT_STARTER_FEEDS`) or the OS (`TZ`) — add config keys in both places together.
+  `web`'s `CATEGORY_ORDER` is a hardcoded copy of `categories.yaml`'s order (Terraform derives it
+  in production); update it when reordering categories. See README "フルスタック"
 - **`cloudbuild.yaml`** — Cloud Build config for the summarizer image
+- **`docker-compose.yml` + `docker-compose.override.yml`** — self-host stack for trying the project
+  (clone → edit `.env` → `docker compose up -d`). `docker-compose.yml` holds `summarizer`
+  (run-loop), `summarizer-once` (`manual` profile) and `web` (News-Viewer built straight from a
+  repository URL pinned to a release tag via `NEWS_VIEWER_CONTEXT`, `DB_BACKEND=sqlite`, shared
+  `summarizer-data` volume read-only). The bundled Miniflux + Postgres live in
+  `docker-compose.override.yml`, which Compose auto-loads when `COMPOSE_FILE` is unset (so
+  an old `.env` keeps the bundled stack) and which adds `depends_on: miniflux` to the summarizer
+  services; setting `COMPOSE_FILE=docker-compose.yml` in `.env` skips it for "existing Miniflux"
+  (plus `MINIFLUX_BASE_URL` / `MINIFLUX_API_KEY`). It is split into two files — not `profiles` — because a `depends_on` on an
+  undefined service is an error and a profiled dependency is force-started. Only the bundled file
+  sets `MINIFLUX_BUNDLED=1` and the admin credentials, so admin-key provisioning and starter-feed
+  import (`docker/import_starter_feeds.py` + `docker/feeds.opml`, only when the user has zero
+  feeds, once, marker in `/data`; `MINIFLUX_IMPORT_STARTER_FEEDS` overrides) never run against an
+  external Miniflux. Defaults are trial-friendly: `MAX_ARTICLES_PER_RUN=20`,
+  `MINIFLUX_FETCH_LIMIT=25`, 3h interval, `NEWS_SUMMARIZER_SOURCE=all` (email is skipped with a WARNING
+  when `EMAIL_*` is unset, but `--source email` without config still errors)
+- **`docker/entrypoint.sh`** — `run-once` / `run-loop`, signal forwarding via `run_bg`. SQLite has
+  no execution lock, so `main.py` always starts through `docker/with_lock.py` (an `fcntl.flock` on
+  `/data/.news-summarizer.lock`, then `exec`): `run-once` waits (`NEWS_SUMMARIZER_LOCK_WAIT_SECONDS`,
+  exit 75 on timeout), `run-loop` skips the cycle. It also creates the SQLite schema at start so
+  the Viewer shows "no batches" instead of an error before the first run. `flock(1)` was not used
+  because it does not forward signals to the command and is absent on macOS (the test host)
 - **`infra/`** — Terraform: Cloud Run Job, Cloud Scheduler, Firestore, Secret Manager, IAM.
   `infra/README.md` for the layout, `infra/DEPLOYMENT.md` for the actual runbook and
   the operational gotchas hit so far

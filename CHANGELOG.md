@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Docker Compose によるセルフホスト構成（`docker-compose.yml` / `.env.example`）。
+  PostgreSQL + Miniflux + `summarizer`（定期実行）+ `summarizer-once`（手動, `manual` プロファイル）
+  + `web`（News-Viewer、SQLite を共有 volume 経由で参照）を `docker compose up` で起動できる
+- `docker/entrypoint.sh`（`run-once` / `run-loop`、SIGTERM/SIGINT の転送）と
+  `docker/provision_miniflux_key.py`（管理者アカウントから Miniflux API キーを自動発行）。
+  Dockerfile の `ENTRYPOINT` / `CMD`（既定 `run-once`）を変更した。Cloud Run Job は
+  `config.yaml` が無い従来どおり環境変数で動作する
+
+### Changed
+
+- `llm.structured_output: false`（プレーンテキスト JSON フォールバック）のプロンプトで、
+  生の JSON Schema ではなく具体的な JSON の例を示す。小型ローカルモデルがスキーマ断片を
+  そのまま返す問題への対処
+
 ## [2.6.1] - 2026-10-19
 
 ### Fixed

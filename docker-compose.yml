@@ -1,0 +1,134 @@
+# summarizer / summarizer-once 共通の環境変数
+x-summarizer-environment: &summarizer-environment
+    DATABASE_BACKEND: sqlite
+    SQLITE_DATABASE_PATH: /data/news_summarizer.db
+    # MINIFLUX_BASE_URL はここで渡さない: entrypoint.sh が既定（http://miniflux:8080）を
+    # 使い、API キーが確定した場合にだけ export する（メールのみの実行を壊さないため）。
+    MINIFLUX_API_KEY: ${MINIFLUX_API_KEY:-}
+    MINIFLUX_ADMIN_USERNAME: ${MINIFLUX_ADMIN_USERNAME:-admin}
+    MINIFLUX_ADMIN_PASSWORD: ${MINIFLUX_ADMIN_PASSWORD:-miniflux}
+    LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+    LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+    LLM_MODEL: ${LLM_MODEL:-}
+    LLM_API_KEY: ${LLM_API_KEY:-ollama}
+    LLM_STRUCTURED_OUTPUT: ${LLM_STRUCTURED_OUTPUT:-true}
+    LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-3}
+    LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-}
+    LLM_EMBEDDING_MODEL: ${LLM_EMBEDDING_MODEL:-}
+    EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+    EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+    GROUPER_USE_EMBEDDINGS: ${GROUPER_USE_EMBEDDINGS:-false}
+    # config.py の _apply_environment_overrides() に対応する環境変数。空なら未設定
+    # 扱い（既定 100 / 100 / true）。MAX_ARTICLES_PER_RUN と MINIFLUX_FETCH_LIMIT は
+    # 対で、小さい方が効く（AGENTS.md 参照）。
+    MAX_ARTICLES_PER_RUN: ${MAX_ARTICLES_PER_RUN:-}
+    MINIFLUX_FETCH_LIMIT: ${MINIFLUX_FETCH_LIMIT:-}
+    MINIFLUX_STRIP_HTML: ${MINIFLUX_STRIP_HTML:-true}
+    # メールソース（POP3）。EMAIL_HOST / USERNAME / PASSWORD が揃ったときだけ有効。
+    EMAIL_HOST: ${EMAIL_HOST:-}
+    EMAIL_USERNAME: ${EMAIL_USERNAME:-}
+    EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
+    EMAIL_PORT: ${EMAIL_PORT:-}
+    EMAIL_USE_SSL: ${EMAIL_USE_SSL:-true}
+    EMAIL_MAX_FETCH_ATTEMPTS: ${EMAIL_MAX_FETCH_ATTEMPTS:-}
+    EMAIL_DELETE_AFTER_PROCESSING: ${EMAIL_DELETE_AFTER_PROCESSING:-false}
+    DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+    NEWS_SUMMARIZER_SOURCE: ${NEWS_SUMMARIZER_SOURCE:-rss}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    TZ: ${TZ:-Asia/Tokyo}
+
+services:
+  miniflux-db:
+    image: ${MINIFLUX_POSTGRES_IMAGE:-postgres:17-alpine}
+    environment:
+      POSTGRES_USER: miniflux
+      POSTGRES_PASSWORD: ${MINIFLUX_POSTGRES_PASSWORD:-miniflux}
+      POSTGRES_DB: miniflux
+    volumes:
+      - miniflux-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U miniflux -d miniflux"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  miniflux:
+    image: ${MINIFLUX_IMAGE:-miniflux/miniflux:latest}
+    depends_on:
+      miniflux-db:
+        condition: service_healthy
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MINIFLUX_PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgres://miniflux:${MINIFLUX_POSTGRES_PASSWORD:-miniflux}@miniflux-db/miniflux?sslmode=disable
+      RUN_MIGRATIONS: "1"
+      CREATE_ADMIN: "1"
+      ADMIN_USERNAME: ${MINIFLUX_ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${MINIFLUX_ADMIN_PASSWORD:-miniflux}
+    healthcheck:
+      test: ["CMD", "/usr/bin/miniflux", "-healthcheck", "auto"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  summarizer:
+    # summarizer-once と同じイメージ名にして、--build で再ビルドされたものを両方が使う
+    image: news-summarizer:local
+    build:
+      context: .
+    depends_on:
+      miniflux:
+        condition: service_healthy
+    environment:
+      <<: *summarizer-environment
+      NEWS_SUMMARIZER_INTERVAL_SECONDS: ${NEWS_SUMMARIZER_INTERVAL_SECONDS:-3600}
+    volumes:
+      - summarizer-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["run-loop"]
+    restart: unless-stopped
+
+  summarizer-once:
+    profiles: ["manual"]
+    image: news-summarizer:local
+    build:
+      context: .
+    depends_on:
+      miniflux:
+        condition: service_healthy
+    environment:
+      <<: *summarizer-environment
+    volumes:
+      - summarizer-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["run-once"]
+
+  web:
+    build:
+      # News-Viewer は別リポジトリ。このリポジトリと同じ階層に clone しておく
+      # 前提の相対パス（`git clone` で兄弟ディレクトリになる運用）。
+      context: ../News-Viewer
+    depends_on:
+      - summarizer
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${NEWS_VIEWER_PORT:-3080}:3000"
+    environment:
+      DB_BACKEND: sqlite
+      # カテゴリの既定の表示順（カンマ区切り）。真の出所は categories.yaml の定義順で、
+      # 本番は infra/main.tf が categories.yaml から注入する。並べ替えたらここも合わせる。
+      CATEGORY_ORDER: ${CATEGORY_ORDER:-AI・機械学習,テクノロジー,経済・ビジネス,政治・社会,事件・事故・災害,科学・環境,健康・ライフ,カルチャー}
+      DATABASE_URL: file:/data/news_summarizer.db
+      TZ: ${TZ:-Asia/Tokyo}
+    volumes:
+      - summarizer-data:/data:ro
+    restart: unless-stopped
+
+volumes:
+  miniflux-db:
+  summarizer-data:

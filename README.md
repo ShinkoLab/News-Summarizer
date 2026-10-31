@@ -653,6 +653,107 @@ uv run python main.py --stream
 uv run python main.py --debug
 ```
 
+### Docker実行
+
+このリポジトリの `Dockerfile` は `docker/entrypoint.sh` をエントリポイントとし、`config.yaml`
+を置かず環境変数のみで動かす前提のコンテナ用に、`main.py` を単発実行する `run-once` と、
+コンテナ内で `sleep` を挟みながら定期実行し続ける `run-loop` の2モードを提供する
+（既定は `run-once`）。Miniflux の管理者アカウント情報（`MINIFLUX_ADMIN_USERNAME` /
+`MINIFLUX_ADMIN_PASSWORD`）が設定されていて `MINIFLUX_API_KEY` が未設定の場合は、
+起動時に `docker/provision_miniflux_key.py` が Miniflux の API キーを自動発行する。
+
+```bash
+docker build -t news-summarizer .
+
+# 単発実行（SQLite を使う例。保存先 /data は volume に載せ、パスを明示する。
+# LLM_* を渡さないと環境変数のみの既定（Vertex AI）になる）
+docker run --rm -v news-data:/data \
+  -e DATABASE_BACKEND=sqlite -e SQLITE_DATABASE_PATH=/data/news_summarizer.db \
+  -e MINIFLUX_BASE_URL=... -e MINIFLUX_API_KEY=... \
+  -e LLM_PROVIDER=openai -e LLM_BASE_URL=... -e LLM_MODEL=... \
+  news-summarizer run-once
+
+# 定期実行し続ける場合は、同じ引数でコマンドを run-loop にし、
+# -e NEWS_SUMMARIZER_INTERVAL_SECONDS=3600 を足す
+```
+
+### フルスタック（`docker compose up`）
+
+Miniflux・PostgreSQL・Summarizer・Viewer を1コマンドでまとめて起動できる。`docker-compose.yml`
+の `web` サービスは [`News-Viewer`](https://github.com/ShinkoLab/News-Viewer) を
+`../News-Viewer` という相対パスでビルドするため、**このリポジトリと同じ階層に
+`News-Viewer` を clone しておく**必要がある（同一 GitHub Organization の別リポジトリで、
+Compose 定義だけをどちらかに同梱する形にした。両リポジトリを1つの Compose ファイルから
+ビルドする都合上、この兄弟ディレクトリ配置が前提になる）。
+
+```bash
+git clone https://github.com/ShinkoLab/News-Summarizer.git
+git clone https://github.com/ShinkoLab/News-Viewer.git
+cd News-Summarizer
+
+cp .env.example .env
+# .env の LLM_MODEL・パスワード・必要なら DISCORD_WEBHOOK_URL を設定
+docker compose up --build
+```
+
+- News Viewer: http://localhost:3080
+- Miniflux: http://localhost:8080（`.env` の `MINIFLUX_ADMIN_USERNAME` / `MINIFLUX_ADMIN_PASSWORD`
+  で初期管理者アカウントが作られる。起動後、UI にログインして RSS フィードを手動登録する
+  ——フィード登録だけは自動化されていない）
+
+LLM 自体は Compose に含まれていない。ホスト上の Ollama / llama-swap など、コンテナから
+到達可能な OpenAI 互換エンドポイントが必要（Docker Desktop なら既定の
+`LLM_BASE_URL=http://host.docker.internal:11434/v1` のままで到達できる。ネイティブ Linux でも
+`docker-compose.yml` に `extra_hosts: host.docker.internal:host-gateway` を設定済みなので同じ
+URL で到達できるはず）。
+
+`summarizer` サービスは `NEWS_SUMMARIZER_INTERVAL_SECONDS` 間隔で定期実行し続ける。手動で
+一度だけ実行したい場合や CLI オプションを渡したい場合は `summarizer-once`（`profiles: manual`）を使う:
+
+```bash
+docker compose run --rm summarizer-once
+docker compose run --rm summarizer-once --dry-run
+docker compose run --rm summarizer-once --source email
+```
+
+`.env` の `MINIFLUX_API_KEY` が空の場合、summarizer コンテナは起動時（run-loop は各周回の頭でも未取得なら）Miniflux の
+管理者ユーザーで API key を自動発行してから `main.py` を実行する（`docker/provision_miniflux_key.py`）。
+既存の API key を使い回したい場合は `MINIFLUX_API_KEY` に設定する。
+
+`summarizer-once` を実行する前に `docker compose stop summarizer` で定期実行を止めること。
+SQLite バックエンドには実行ロックが無く、同時に走ると同じ記事を二重に要約・投稿してしまう。
+
+Miniflux と Viewer のポートは既定でループバック（`127.0.0.1`）にだけ公開する。LAN など外へ
+出す場合は `.env` に `BIND_ADDRESS=0.0.0.0` を設定し、**先に管理者・Postgres のパスワードを
+変更する**こと（Viewer に認証は無い）。`LLM_MODEL` は必須で、空のままだと summarizer が
+起動時にエラーで終了する。
+
+**トラブルシューティング**: ログに `Miniflux API キーがありません` が出ていれば、API キーの自動発行が
+失敗している（この状態では RSS が取得されない。`--source rss` の `summarizer-once` は終了コード 1（`all` は警告のみでメール側は動く）、run-loop は次の周回で再挑戦する）。原因の例: 管理者パスワード（`MINIFLUX_ADMIN_PASSWORD`）は Postgres の
+volume を初めて初期化するときにだけ反映される。後から `.env` を書き換えると API key の自動発行が
+401 で失敗し続けるので、`docker compose down -v` で volume を作り直すか、Miniflux UI で
+パスワードを合わせるか、`MINIFLUX_API_KEY` を直接設定する。
+
+それ以外で `summarizer` / `summarizer-once` のログに Miniflux の 401 が出る場合、
+API key の自動発行が失敗している可能性がある。`docker compose ps` で `miniflux` が healthy に
+なっていることを確認してから `docker compose run --rm summarizer-once` を再実行する
+（`depends_on: condition: service_healthy` で通常は防がれるが、Miniflux 側の管理者アカウント
+作成が想定より遅れた場合に発生し得る）。
+
+取り込み量は `.env` の `MAX_ARTICLES_PER_RUN` / `MINIFLUX_FETCH_LIMIT`（対で、小さい方が効く）、
+HTML 除去は `MINIFLUX_STRIP_HTML` で調整できる（意味は上の設定項目の節を参照）。
+全記事の要約が1件も成功しなかった実行は `main.py` が終了コード1で終わるが、`summarizer`
+（run-loop）は止まらず次の間隔で再試行する。`summarizer-once` は終了コードをそのまま返す。
+
+Viewer のカテゴリ表示順（`CATEGORY_ORDER`）は `categories.yaml` の定義順の写しで、
+`docker-compose.yml` に直書きしてある（本番は Terraform が注入）。並べ替えたら合わせて更新する。
+
+初回起動時は、最初のパイプライン実行が終わって DB ファイルができるまで Viewer は
+エラー／空表示になる（ローカル LLM だと数分かかる）。しばらく待ってから再読み込みする。
+
+Summarizer と Viewer は `summarizer-data` volume の `/data/news_summarizer.db` を共有する。
+Summarizer は書き込み、Viewer は読み取り専用で参照する。
+
 ## ディレクトリ構成
 
 ```
@@ -694,9 +795,12 @@ News-Summarizer/
 ├── scripts/
 │   └── migrate_sqlite_to_firestore.py # 既存履歴の移行
 ├── infra/                    # Google Cloud Terraform構成
-├── Dockerfile                # Cloud Run Job用イメージ
+├── Dockerfile                # Dockerイメージ（Cloud Run Job・Compose 共用。ENTRYPOINT は docker/entrypoint.sh）
 ├── .dockerignore             # イメージから除外するファイル
 ├── cloudbuild.yaml           # Artifact Registryへのビルド
+├── docker/                   # Docker実行用エントリポイント・APIキー自動発行スクリプト
+├── docker-compose.yml        # フルスタック構成（Miniflux + Summarizer + Viewer）
+├── .env.example              # docker-compose.yml 用の設定テンプレート
 ├── tests/                     # pytest テストスイート
 └── data/                      # データディレクトリ（自動生成）
     └── news_summarizer.db    # SQLite データベース

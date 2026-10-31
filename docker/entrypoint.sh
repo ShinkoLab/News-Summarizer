@@ -7,13 +7,12 @@ PYTHON="/app/.venv/bin/python"
 # email ソースの処理が本番から静かに消える。
 SOURCE="${NEWS_SUMMARIZER_SOURCE:-all}"
 
-# MINIFLUX_BASE_URL の既定値はここで一度だけ確定させ、以降 export して
-# provision_miniflux_key.py・main.py の両方に同じ値を見せる。
-# provision_miniflux_key.py 側にも独自の既定値があったが、ここで未設定のまま
-# だと「キー発行は（自前の既定値で）成功したのに、config.py 側は
-# MINIFLUX_BASE_URL 環境変数そのものが無いため miniflux.base_url が必須項目
-# 欠落で起動時に落ちる」というズレが起きうる。単一の真実源にする。
-export MINIFLUX_BASE_URL="${MINIFLUX_BASE_URL:-http://miniflux:8080}"
+# MINIFLUX_BASE_URL の既定値はここで一度だけ確定させ、provision_miniflux_key.py と
+# main.py の両方に同じ値を見せる（単一の真実源）。ただし main.py 側へは API キーが
+# 確定した後にだけ export する。config.py は MINIFLUX_* が1つでもあると miniflux
+# セクションを作り、api_key 欠落で起動時に落ちるため、Miniflux を使わない
+# （メールのみの）実行に base_url だけを渡してはいけない。
+MINIFLUX_DEFAULT_BASE_URL="${MINIFLUX_BASE_URL:-http://miniflux:8080}"
 
 # 正の整数でなければ既定値にフォールバックし、警告を出す。
 # MINIFLUX_KEY_PROVISION_RETRIES と NEWS_SUMMARIZER_INTERVAL_SECONDS の
@@ -66,7 +65,7 @@ run_bg() {
   # そのまま PID 1 が終了すると子が SIGKILL されクリーンアップ（実行ロックの
   # 解放・書き込み途中の DB など）が行われないため、もう一度 wait して子の
   # 本当の終了を待つ。
-  if [ "$terminating" -eq 1 ] && [ "$rc" -gt 128 ]; then
+  if [ "$terminating" -eq 1 ] && [ "$rc" -gt 128 ] && kill -0 "$child_pid" 2>/dev/null; then
     wait "$child_pid" 2>/dev/null || rc=$?
   fi
   child_pid=""
@@ -106,7 +105,7 @@ provision_api_key() {
     attempt=0
     max_attempts="$(validate_positive_int "${MINIFLUX_KEY_PROVISION_RETRIES:-5}" MINIFLUX_KEY_PROVISION_RETRIES 5)"
     while [ "$attempt" -lt "$max_attempts" ]; do
-      run_bg "$PYTHON" /app/docker/provision_miniflux_key.py > "$key_tmp" || true
+      run_bg env "MINIFLUX_BASE_URL=$MINIFLUX_DEFAULT_BASE_URL" "$PYTHON" /app/docker/provision_miniflux_key.py > "$key_tmp" || true
       exit_if_terminating
       provisioned_key="$(cat "$key_tmp")"
       if [ -n "$provisioned_key" ]; then
@@ -122,6 +121,9 @@ provision_api_key() {
       fi
     done
     rm -f "$key_tmp"
+  fi
+  if [ -n "${MINIFLUX_API_KEY:-}" ]; then
+    export MINIFLUX_BASE_URL="$MINIFLUX_DEFAULT_BASE_URL"
   fi
 }
 

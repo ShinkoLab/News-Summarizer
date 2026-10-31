@@ -75,6 +75,8 @@ services:
     restart: unless-stopped
 
   summarizer:
+    # summarizer-once と同じイメージ名にして、--build で再ビルドされたものを両方が使う
+    image: news-summarizer:local
     build:
       context: .
     depends_on:
@@ -92,6 +94,7 @@ services:
 
   summarizer-once:
     profiles: ["manual"]
+    image: news-summarizer:local
     build:
       context: .
     depends_on:

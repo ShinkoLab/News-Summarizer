@@ -350,7 +350,7 @@ is unaffected and still stores JSON.
   `summarizer` run-loop + `summarizer-once` under the `manual` profile + `web` = News-Viewer built
   from the sibling clone `../News-Viewer`, SQLite on a shared volume). The summarizer services are
   configured purely by environment variables (no `config.yaml` in the image), so every variable
-  there must exist in `_apply_environment_overrides()` — add both together. `web`'s
+  there must either exist in `_apply_environment_overrides()` or be consumed by `docker/` (`NEWS_SUMMARIZER_SOURCE`, `NEWS_SUMMARIZER_INTERVAL_SECONDS`, `MINIFLUX_ADMIN_*`) or the OS (`TZ`) — add config keys in both places together. `web`'s
   `CATEGORY_ORDER` is a hardcoded copy of `categories.yaml`'s order (Terraform derives it in
   production); update it when reordering categories. See README "フルスタック"
 - **`cloudbuild.yaml`** — Cloud Build config for the summarizer image

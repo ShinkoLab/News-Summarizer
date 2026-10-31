@@ -26,8 +26,9 @@ def sandbox(tmp_path):
     # 引数を1行で記録し、EXIT_CODE_FILE にあるコード（無ければ 0）で終了する。
     stub.write_text(
         '#!/bin/sh\necho "$@" >> "%s"\n'
+        'echo "${MINIFLUX_BASE_URL-unset}" > "%s"\n'
         'if [ -f "%s" ]; then exit "$(cat "%s")"; fi\nexit 0\n'
-        % (log, tmp_path / "rc", tmp_path / "rc")
+        % (log, tmp_path / "base_url", tmp_path / "rc", tmp_path / "rc")
     )
     stub.chmod(0o755)
     script = tmp_path / "entrypoint.sh"
@@ -40,6 +41,21 @@ def sandbox(tmp_path):
 def _env(**extra):
     # 鍵の自動発行を飛ばす（MINIFLUX_API_KEY があれば provision は走らない）
     return {"PATH": "/usr/bin:/bin", "MINIFLUX_API_KEY": "k", **extra}
+
+
+def test_base_url_not_exported_without_api_key(sandbox):
+    """メールのみの実行に MINIFLUX_BASE_URL だけを渡すと config.py が起動時に落ちる。"""
+    tmp_path, script, _ = sandbox
+    env = _env()
+    env.pop("MINIFLUX_API_KEY")
+    subprocess.run(["sh", str(script), "run-once", "--source", "email"], env=env, timeout=20)
+    assert (tmp_path / "base_url").read_text().strip() == "unset"
+
+
+def test_base_url_defaulted_with_api_key(sandbox):
+    tmp_path, script, _ = sandbox
+    subprocess.run(["sh", str(script), "run-once"], env=_env(), timeout=20)
+    assert (tmp_path / "base_url").read_text().strip() == "http://miniflux:8080"
 
 
 def test_run_once_adds_default_source_and_forwards_args(sandbox):

@@ -742,6 +742,9 @@ HTML 除去は `MINIFLUX_STRIP_HTML` で調整できる（意味は上の設定�
 Viewer のカテゴリ表示順（`CATEGORY_ORDER`）は `categories.yaml` の定義順の写しで、
 `docker-compose.yml` に直書きしてある（本番は Terraform が注入）。並べ替えたら合わせて更新する。
 
+初回起動時は、最初のパイプライン実行が終わって DB ファイルができるまで Viewer は
+エラー／空表示になる（ローカル LLM だと数分かかる）。しばらく待ってから再読み込みする。
+
 Summarizer と Viewer は `summarizer-data` volume の `/data/news_summarizer.db` を共有する。
 Summarizer は書き込み、Viewer は読み取り専用で参照する。
 

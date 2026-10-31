@@ -2,7 +2,7 @@
 
 `MINIFLUX_API_KEY` が未設定のとき、`MINIFLUX_ADMIN_USERNAME` / `MINIFLUX_ADMIN_PASSWORD`
 の Basic 認証で Miniflux の `POST /v1/api-keys` を叩き、発行されたトークンを標準出力に
-1行だけ印字する（`docker/entrypoint.sh` が `$(...)` で拾って `MINIFLUX_API_KEY` に設定する）。
+1行だけ印字する（`docker/entrypoint.sh` が 一時ファイル経由で拾って `MINIFLUX_API_KEY` に設定する）。
 失敗しても標準エラーへ警告を出すだけで、ここでは終了コード 0 のまま戻る。API キーが
 結局空のままなら main.py 側の Miniflux 認証エラーとして自然に失敗させる。
 

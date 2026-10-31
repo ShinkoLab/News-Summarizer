@@ -711,11 +711,21 @@ docker compose run --rm summarizer-once --dry-run
 docker compose run --rm summarizer-once --source email
 ```
 
-`.env` の `MINIFLUX_API_KEY` が空の場合、summarizer コンテナは起動のたびに Miniflux の
+`.env` の `MINIFLUX_API_KEY` が空の場合、summarizer コンテナは起動時（run-loop は各周回の頭でも未取得なら）Miniflux の
 管理者ユーザーで API key を自動発行してから `main.py` を実行する（`docker/provision_miniflux_key.py`）。
 既存の API key を使い回したい場合は `MINIFLUX_API_KEY` に設定する。
 
-**トラブルシューティング**: `summarizer` / `summarizer-once` のログに Miniflux の 401 が出る場合、
+Miniflux と Viewer のポートは既定でループバック（`127.0.0.1`）にだけ公開する。LAN など外へ
+出す場合は `.env` に `BIND_ADDRESS=0.0.0.0` を設定し、**先に管理者・Postgres のパスワードを
+変更する**こと（Viewer に認証は無い）。`LLM_MODEL` は必須で、未設定だと `docker compose` が
+起動前にエラーにする。
+
+**トラブルシューティング**: 管理者パスワード（`MINIFLUX_ADMIN_PASSWORD`）は Postgres の
+volume を初めて初期化するときにだけ反映される。後から `.env` を書き換えると API key の自動発行が
+401 で失敗し続けるので、`docker compose down -v` で volume を作り直すか、Miniflux UI で
+パスワードを合わせるか、`MINIFLUX_API_KEY` を直接設定する。
+
+それ以外で `summarizer` / `summarizer-once` のログに Miniflux の 401 が出る場合、
 API key の自動発行が失敗している可能性がある。`docker compose ps` で `miniflux` が healthy に
 なっていることを確認してから `docker compose run --rm summarizer-once` を再実行する
 （`depends_on: condition: service_healthy` で通常は防がれるが、Miniflux 側の管理者アカウント

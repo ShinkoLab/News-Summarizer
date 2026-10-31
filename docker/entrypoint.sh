@@ -58,8 +58,17 @@ run_bg() {
   if [ "$terminating" -eq 1 ]; then
     kill -TERM "$child_pid" 2>/dev/null || true
   fi
-  wait "$child_pid"
-  rc=$?
+  # `wait` を単独で書くと、子が非ゼロ終了／シグナルで中断された場合に set -e が
+  # ここでシェルごと落としてしまう（下の再 wait に到達しない）。`||` で受ける。
+  rc=0
+  wait "$child_pid" || rc=$?
+  # trap が発火すると wait は子の終了を待たずに即座に戻る（status > 128）。
+  # そのまま PID 1 が終了すると子が SIGKILL されクリーンアップ（実行ロックの
+  # 解放・書き込み途中の DB など）が行われないため、もう一度 wait して子の
+  # 本当の終了を待つ。
+  if [ "$terminating" -eq 1 ] && [ "$rc" -gt 128 ]; then
+    wait "$child_pid" 2>/dev/null || rc=$?
+  fi
   child_pid=""
   return "$rc"
 }
@@ -72,39 +81,45 @@ exit_if_terminating() {
   fi
 }
 
-if [ -z "${MINIFLUX_API_KEY:-}" ] && [ -n "${MINIFLUX_ADMIN_USERNAME:-}" ] && [ -n "${MINIFLUX_ADMIN_PASSWORD:-}" ]; then
-  # 管理者アカウント情報が最初から無い場合は provision_miniflux_key.py が
-  # 即座に諦めて空を返す（ネットワークエラーではないので待っても変わらない）。
-  # ここで先にチェックしておかないと、5回×5秒＝約25秒を意味もなく浪費する。
-  #
-  # Miniflux 側の起動完了（healthcheck）と competing しうるので、初回起動直後の
-  # 失敗だけで諦めずに何度か再試行する。ここで諦めると run-loop の耐障害性
-  # （main.py 自体の再試行）があっても、認証キーが永遠に空のままになる。
-  #
-  # 出力を $(...) で直接受け取ると run_bg がサブシェルの中で実行されてしまい、
-  # そこで設定した child_pid が親シェル（trap 側）から見えず、シグナル転送が
-  # 効かなくなる。一時ファイル経由で受け取ることで run_bg を親シェルのまま呼ぶ。
-  key_tmp="$(mktemp)"
-  attempt=0
-  max_attempts="$(validate_positive_int "${MINIFLUX_KEY_PROVISION_RETRIES:-5}" MINIFLUX_KEY_PROVISION_RETRIES 5)"
-  while [ "$attempt" -lt "$max_attempts" ]; do
-    run_bg "$PYTHON" /app/docker/provision_miniflux_key.py > "$key_tmp" || true
-    exit_if_terminating
-    provisioned_key="$(cat "$key_tmp")"
-    if [ -n "$provisioned_key" ]; then
-      MINIFLUX_API_KEY="$provisioned_key"
-      export MINIFLUX_API_KEY
-      break
-    fi
-    attempt=$((attempt + 1))
-    if [ "$attempt" -lt "$max_attempts" ]; then
-      echo "[entrypoint] Miniflux API キーの取得に失敗しました（${attempt}/${max_attempts}）。5秒後に再試行します" >&2
-      run_bg sleep 5 || true
+# MINIFLUX_API_KEY が空で管理者情報があるときだけ API キーを発行して export する。
+# 起動時に1回だけでなく run-loop の各周回の頭でも呼ぶ（キーが空のままなら
+# 次の周回で再挑戦できる。Miniflux の起動が遅れて初回が全滅しても、コンテナを
+# 再起動しない限り永遠に認証エラーになる、という状態を避ける）。
+provision_api_key() {
+  if [ -z "${MINIFLUX_API_KEY:-}" ] && [ -n "${MINIFLUX_ADMIN_USERNAME:-}" ] && [ -n "${MINIFLUX_ADMIN_PASSWORD:-}" ]; then
+    # 管理者アカウント情報が最初から無い場合は provision_miniflux_key.py が
+    # 即座に諦めて空を返す（ネットワークエラーではないので待っても変わらない）。
+    # ここで先にチェックしておかないと、5回×5秒＝約25秒を意味もなく浪費する。
+    #
+    # Miniflux 側の起動完了（healthcheck）と competing しうるので、初回起動直後の
+    # 失敗だけで諦めずに何度か再試行する。ここで諦めると run-loop の耐障害性
+    # （main.py 自体の再試行）があっても、認証キーが永遠に空のままになる。
+    #
+    # 出力を $(...) で直接受け取ると run_bg がサブシェルの中で実行されてしまい、
+    # そこで設定した child_pid が親シェル（trap 側）から見えず、シグナル転送が
+    # 効かなくなる。一時ファイル経由で受け取ることで run_bg を親シェルのまま呼ぶ。
+    key_tmp="$(mktemp)"
+    attempt=0
+    max_attempts="$(validate_positive_int "${MINIFLUX_KEY_PROVISION_RETRIES:-5}" MINIFLUX_KEY_PROVISION_RETRIES 5)"
+    while [ "$attempt" -lt "$max_attempts" ]; do
+      run_bg "$PYTHON" /app/docker/provision_miniflux_key.py > "$key_tmp" || true
       exit_if_terminating
-    fi
-  done
-  rm -f "$key_tmp"
-fi
+      provisioned_key="$(cat "$key_tmp")"
+      if [ -n "$provisioned_key" ]; then
+        MINIFLUX_API_KEY="$provisioned_key"
+        export MINIFLUX_API_KEY
+        break
+      fi
+      attempt=$((attempt + 1))
+      if [ "$attempt" -lt "$max_attempts" ]; then
+        echo "[entrypoint] Miniflux API キーの取得に失敗しました（${attempt}/${max_attempts}）。5秒後に再試行します" >&2
+        run_bg sleep 5 || true
+        exit_if_terminating
+      fi
+    done
+    rm -f "$key_tmp"
+  fi
+}
 
 has_source_arg() {
   for arg in "$@"; do
@@ -134,6 +149,7 @@ case "$1" in
     shift
     interval="$(validate_positive_int "${NEWS_SUMMARIZER_INTERVAL_SECONDS:-3600}" NEWS_SUMMARIZER_INTERVAL_SECONDS 3600)"
     while true; do
+      provision_api_key
       # main.py が失敗しても set -e でループごと落ちないようにする。
       # 一過性の障害（LLM/DBの一時エラー等）でコンテナが停止し、次回間隔まで
       # 何も実行されなくなるのを防ぐ。SIGTERM/SIGINT による意図的な停止は
@@ -149,9 +165,11 @@ case "$1" in
     ;;
   run-once)
     shift
+    provision_api_key
     run_summarizer "$@"
     ;;
   -*)
+    provision_api_key
     run_summarizer "$@"
     ;;
   *)

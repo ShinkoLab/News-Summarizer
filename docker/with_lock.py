@@ -46,7 +46,11 @@ def main(argv: list[str]) -> int:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             break
-        except OSError:
+        except OSError as exc:
+            if not isinstance(exc, BlockingIOError):
+                # ロック未対応のファイルシステム等。「実行中」と誤認して永久にスキップしない。
+                print(f"[lock] flock が使えません（{exc}）。ロックなしで実行します", file=sys.stderr)
+                os.execvp(command[0], command)
             if mode == "skip":
                 print("[lock] 別の実行が進行中のため、今回はスキップします", file=sys.stderr)
                 return EXIT_LOCK_UNAVAILABLE

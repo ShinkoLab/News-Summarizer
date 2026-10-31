@@ -13,6 +13,7 @@ SOURCE="${NEWS_SUMMARIZER_SOURCE:-all}"
 # 確定した後にだけ export する。config.py は MINIFLUX_* が1つでもあると miniflux
 # セクションを作り、api_key 欠落で起動時に落ちるため、Miniflux を使わない
 # （メールのみの）実行に base_url だけを渡してはいけない。
+MINIFLUX_BASE_URL_INPUT="${MINIFLUX_BASE_URL:-}"
 MINIFLUX_DEFAULT_BASE_URL="${MINIFLUX_BASE_URL:-http://miniflux:8080}"
 # Compose は未設定でも MINIFLUX_BASE_URL を（空か値で）渡してくる。元の環境変数は消しておき、
 # API キーが確定するまで main.py や SQLite 初期化の子プロセスに見せない。
@@ -148,6 +149,11 @@ provision_api_key() {
       fi
     done
     rm -f "$key_tmp"
+  fi
+  if [ "$needs_miniflux" -eq 1 ] && [ "${MINIFLUX_BUNDLED:-}" != "1" ] && [ -z "$MINIFLUX_BASE_URL_INPUT" ]; then
+    # 既存 Miniflux 接続では、同梱用の既定 URL（http://miniflux:8080）は存在しないホスト。
+    echo "[entrypoint] MINIFLUX_BASE_URL が未設定です。既存の Miniflux に接続するには .env に設定してください" >&2
+    return 1
   fi
   if [ -n "${MINIFLUX_API_KEY:-}" ]; then
     export MINIFLUX_BASE_URL="$MINIFLUX_DEFAULT_BASE_URL"

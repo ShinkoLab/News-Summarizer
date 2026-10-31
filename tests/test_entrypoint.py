@@ -48,6 +48,7 @@ def _env(tmp_path, **extra):
     return {
         "PATH": "/usr/bin:/bin",
         "MINIFLUX_API_KEY": "k",
+        "MINIFLUX_BUNDLED": "1",  # 既定は同梱モード。既存 Miniflux のテストは "" で上書きする
         "NEWS_SUMMARIZER_LOCK_FILE": str(tmp_path / "lock"),
         "NEWS_SUMMARIZER_LOCK_PYTHON": sys.executable,
         "MINIFLUX_STARTER_FEEDS_MARKER": str(tmp_path / "marker"),
@@ -376,14 +377,20 @@ def test_starter_feeds_imported_in_bundled_mode(sandbox):
 
 def test_starter_feeds_not_imported_for_external_miniflux(sandbox):
     tmp_path, script, log = sandbox
-    subprocess.run(["sh", str(script), "run-once"], env=_env(tmp_path), timeout=20)
+    subprocess.run(
+        ["sh", str(script), "run-once"],
+        env=_env(tmp_path, MINIFLUX_BUNDLED="", MINIFLUX_BASE_URL="http://ext:8080"),
+        timeout=20,
+    )
     assert _starter_calls(log) == []
 
 
 def test_starter_feeds_can_be_forced_for_external_miniflux(sandbox):
     tmp_path, script, log = sandbox
     subprocess.run(
-        ["sh", str(script), "run-once"], env=_env(tmp_path, MINIFLUX_IMPORT_STARTER_FEEDS="true"), timeout=20
+        ["sh", str(script), "run-once"],
+        env=_env(tmp_path, MINIFLUX_BUNDLED="", MINIFLUX_BASE_URL="http://ext:8080", MINIFLUX_IMPORT_STARTER_FEEDS="true"),
+        timeout=20,
     )
     assert len(_starter_calls(log)) == 1
 
@@ -445,3 +452,29 @@ def test_run_loop_does_not_run_main_without_api_key(sandbox):
         proc.send_signal(signal.SIGTERM)
         proc.wait(timeout=10)
     assert proc.stderr.read().count("API キーがありません") >= 2
+
+
+def test_external_miniflux_requires_base_url(sandbox):
+    """既存 Miniflux 接続（非同梱）で URL が空なら、同梱用の既定 URL に黙って向けず異常終了する。"""
+    tmp_path, script, log = sandbox
+    result = subprocess.run(
+        ["sh", str(script), "run-once"], env=_env(tmp_path, MINIFLUX_BUNDLED=""), timeout=20
+    )
+    assert result.returncode == 1
+    assert _main_calls(log) == []
+
+
+def test_with_lock_runs_unlocked_when_flock_unsupported(tmp_path, monkeypatch):
+    """flock が EAGAIN 以外で失敗する環境では「実行中」と誤認せずロックなしで実行する。"""
+    import fcntl
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("with_lock", WITH_LOCK)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    execs = []
+    monkeypatch.setattr(fcntl, "flock", lambda *a: (_ for _ in ()).throw(OSError(95, "not supported")))
+    monkeypatch.setattr(mod.os, "execvp", lambda cmd, args: execs.append(args) or (_ for _ in ()).throw(SystemExit(0)))
+    with pytest.raises(SystemExit):
+        mod.main(["with_lock.py", str(tmp_path / "lock"), "skip", "0", "--", "echo", "ran"])
+    assert execs == [["echo", "ran"]]

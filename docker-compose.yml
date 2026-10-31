@@ -81,7 +81,7 @@ services:
     build:
       # News-Viewer は別リポジトリ。Compose が URL から直接ビルドするので clone は不要。
       # Viewer 側を手元で開発しているときは NEWS_VIEWER_CONTEXT=../News-Viewer で差し替える。
-      context: ${NEWS_VIEWER_CONTEXT:-https://github.com/ShinkoLab/News-Viewer.git#v1.5.0}
+      context: ${NEWS_VIEWER_CONTEXT:-https://github.com/ShinkoLab/News-Viewer.git#v1.5.2}
     depends_on:
       - summarizer
     ports:

@@ -745,7 +745,7 @@ docker run --rm -v news-data:/data \
 のは、起動しないサービスへの `depends_on` がエラーになり、依存先のプロファイルは強制的に
 起動されてしまうため。Windows ではファイルの区切りが `;` になる。
 
-- `web` は [News-Viewer](https://github.com/ShinkoLab/News-Viewer) のリリースタグ（`v1.5.0`）を
+- `web` は [News-Viewer](https://github.com/ShinkoLab/News-Viewer) のリリースタグ（`v1.5.2`）を
   Compose が URL から直接ビルドする。clone は不要。手元の News-Viewer を開発しているときは
   `.env` に `NEWS_VIEWER_CONTEXT=../News-Viewer` を設定して差し替える
 - Viewer: http://localhost:3080、Miniflux（同梱時）: http://localhost:8080

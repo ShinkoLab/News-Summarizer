@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 試しやすさの改善（clone → `.env` を数行直す → `docker compose up -d`）:
   - README 冒頭に「クイックスタート」を追加。Google Cloud 構成の説明は「本格運用」に移した
-  - Viewer は Compose が URL（`News-Viewer` の `v1.5.0` タグ）から直接ビルドする。兄弟 clone は不要
+  - Viewer は Compose が URL（`News-Viewer` の `v1.5.2` タグ）から直接ビルドする。兄弟 clone は不要
     （`NEWS_VIEWER_CONTEXT` で手元のディレクトリに差し替え可）
   - 同梱 Miniflux を `compose.miniflux.yml` に分離。`.env` の `COMPOSE_FILE` で「同梱 Miniflux」
     （既定）と「既存の Miniflux に接続」（`docker-compose.yml` のみ + `MINIFLUX_BASE_URL` /
@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `.env.example` に LLM のプリセット（ホストの Ollama / OpenRouter / OpenAI 互換）と
     `LLM_STRUCTURED_OUTPUT=false` の使いどころを追記
   - お試し向けの既定値: `MAX_ARTICLES_PER_RUN=20`、`MINIFLUX_FETCH_LIMIT=25`、実行間隔 3 時間
+  - 実行をスキップした周回（ロック競合・API キー未取得）は、通常の間隔（3 時間）ではなく最大 60 秒後に
+    再試行する。`--dry-run` / `--help` ではスターターフィードを取り込まない。既存 Miniflux 接続で
+    `MINIFLUX_BASE_URL` が未設定なら異常終了する
 - Docker Compose によるセルフホスト構成（`docker-compose.yml` / `.env.example`）。
   PostgreSQL + Miniflux + `summarizer`（定期実行）+ `summarizer-once`（手動, `manual` プロファイル）
   + `web`（News-Viewer、SQLite を共有 volume 経由で参照）を `docker compose up` で起動できる

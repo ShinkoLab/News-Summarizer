@@ -7,8 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-11-01
+
 ### Added
 
+- 試しやすさの改善（clone → `.env` を数行直す → `docker compose up -d`）:
+  - README 冒頭に「クイックスタート」を追加。Google Cloud 構成の説明は「本格運用」に移した
+  - Viewer は Compose が URL（`News-Viewer` の `v1.5.0` タグ）から直接ビルドする。兄弟 clone は不要
+    （`NEWS_VIEWER_CONTEXT` で手元のディレクトリに差し替え可）
+  - 同梱 Miniflux を `compose.miniflux.yml` に分離。`.env` の `COMPOSE_FILE` で「同梱 Miniflux」
+    （既定）と「既存の Miniflux に接続」（`docker-compose.yml` のみ + `MINIFLUX_BASE_URL` /
+    `MINIFLUX_API_KEY`）を切り替える。Miniflux イメージは `2.3.4` に固定
+  - 同梱 Miniflux の初回起動時に `docker/feeds.opml` のスターターフィード5件を取り込む
+    （フィードが 0 件のときだけ。`MINIFLUX_IMPORT_STARTER_FEEDS` で制御。既存 Miniflux では既定オフ）
+  - `.env.example` に LLM のプリセット（ホストの Ollama / OpenRouter / OpenAI 互換）と
+    `LLM_STRUCTURED_OUTPUT=false` の使いどころを追記
+  - お試し向けの既定値: `MAX_ARTICLES_PER_RUN=20`、`MINIFLUX_FETCH_LIMIT=25`、実行間隔 3 時間
 - Docker Compose によるセルフホスト構成（`docker-compose.yml` / `.env.example`）。
   PostgreSQL + Miniflux + `summarizer`（定期実行）+ `summarizer-once`（手動, `manual` プロファイル）
   + `web`（News-Viewer、SQLite を共有 volume 経由で参照）を `docker compose up` で起動できる
@@ -19,9 +33,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Compose の `NEWS_SUMMARIZER_SOURCE` の既定を `rss` から `all` に変更した（`EMAIL_*` を渡しても
+  メールが黙って無視されていた）。`all` でメール未設定の場合、`pipeline.fetch_articles()` は
+  ERROR とスタックトレースを出さず INFO でスキップする（`--source email` で未設定なら従来どおりエラー）
 - `llm.structured_output: false`（プレーンテキスト JSON フォールバック）のプロンプトで、
   生の JSON Schema ではなく具体的な JSON の例を示す。小型ローカルモデルがスキーマ断片を
   そのまま返す問題への対処
+
+### Fixed
+
+- SQLite 構成で `summarizer`（run-loop）と `summarizer-once` が同時に走ると二重に要約・投稿して
+  いた。`docker/with_lock.py` で `main.py` をロックファイル経由で直列化する（`summarizer-once` は
+  待機、定期実行は周回をスキップ）
+- コンテナ起動時に SQLite のスキーマを作成する。最初の実行が終わる前の Viewer がエラー／空表示になる問題
+- Discord の webhook が未設定でも「Discordへの送信が完了しました。」とログに出ていた
 
 ## [2.6.1] - 2026-10-19
 

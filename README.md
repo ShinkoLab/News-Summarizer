@@ -770,7 +770,8 @@ docker compose run --rm summarizer-once --source email
 `/data` 上のロックファイル（`docker/with_lock.py`、`flock`）経由で起動して直列化する。
 `summarizer-once` を `summarizer` の実行中に走らせると、終わるまで待つ
 （`NEWS_SUMMARIZER_LOCK_WAIT_SECONDS`、既定 3600 秒で諦めて終了コード 75）。定期実行側は、
-手動実行中なら今回の周回をスキップして次の間隔に回す。したがって `docker compose stop summarizer`
+手動実行中なら今回の周回をスキップして 60 秒後に取り直す。ロックファイルを作れない／`flock`
+未対応のファイルシステム（一部の NFS など）ではロックなしで実行し、警告を出す。したがって `docker compose stop summarizer`
 は不要。
 
 **取得元**: `NEWS_SUMMARIZER_SOURCE` の既定は `all`（RSS + メール）。`EMAIL_*` が未設定ならメールは

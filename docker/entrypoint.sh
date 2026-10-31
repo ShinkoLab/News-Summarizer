@@ -77,9 +77,10 @@ run_bg() {
   return "$rc"
 }
 
-# 再試行までの待ち時間（秒）。通常の間隔より長くならないよう、上限 60 秒。
+# 再試行までの待ち時間（秒）。通常の間隔より長くならない。
 short_retry_seconds() {
-  if [ "$1" -lt 60 ]; then echo "$1"; else echo 60; fi
+  # $1=通常の間隔 $2=上限（秒）
+  if [ "$1" -lt "$2" ]; then echo "$1"; else echo "$2"; fi
 }
 
 # 終了要求が来ていたらここで抜ける。set -e は `||`/`if` の条件式の中では
@@ -153,7 +154,12 @@ provision_api_key() {
   if [ "$needs_miniflux" -eq 1 ] && [ "${MINIFLUX_BUNDLED:-}" != "1" ] && [ -z "$MINIFLUX_BASE_URL_INPUT" ]; then
     # 既存 Miniflux 接続では、同梱用の既定 URL（http://miniflux:8080）は存在しないホスト。
     echo "[entrypoint] MINIFLUX_BASE_URL が未設定です。既存の Miniflux に接続するには .env に設定してください" >&2
-    return 1
+    # メールが動ける all は警告だけで続行する（下のキー欠落の分岐と同じ条件）。
+    src="$(effective_source "$@")"
+    if [ "$src" = "rss" ] || { [ "$src" = "all" ] && [ -z "${EMAIL_HOST:-}" ]; }; then
+      return 1
+    fi
+    return 0
   fi
   if [ -n "${MINIFLUX_API_KEY:-}" ]; then
     export MINIFLUX_BASE_URL="$MINIFLUX_DEFAULT_BASE_URL"
@@ -245,8 +251,13 @@ import_starter_feeds() {
   esac
   marker="${MINIFLUX_STARTER_FEEDS_MARKER:-/data/.starter-feeds-imported}"
   [ -e "$marker" ] && return 0
-  run_bg env "MINIFLUX_BASE_URL=$MINIFLUX_DEFAULT_BASE_URL" "$PYTHON" "$SCRIPT_DIR/import_starter_feeds.py" "$SCRIPT_DIR/feeds.opml" "$marker" || true
+  import_rc=0
+  run_bg env "MINIFLUX_BASE_URL=$MINIFLUX_DEFAULT_BASE_URL" "$PYTHON" "$SCRIPT_DIR/import_starter_feeds.py" "$SCRIPT_DIR/feeds.opml" "$marker" || import_rc=$?
   exit_if_terminating
+  # 終了コード 10 = 取り込んだが最初の記事がまだ届いていない。run-loop は短い間隔で取り直す。
+  if [ "$import_rc" -eq 10 ]; then
+    first_fetch_pending=1
+  fi
 }
 
 if [ "$#" -eq 0 ]; then
@@ -261,10 +272,11 @@ case "$1" in
     init_database
     while true; do
       wait_seconds="$interval"
+      first_fetch_pending=0
       # 鍵が得られない周回は main.py を走らせても何も処理できない（成功に見えて空振りする）ので
       # 飛ばし、間隔を待たずに短い間隔で鍵の取得を再挑戦する。
       if ! provision_api_key "$@"; then
-        wait_seconds="$(short_retry_seconds "$interval")"
+        wait_seconds="$(short_retry_seconds "$interval" 300)"  # 認証エラー等が続いても叩きすぎない
       else
         import_starter_feeds "$@"
         # main.py が失敗しても set -e でループごと落ちないようにする。
@@ -278,9 +290,13 @@ case "$1" in
         exit_if_terminating
         if [ "$rc" -eq 75 ]; then
           echo "[entrypoint] 別の実行が進行中のため今回の周回をスキップしました。すぐに再試行します" >&2
-          wait_seconds="$(short_retry_seconds "$interval")"
+          wait_seconds="$(short_retry_seconds "$interval" 60)"
         elif [ "$rc" -ne 0 ]; then
           echo "[entrypoint] main.py が異常終了しました。次の間隔まで待って再試行します" >&2
+        fi
+        if [ "$first_fetch_pending" -eq 1 ] && [ "$rc" -eq 0 ]; then
+          echo "[entrypoint] スターターフィードの最初の記事がまだ届いていないため、短い間隔で再試行します" >&2
+          wait_seconds="$(short_retry_seconds "$interval" 120)"
         fi
       fi
       run_bg sleep "$wait_seconds" || true

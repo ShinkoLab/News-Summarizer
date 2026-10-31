@@ -107,3 +107,20 @@ def test_opml_has_valid_feed_urls():
     urls = [o.get("xmlUrl") for o in ET.parse(OPML).iter("outline") if o.get("xmlUrl")]
     assert len(urls) == 5
     assert all(u.startswith("https://") for u in urls)
+
+
+def test_returns_false_when_first_entries_do_not_arrive(miniflux, tmp_path):
+    server = miniflux([])
+    # entries を常に空にして待ちきれないケースを作る
+    original = helper._request
+
+    def fake(method, url, token, body=None, content_type="application/json"):
+        if url.endswith("/v1/entries?status=unread&limit=1"):
+            return {"total": 0}
+        return original(method, url, token, body, content_type)
+
+    helper._request = fake
+    try:
+        assert helper.import_starter_feeds(server.url, "tok", OPML, tmp_path / "m", wait_seconds=1) is False
+    finally:
+        helper._request = original

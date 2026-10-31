@@ -478,3 +478,12 @@ def test_with_lock_runs_unlocked_when_flock_unsupported(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         mod.main(["with_lock.py", str(tmp_path / "lock"), "skip", "0", "--", "echo", "ran"])
     assert execs == [["echo", "ran"]]
+
+
+def test_external_email_only_setup_without_base_url_still_runs(sandbox):
+    tmp_path, script, log = sandbox
+    env = _env(tmp_path, MINIFLUX_BUNDLED="", EMAIL_HOST="pop.example.com")
+    env.pop("MINIFLUX_API_KEY")
+    result = subprocess.run(["sh", str(script), "run-once"], env=env, timeout=20)
+    assert result.returncode == 0
+    assert _main_calls(log)

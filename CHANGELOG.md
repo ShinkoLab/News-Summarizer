@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **アップグレード時の注意**: 同梱 Miniflux を `compose.miniflux.yml` に分離したため、v2.6 系の
+  `.env`（`COMPOSE_FILE` なし）のまま `docker compose up -d` すると Miniflux が起動せず、
+  summarizer は `MINIFLUX_BASE_URL が未設定です` で止まる。`.env` に
+  `COMPOSE_FILE=docker-compose.yml:compose.miniflux.yml` を足すこと（既存の volume はそのまま使われる）
 - Compose の `NEWS_SUMMARIZER_SOURCE` の既定を `rss` から `all` に変更した（`EMAIL_*` を渡しても
   メールが黙って無視されていた）。`all` でメール未設定の場合、`pipeline.fetch_articles()` は
   ERROR とスタックトレースを出さず INFO でスキップする（`--source email` で未設定なら従来どおりエラー）

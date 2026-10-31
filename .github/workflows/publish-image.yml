@@ -1,8 +1,15 @@
 name: Publish image
 
 # 安定版タグ（vX.Y.Z）の push で GHCR へイメージを公開する。
-# 公開は「履歴の秘密情報スキャン」「両アーキテクチャのイメージスキャンとファイル検査」を
-# 全て通過した後だけ。PR では検証（スキャンまで）だけを行い、ログインも push もしない。
+#
+# 公開するのは「スキャンとガードを通過したイメージそのもの」だけ:
+#   1. gitleaks で全履歴をスキャン
+#   2. アーキテクチャごとに 1 回ビルドし、そのイメージを Trivy とファイル検査にかける
+#   3. 全て通った後に限り、同じ job の中で同じビルド（キャッシュ 100% ヒット）を
+#      タグ無し・digest 指定で push し、config digest がスキャン対象と一致することを確認
+#   4. publish ジョブは再ビルドせず、各アーキテクチャの digest から manifest list を作ってタグ付けするだけ
+# 検査に失敗した時点で後続ステップは実行されないため、その arch のイメージは push されない。
+# PR では検証（スキャンまで）だけを行い、ログインも push もしない。
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
@@ -19,7 +26,8 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/shinkolab/news-summarizer
-  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1
+  # gitleaks v8.30.1 (multi-arch index digest)
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
   TRIVY_VERSION: v0.76.1
 
 jobs:
@@ -39,8 +47,14 @@ jobs:
             git --redact --verbose --exit-code 1 /repo
 
   scan:
-    name: Build and scan image (${{ matrix.platform }})
+    name: Build, scan and push by digest (${{ matrix.platform }})
+    needs: gitleaks
     runs-on: ${{ matrix.runner }}
+    # packages: write はタグ push 時の「スキャン済みイメージの digest push」にだけ使う。
+    # PR / workflow_dispatch ではログインしないのでトークンは使われない
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -48,24 +62,32 @@ jobs:
           - platform: linux/amd64
             arch: amd64
             runner: ubuntu-latest
-          # ネイティブ arm64 ランナー（public リポジトリでは無料）。公開する arm64 も同じ検査にかける
+          # ネイティブ arm64 ランナー（public リポジトリでは無料）
           - platform: linux/arm64
             arch: arm64
             runner: ubuntu-24.04-arm
+    env:
+      IS_RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
       - name: Build image for scanning
+        id: build
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: .
           platforms: ${{ matrix.platform }}
           load: true
           push: false
+          provenance: false
+          sbom: false
           tags: scan-target:ci
-          # publish ジョブがこのキャッシュを再利用するので、公開物はスキャンしたレイヤーと一致する
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=News Summarizer: LLM-based news summarization pipeline (Cloud Run Job image)
+            org.opencontainers.image.licenses=ISC
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,scope=${{ matrix.arch }},mode=max
       - name: Trivy secret scan (blocking)
@@ -115,9 +137,74 @@ jobs:
             exit 1
           fi
           echo "guard passed: no forbidden files"
+      - name: Scanned image identity
+        env:
+          BUILD_META: ${{ steps.build.outputs.metadata }}
+        run: |
+          echo "scanned image id:         $(docker inspect --format '{{.Id}}' scan-target:ci)"
+          echo "scanned config digest:    $(jq -r '."containerimage.config.digest" // "n/a"' <<< "$BUILD_META")"
+          echo "scanned manifest digest:  $(jq -r '."containerimage.digest" // "n/a"' <<< "$BUILD_META")"
+      # ---- ここから先は検査が全て通った場合のタグ push 時だけ ----
+      - name: Log in to GHCR
+        if: env.IS_RELEASE == 'true'
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the scanned image by digest (no tag)
+        id: push
+        if: env.IS_RELEASE == 'true'
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          sbom: false
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=News Summarizer: LLM-based news summarization pipeline (Cloud Run Job image)
+            org.opencontainers.image.licenses=ISC
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Verify the pushed image is the scanned image
+        if: env.IS_RELEASE == 'true'
+        env:
+          BUILD_META: ${{ steps.build.outputs.metadata }}
+          PUSH_META: ${{ steps.push.outputs.metadata }}
+          PUSH_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          scanned_id=$(docker inspect --format '{{.Id}}' scan-target:ci)
+          scanned_config=$(jq -r '."containerimage.config.digest" // ""' <<< "$BUILD_META")
+          scanned_manifest=$(jq -r '."containerimage.digest" // ""' <<< "$BUILD_META")
+          pushed_config=$(jq -r '."containerimage.config.digest" // ""' <<< "$PUSH_META")
+          echo "scanned: id=$scanned_id config=$scanned_config manifest=$scanned_manifest"
+          echo "pushed:  config=$pushed_config manifest=$PUSH_DIGEST"
+          # ローカルの image id（クラシックストアでは config digest）か、ビルドのメタデータの
+          # config / manifest digest のどれかが push 結果と一致することを要求する
+          ok=false
+          [ -n "$pushed_config" ] && [ "$pushed_config" = "$scanned_id" ] && ok=true
+          [ -n "$pushed_config" ] && [ "$pushed_config" = "$scanned_config" ] && ok=true
+          [ -n "$scanned_manifest" ] && [ "$PUSH_DIGEST" = "$scanned_manifest" ] && ok=true
+          if [ "$ok" != true ]; then
+            echo "::error::pushed image differs from the scanned image"
+            exit 1
+          fi
+          echo "verified: pushed image is the scanned image"
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${PUSH_DIGEST#sha256:}"
+      - name: Upload digest
+        if: env.IS_RELEASE == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
 
   publish:
-    name: Publish to GHCR (multi-arch)
+    name: Publish manifest list to GHCR
     needs: [gitleaks, scan]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -135,7 +222,11 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME is not on main; refusing to publish"
             exit 1
           fi
-      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
       - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
         with:
@@ -151,19 +242,17 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.description=News Summarizer: LLM-based news summarization pipeline (Cloud Run Job image)
-            org.opencontainers.image.licenses=ISC
-      - name: Build and push
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # scan ジョブがスキャンしたレイヤーのキャッシュをそのまま使う
-          cache-from: |
-            type=gha,scope=amd64
-            type=gha,scope=arm64
+      - name: Create manifest list from the scanned digests (no rebuild)
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(*)
+          test "${#files[@]}" -eq 2
+          tag_args=()
+          while read -r t; do tag_args+=(-t "$t"); done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          srcs=()
+          for d in "${files[@]}"; do srcs+=("${IMAGE}@sha256:${d}"); done
+          docker buildx imagetools create "${tag_args[@]}" "${srcs[@]}"
+      - name: Inspect published image
+        run: docker buildx imagetools inspect "${IMAGE}:${{ steps.meta.outputs.version }}"

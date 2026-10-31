@@ -159,6 +159,8 @@ provision_api_key() {
     if [ "$src" = "rss" ] || { [ "$src" = "all" ] && [ -z "${EMAIL_HOST:-}" ]; }; then
       return 1
     fi
+    # base_url なしの api_key だけを main.py に見せると config.py が落ちる。メール側だけ動かす。
+    unset MINIFLUX_API_KEY
     return 0
   fi
   if [ -n "${MINIFLUX_API_KEY:-}" ]; then
@@ -320,6 +322,8 @@ case "$1" in
     run_summarizer wait "$@"
     ;;
   *)
+    # 任意コマンドの素通し。冒頭で隠した MINIFLUX_BASE_URL を元に戻す。
+    if [ -n "$MINIFLUX_BASE_URL_INPUT" ]; then export MINIFLUX_BASE_URL="$MINIFLUX_BASE_URL_INPUT"; fi
     exec "$@"
     ;;
 esac

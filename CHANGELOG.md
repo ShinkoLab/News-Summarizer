@@ -23,8 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `.env.example` に LLM のプリセット（ホストの Ollama / OpenRouter / OpenAI 互換）と
     `LLM_STRUCTURED_OUTPUT=false` の使いどころを追記
   - お試し向けの既定値: `MAX_ARTICLES_PER_RUN=20`、`MINIFLUX_FETCH_LIMIT=25`、実行間隔 3 時間
-  - 実行をスキップした周回（ロック競合・API キー未取得）は、通常の間隔（3 時間）ではなく最大 60 秒後に
-    再試行する。`--dry-run` / `--help` ではスターターフィードを取り込まない。既存 Miniflux 接続で
+  - 実行をスキップした周回は通常の間隔（3 時間）を待たずに再試行する（ロック競合は最大 60 秒、API キー未取得は
+    最大 5 分、スターターフィードの最初の記事待ちは最大 2 分）。`--dry-run` / `--help` ではスターターフィードを取り込まない。既存 Miniflux 接続で
     `MINIFLUX_BASE_URL` が未設定なら異常終了する
 - Docker Compose によるセルフホスト構成（`docker-compose.yml` / `.env.example`）。
   PostgreSQL + Miniflux + `summarizer`（定期実行）+ `summarizer-once`（手動, `manual` プロファイル）
@@ -39,10 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **アップグレード時の注意**: 同梱 Miniflux を `compose.miniflux.yml` に分離したため、v2.6 系の
-  `.env`（`COMPOSE_FILE` なし）のまま `docker compose up -d` すると Miniflux が起動せず、
-  summarizer は `MINIFLUX_BASE_URL が未設定です` で止まる。`.env` に
-  `COMPOSE_FILE=docker-compose.yml:compose.miniflux.yml` を足すこと（既存の volume はそのまま使われる）
 - Compose の `NEWS_SUMMARIZER_SOURCE` の既定を `rss` から `all` に変更した（`EMAIL_*` を渡しても
   メールが黙って無視されていた）。`all` でメール未設定の場合、`pipeline.fetch_articles()` は
   ERROR とスタックトレースを出さず INFO でスキップする（`--source email` で未設定なら従来どおりエラー）

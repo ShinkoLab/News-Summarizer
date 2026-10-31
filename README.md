@@ -749,7 +749,7 @@ docker run --rm -v news-data:/data \
   Compose が URL から直接ビルドする。clone は不要。手元の News-Viewer を開発しているときは
   `.env` に `NEWS_VIEWER_CONTEXT=../News-Viewer` を設定して差し替える
 - Viewer: http://localhost:3080、Miniflux（同梱時）: http://localhost:8080
-- 同梱 Miniflux のイメージは `2.3.4` に固定している（`MINIFLUX_IMAGE` で変更可）
+- 同梱 Miniflux のイメージは `2.3.4` に固定している（`MINIFLUX_IMAGE` で変更可）。すでに新しい版で作った Miniflux の volume を使い回す場合は、同じ版を `MINIFLUX_IMAGE` に指定する（DB スキーマを戻せないため）
 - LLM は Compose に含まれない。ホスト上の Ollama / llama-swap か、クラウドの OpenAI 互換
   エンドポイントを `.env` で指定する。`.env.example` に Ollama・OpenRouter・その他の設定例がある。
   サーバーが `response_format` を受け付けない／無視するモデルでは `LLM_STRUCTURED_OUTPUT=false`
@@ -770,7 +770,7 @@ docker compose run --rm summarizer-once --source email
 `/data` 上のロックファイル（`docker/with_lock.py`、`flock`）経由で起動して直列化する。
 `summarizer-once` を `summarizer` の実行中に走らせると、終わるまで待つ
 （`NEWS_SUMMARIZER_LOCK_WAIT_SECONDS`、既定 3600 秒で諦めて終了コード 75）。定期実行側は、
-手動実行中なら今回の周回をスキップして 60 秒後に取り直す。ロックファイルを作れない／`flock`
+手動実行中なら今回の周回をスキップして 60 秒以内に取り直す。ロックファイルを作れない／`flock`
 未対応のファイルシステム（一部の NFS など）ではロックなしで実行し、警告を出す。したがって `docker compose stop summarizer`
 は不要。
 

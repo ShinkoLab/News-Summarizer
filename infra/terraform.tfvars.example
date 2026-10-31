@@ -23,6 +23,10 @@ llm_model    = "your-model-id"
 # llm_thinking                          = true
 # llm_disable_temperature_with_thinking = true
 
+# 一部プロバイダーが要求する、実行単位のセッション追跡用ヘッダー。
+# 例: OpenCode Zen (go) が要求する x-opencode-session（詳細はinfra/DEPLOYMENT.md参照）
+# llm_session_header = "x-opencode-session"
+
 # LLMパラメータ（省略時のデフォルト: グローバル temperature=0.7, max_tokens=8192、
 # grouper/summarizer は temperature低め+reasoning_effort=low、digest は reasoning_effort=medium）
 # reasoning_effort は reasoning model（GPT-5系等）のみ有効。非対応モデルでは無視されるか
@@ -48,6 +52,9 @@ miniflux_base_url = "https://miniflux.example.com"
 # 取得後の重複除去で1割前後落ちるので、fetch_limit は多めに取る。
 # max_articles_per_run = 200
 # miniflux_fetch_limit = 250
+# Miniflux 記事本文の HTML をテキスト化してから LLM に渡す（既定 true）。
+# 入力トークンが約8割減る。デバッグ・比較用に HTML のまま渡したいときだけ false。
+# miniflux_strip_html = false
 # メールを使わない場合もダミー値を設定してください（フェッチ失敗はソース単位で握りつぶされます）
 email_host        = "pop.example.com"
 email_username    = "news@example.com"

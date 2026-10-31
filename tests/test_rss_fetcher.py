@@ -9,11 +9,12 @@ import httpx
 from fetchers.rss_fetcher import MinifluxFetcher
 
 
-def _fake_config(fetch_limit: int = 100):
+def _fake_config(fetch_limit: int = 100, strip_html: bool = True):
     cfg = MagicMock()
     cfg.miniflux.base_url = "http://miniflux.local"
     cfg.miniflux.api_key = "test-key"
     cfg.miniflux.fetch_limit = fetch_limit
+    cfg.miniflux.strip_html = strip_html
     return cfg
 
 
@@ -123,3 +124,85 @@ def test_mark_as_read_dry_run_skips_put():
         with patch("fetchers.rss_fetcher.httpx.put") as mock_put:
             fetcher.mark_as_read([1])
         mock_put.assert_not_called()
+
+
+_HTML_ENTRY = {
+    "id": 1,
+    "content": "<p>Hello <b>world</b></p><script>alert(1)</script>",
+    "title": "記事1",
+    "published_at": "2024-01-01T00:00:00Z",
+    "url": "https://example.com/1",
+    "feed": {"title": "フィード"},
+}
+
+
+def _fetch_with(strip_html: bool, entries: list[dict]):
+    with patch("fetchers.rss_fetcher.config", _fake_config(strip_html=strip_html)):
+        fetcher = MinifluxFetcher(dry_run=False)
+        with patch(
+            "fetchers.rss_fetcher.httpx.get", return_value=_entries_response(entries)
+        ), patch.object(fetcher, "mark_as_read") as mock_mark:
+            articles = fetcher.fetch()
+    return articles, mock_mark
+
+
+def test_fetch_strips_html_by_default():
+    """strip_html=True では本文のタグと script の中身が取り除かれる。"""
+    articles, _ = _fetch_with(True, [dict(_HTML_ENTRY)])
+
+    content = articles[0].content
+    assert "Hello" in content and "world" in content
+    assert "<" not in content and ">" not in content
+    assert "alert(1)" not in content
+
+
+def test_fetch_keeps_raw_html_when_strip_disabled():
+    """strip_html=False では本文は HTML のまま変更されない。"""
+    articles, _ = _fetch_with(False, [dict(_HTML_ENTRY)])
+
+    assert articles[0].content == _HTML_ENTRY["content"]
+
+
+def test_fetch_falls_back_to_raw_html_when_text_is_empty():
+    """テキスト化の結果が空なら元のHTMLを使い、スキップも既読化もしない。"""
+    with patch("fetchers.rss_fetcher.html_to_text", return_value=""):
+        articles, mock_mark = _fetch_with(True, [dict(_HTML_ENTRY)])
+
+    assert [a.source_id for a in articles] == ["1"]
+    assert articles[0].content == _HTML_ENTRY["content"]
+    mock_mark.assert_not_called()
+
+
+def test_fetch_logs_html_strip_savings_when_enabled(caplog):
+    """strip_html=True のとき、テキスト化した件数と削減率をINFOログに出す。"""
+    entries = [dict(_HTML_ENTRY), dict(_HTML_ENTRY, id=2)]
+    with caplog.at_level("INFO", logger="fetchers.rss_fetcher"):
+        _fetch_with(True, entries)
+
+    assert "本文のHTMLをテキスト化しました: 2件" in caplog.text
+    assert "削減" in caplog.text
+
+
+def test_fetch_does_not_log_html_strip_savings_when_disabled(caplog):
+    """strip_html=False のときはテキスト化のINFOログを出さない。"""
+    with caplog.at_level("INFO", logger="fetchers.rss_fetcher"):
+        _fetch_with(False, [dict(_HTML_ENTRY)])
+
+    assert "テキスト化" not in caplog.text
+
+
+def test_fetch_dates_are_always_timezone_aware():
+    """代替日時が naive だと、正常な日時と比較した時点で TypeError になる。"""
+    entries = [
+        {"id": 1, "content": "a", "title": "ok", "published_at": "2024-01-01T09:00:00+09:00"},
+        {"id": 2, "content": "b", "title": "broken", "published_at": "not a date"},
+        {"id": 3, "content": "c", "title": "missing", "published_at": None},
+    ]
+
+    with patch("fetchers.rss_fetcher.config", _fake_config()):
+        fetcher = MinifluxFetcher(dry_run=False)
+        with patch("fetchers.rss_fetcher.httpx.get", return_value=_entries_response(entries)):
+            articles = fetcher.fetch()
+
+    assert [a.published_at.utcoffset().total_seconds() for a in articles] == [0, 0, 0]
+    assert articles[0].published_at.hour == 0

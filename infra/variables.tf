@@ -43,6 +43,12 @@ variable "llm_structured_output" {
   default     = false
 }
 
+variable "llm_session_header" {
+  description = "Header name for a per-run session ID some OpenAI-compatible providers require (e.g. OpenCode Zen's x-opencode-session). Empty string disables it."
+  type        = string
+  default     = ""
+}
+
 variable "llm_thinking" {
   description = "Whether llm_model is a reasoning model (gates disable_temperature_with_thinking)"
   type        = bool
@@ -65,6 +71,24 @@ variable "embedding_model" {
   description = "Embedding model ID"
   type        = string
   default     = "openai/text-embedding-3-small"
+}
+
+variable "embedding_dimension" {
+  description = <<-EOT
+    Output dimension of embedding_model. Used for the Firestore KNN index and for the
+    Viewer's sanity check on the query vector it receives.
+    Changing embedding_model requires changing this AND re-embedding every stored
+    articleSummaries.embedding — the index is built for a fixed dimension and vectors
+    from a different model are not comparable. See infra/DEPLOYMENT.md.
+  EOT
+  type        = number
+  default     = 1536
+
+  validation {
+    # Firestore のベクトルインデックスの上限。超えるとindex作成がAPIエラーで落ちる。
+    condition     = var.embedding_dimension > 0 && var.embedding_dimension <= 2048
+    error_message = "embedding_dimension は 1〜2048 の範囲で指定してください（Firestore のベクトルインデックスの上限）。"
+  }
 }
 
 variable "llm_temperature" {
@@ -133,6 +157,12 @@ variable "miniflux_fetch_limit" {
     condition     = var.miniflux_fetch_limit >= 1 && var.miniflux_fetch_limit <= 1000
     error_message = "miniflux_fetch_limit は 1〜1000 の範囲で指定してください（Miniflux の MaxEntryLimit）。"
   }
+}
+
+variable "miniflux_strip_html" {
+  description = "Miniflux 記事本文の HTML をテキスト化してから LLM に渡す。入力トークンが約8割減る。false で HTML のまま渡す（デバッグ・比較用）"
+  type        = bool
+  default     = true
 }
 
 variable "grouper_similarity_threshold" {

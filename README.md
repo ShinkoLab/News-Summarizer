@@ -118,6 +118,7 @@
 #### `fetchers/rss_fetcher.py` — RSS取得スクリプト
 
 - Miniflux API から**未読記事**を取得
+- 本文の HTML は既定で `fetchers/html_text.py` によりテキスト化（`miniflux.strip_html: false` で無効化）
 - 取得後、Miniflux 上で**既読にマーク**（差分管理はMiniflux側に委譲）
 - 記事を共通フォーマット（`Article` データクラス）に変換して返す
 
@@ -276,6 +277,8 @@ llm:
 miniflux:
   base_url: "http://your-miniflux-host"
   api_key: "your-miniflux-api-key"
+  # 本文の HTML をテキスト化してから LLM に渡す（既定 true。入力トークン約80%減）
+  # strip_html: true
 
 # POP3 メールサーバーの設定
 email:
@@ -508,6 +511,7 @@ Google Cloudでは同じデータを`batches`、`articleSummaries`、`processedE
 | 認証 | API Key（`X-Auth-Token` ヘッダー） |
 | 差分管理 | 処理後に `PUT /v1/entries` で既読にマーク |
 | 取得データ | タイトル、本文（HTML）、URL、公開日時、フィード名 |
+| 本文抽出 | HTML → テキスト変換は `fetchers/html_text.py`（標準ライブラリ `html.parser`）。`miniflux.strip_html`（既定 `true`）で切り替え可能。`false` で HTML のまま LLM に渡す |
 
 ### POP3 メール
 
@@ -516,7 +520,7 @@ Google Cloudでは同じデータを`batches`、`articleSummaries`、`processedE
 | プロトコル | POP3 over SSL（ポート 995） |
 | 差分管理 | `UIDL` でメッセージID取得 → FirestoreまたはSQLiteで管理 |
 | パース | `email` 標準ライブラリで MIME パース |
-| 本文抽出 | HTML → テキスト変換（`html2text` 等） |
+| 本文抽出 | HTML → テキスト変換（`fetchers/email_fetcher.py` の `strip_tags()` による正規表現でのタグ除去） |
 | 削除 | 既定は**しない**（サーバー上に保持）。`delete_after_processing: true` で保存成功分＋打ち切り分を削除 |
 
 ## AI処理仕様
@@ -744,6 +748,7 @@ News-Summarizer/
 │   ├── __init__.py
 │   ├── base.py               # 取得基底クラス
 │   ├── rss_fetcher.py        # Miniflux API からの RSS 記事取得
+│   ├── html_text.py          # HTML → テキスト変換（標準ライブラリ html.parser）
 │   └── email_fetcher.py      # POP3 メールマガジン取得
 ├── summarizer/                # AI処理モジュール
 │   ├── __init__.py

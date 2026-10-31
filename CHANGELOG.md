@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-10-19
+
+### Fixed
+
+- 処理対象の記事があるのに要約が1件も成功しなかった実行、または DB に1件も保存できなかった
+  実行を終了コード 1 で異常終了させる。従来は記事ごとのエラー分離により正常終了し、
+  API キー失効のような全件障害でも Cloud Run Job が「成功」扱いになっていた
+- 上記の全件失敗をメールの試行回数（`email.max_fetch_attempts`）に数えない。
+  障害が続くだけでメールが打ち切られるのを防ぐ
+
+## [2.6.0] - 2026-10-19
+
+### Added
+
+- `miniflux.strip_html`（既定 `true`、環境変数 `MINIFLUX_STRIP_HTML` /
+  Terraform 変数 `miniflux_strip_html`）で Miniflux 記事本文の HTML をテキスト化してから
+  LLM に渡す。実測で記事あたり入力トークンが約 5,200 → 約 980（約 81% 減）。
+  `false` で従来どおり HTML のまま渡す
+
+## [2.5.0] - 2026-09-20
+
+### Added
+
+- `scripts/backfill_embedding_vectors.py` — 保存済み `articleSummaries.embedding` を
+  素の配列から Firestore の `Vector` 型へ変換する一度きりのスクリプト。再 embedding は
+  行わないので embedding API のコストは発生しない。冪等（変換済みはスキップ）で、
+  `--dry-run` / `--limit` / `--start-after` を持つ
+- Firestore のベクトル（KNN）インデックス3本を Terraform に追加
+  （`embedding` 単体、`category` + `embedding`、`keywords` + `batch_id`）。
+  Viewer のセマンティック検索が使う。既存の
+  `google_firestore_field.article_summary_embedding`（自動の単一フィールド索引の除外）は
+  別物なので**そのまま残す**
+- Terraform 変数 `embedding_dimension`（既定 `1536`、1〜2048 の validation 付き）
+- Viewer の Cloud Run サービスに `EMBEDDING_BASE_URL` / `LLM_EMBEDDING_MODEL` /
+  `EMBEDDING_DIMENSION` / `EMBEDDING_API_KEY` を注入し、`news-embedding-api-key` への
+  `secretAccessor` を付与。Job と同じ Terraform 変数から注入するので、
+  モデル名の定義元は1か所のまま
+
+### Changed
+
+- **Firestore の `embedding` を `Vector` 型で保存するようになった。** Firestore の
+  ベクトル検索（`findNearest`）は `VectorValue` 型のフィールドしか対象にせず、
+  素の `array<double>` は**エラーも警告も出さずに結果から除外される**。
+  既存データは `scripts/backfill_embedding_vectors.py` で変換すること。
+  SQLite バックエンドは従来どおり JSON 文字列で影響なし
+- `estimate_document_size()` に `Vector` の分岐を追加。`Vector` は `list` ではなく
+  `collections.abc.Sequence` のサブクラスなので、分岐が無いと `str(value)` 経路へ落ち、
+  1536要素ぶんの repr を毎回組み立てたうえコミットの分割サイズが浮動小数点の
+  桁数次第でぶれる
+
+### Fixed
+
+- ベクトルインデックスが `terraform apply` のたびに destroy → create されていた問題。
+  Firestore はベクトルフィールドの**直前**に `__name__ ASCENDING` を自動挿入して返すため、
+  設定に書いていないと state と食い違い、差分が収束しない。適用のたびに索引が作り直され、
+  その間 `findNearest` が失敗して Viewer の検索がキーワード一致へ縮退する
+- バックフィルの進捗が出力されなかった問題。`print()` はパイプやファイルへ向けると
+  ブロックバッファリングされるため、本番規模（8451件・20分以上）では終わるまで1行も
+  出ず、動いているのか固まっているのか判別できなかった
+
+### Migration
+
+**このバージョンへ上げたら `scripts/backfill_embedding_vectors.py` を一度流すこと。**
+既存の `articleSummaries.embedding` は素の `array<double>` のままで、Firestore の
+ベクトル検索から**エラーも警告も出さずに除外される**。再 embedding はしないので
+embedding API のコストは発生しない。手順は `infra/DEPLOYMENT.md` を参照。
+
 ## [2.4.0] - 2026-08-13
 
 ### Added

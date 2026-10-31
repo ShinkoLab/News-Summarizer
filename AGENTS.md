@@ -4,21 +4,104 @@ This file provides guidance to coding agents (Claude Code, Codex, etc.) when wor
 
 ## Git Workflow
 
-Always create a branch before implementing any new features.
+### ブランチ戦略（`main` 一本化）
+
+| ブランチ | 役割 | 分岐元 | マージ先 |
+| --- | --- | --- | --- |
+| `main` | 本番リリース用。常にリリース可能な状態を保つ | - | - |
+| `feature/<name>` | 新機能の開発 | `main` | `main` |
+| `fix/<name>` | 不具合の修正 | `main` | `main` |
+| `docs/<name>` | ドキュメントのみの変更 | `main` | `main` |
+
+- 恒久ブランチは **`main` だけ**。`dev` は廃止した（2026-10 時点で `main` より 39 コミット
+  遅れ、`dev` 固有のコミットはなかった）。統合ブランチは挟まず、作業ブランチは必ず
+  最新の `main` から切って `main` へ PR を出す。
+- 新しい作業を始める前に必ずブランチを切る。`main` に直接コミット・push しない。必ず PR を通す。
+  GitHub のブランチ保護（ルールセット）で `main` への直接 push を禁止する
+  （**現状は未設定**。CI も未導入なので、導入したらその成功をマージ条件にする）。
+- ブランチ名は英小文字のケバブケースにする（例: `feature/strip-html-content`、
+  `fix/opencode-session-header`）。
 
 ```bash
-git checkout -b feature/<feature-name>
+git fetch origin
+git switch --no-track -c feature/<feature-name> origin/main   # worktree 内でも main を checkout せずに切れる
+git push -u origin HEAD                                        # 初回 push で upstream を作業ブランチ自身に設定
 ```
 
-コミットメッセージは必ず**日本語**で記載すること。
+### コミットメッセージ（Conventional Commits）
 
-**PRをマージしたら、そのブランチをリモート・ローカルとも必ず削除すること。** 消し忘れると
-マージ済みブランチが溜まり、どれが生きているのか分からなくなる。`dev` と `main` は
-恒久ブランチなので削除しない。
+[Conventional Commits](https://www.conventionalcommits.org/) に従い、**英語** で書く
+（2026-10 までの履歴は日本語。過去のコミットは書き換えない）。
+
+```
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+```
+
+- `type` は次のいずれか:
+  - `feat`: 新機能
+  - `fix`: 不具合の修正
+  - `docs`: ドキュメントのみの変更
+  - `style`: 動作に影響しない書式の変更
+  - `refactor`: 機能追加・修正を伴わないリファクタリング
+  - `perf`: パフォーマンス改善
+  - `test`: テストの追加・修正
+  - `build`: ビルドシステム・依存関係の変更（`pyproject.toml` / `uv.lock` / `Dockerfile`）
+  - `ci`: CI 設定の変更（`cloudbuild.yaml` など）
+  - `chore`: その他の雑務
+  - `revert`: コミットの取り消し
+- `scope` は任意。変更対象のモジュール名などを入れる（例: `pipeline`、`fetchers`、
+  `summarizer`、`grouper`、`digest`、`outputs`、`db`、`discord`、`config`、`infra`、`scripts`、`release`）。
+- `subject` は命令形・小文字始まり・末尾ピリオドなしで、50 文字程度に収める。
+- 破壊的変更（config キーの削除・改名、DB スキーマの非互換変更など）は `type!:` とするか、
+  footer に `BREAKING CHANGE:` を書く。
+- 1 コミットには 1 つの論理的な変更だけを含める。
+
+例:
+
+```
+feat(fetchers): strip html from miniflux entries before summarizing
+fix(pipeline): exit non-zero when no article was summarized
+docs: consolidate branch strategy into main only
+chore(release): v2.6.0
+```
+
+### PR 前のコードレビュー
+
+PR を作る**前に**コードレビューを回し、**重要度「中」以上の指摘が 0 件になってから** PR を出す。
+
+1. 変更をコミットした状態で `/code-review high` を実行する（Claude Code 以外のエージェントは
+   同等の観点 —— 正しさ・回帰・テスト不足 —— でセルフレビューする）
+2. 中以上の指摘を修正してコミットし、再度レビューする。0 件になるまで繰り返す
+3. 「低」の指摘は対応するか、見送る理由を PR 本文に書く
+4. PR 作成後に追加でコミットした場合も、その差分に同じ基準を適用する
+
+`uv run pytest` が通っていることも PR の前提とする。
+
+### リリース
+
+1. 機能 PR のブランチ上で `pyproject.toml` の `version` を上げ（`uv lock` で `uv.lock` も更新）、
+   `CHANGELOG.md` の `[Unreleased]` を新バージョンの節に移す（コミットは `chore(release): vX.Y.Z`）
+2. PR を `main` にマージしたら、そのマージコミットに `vX.Y.Z` タグを打って push する
+   （作業ブランチの HEAD ではなく `origin/main` を指定する）
+
+   ```bash
+   git fetch origin
+   git tag vX.Y.Z origin/main && git push origin vX.Y.Z
+   ```
+3. イメージはそのタグでビルドする（`infra/DEPLOYMENT.md` 参照）
+
+### マージ後のブランチ削除
+
+**PR をマージしたら、そのブランチをリモート・ローカルとも必ず削除すること。** 消し忘れると
+マージ済みブランチが溜まり、どれが生きているのか分からなくなる。`main` は恒久ブランチなので削除しない。
 
 ```bash
 gh pr merge <番号> --merge --delete-branch   # リモートはこれで消える
-git checkout main && git pull
+git switch main && git pull
 git branch -d <branch-name>                  # ローカルも消す
 ```
 
@@ -26,8 +109,8 @@ git branch -d <branch-name>                  # ローカルも消す
 
 ```bash
 git fetch -p
-git branch -r --merged origin/main | grep -vE 'origin/(main|dev)$'
-git branch   --merged main         | grep -vE '^\*|(main|dev)$'
+git branch -r --merged origin/main | grep -vE 'origin/HEAD|origin/main$'
+git branch   --merged main         | grep -vE '^\*|^[+ ] main$'   # `+` は別 worktree で checkout 中
 ```
 
 ## Development Commands
@@ -95,23 +178,35 @@ config source (see **Deployment** below). For the full design spec see `README.m
 
 ### Key modules
 
-- **`main.py`** — CLI entry point only; parses arguments into `RunOptions` and calls `run_pipeline()`
-- **`pipeline.py`** — Orchestrates the full pipeline; defines `RunOptions` (frozen dataclass), `run_pipeline()`, and internal step functions (`fetch_articles`, `summarize_all`, `group_pairs`, `build_digest`, `persist_and_publish`); error isolation is per-source and per-article. The whole run is wrapped in `db.execution_lock()`, and already-processed articles are skipped via `db.is_article_processed()` before summarization
-- **`config.py`** / **`config.yaml`** — Pydantic config layer; `config.yaml` is gitignored, use `config.yaml.example` as template. Every key can also be supplied via environment variables (see **Configuration**)
-- **`models.py`** — All data structures: `Article` (common fetch format, dataclass), plus Pydantic models for LLM structured outputs (`ArticleGroup`, `GroupingResult`, `ArticleSummary`, `CategoryDigest`, `TopicLabel`, `TopicNamingResult`, `DigestResult`)
+- **`main.py`** — CLI entry point; parses arguments into `RunOptions`, calls `run_pipeline()`, and turns `RunFailedError` into exit status 1
+- **`pipeline.py`** — Orchestrates the full pipeline; defines `RunOptions` (frozen dataclass), `run_pipeline()`, and internal step functions (`fetch_articles`, `summarize_all`, `group_pairs`, `build_digest`, `persist_and_publish`); error isolation is per-source and per-article. The whole run is wrapped in `db.execution_lock()` whenever it writes to the DB (a plain `--dry-run` takes no lock), and already-processed articles are skipped via `db.is_article_processed()` before summarization. If articles were
+  attempted but **not a single one** was summarized (e.g. an expired LLM API key), or summaries
+  exist but **not a single one** was saved while the run writes to the DB (e.g. a Firestore
+  outage), `run_pipeline()` raises `RunFailedError` and `main.py` exits with status 1 — per-article
+  error isolation would otherwise end the run normally and Cloud Run would record it as a success.
+  Such a total failure is environmental, so it does **not** count toward the email attempt limit
+  (otherwise an outage alone would exhaust `max_fetch_attempts` and give up on every message).
+  A partial failure (at least one summary saved) still exits 0
+- **`config.py`** / **`config.yaml`** — Pydantic config layer; `config.yaml` is gitignored, use `config.yaml.example` as template. Most keys can also be supplied via environment variables (see **Configuration**)
+- **`models.py`** — All data structures: `Article` (common fetch format, dataclass), `SaveResult` (what `save_batch()` actually persisted), plus Pydantic models for LLM structured outputs (`ArticleGroup`, `GroupingResult`, `ArticleSummary`, `CategoryDigest`, `TopicLabel`, `TopicNamingResult`, `DigestResult`)
 - **`logger.py`** — Logging setup (`setup_logging()` / `get_logger()`); outputs to stderr only, level controlled by `logging.level` in config
-- **`fetchers/`** — `MinifluxFetcher` (REST API) and `EmailFetcher` (POP3); both normalize to `Article`
+- **`urls.py`** — URL normalization for cross-feed dedup (`normalize_url()` / `url_key()`; see **Deduplication**)
+- **`fetchers/`** — `MinifluxFetcher` (REST API) and `EmailFetcher` (POP3), both subclasses of `BaseFetcher` (`base.py`); both normalize to `Article` with timezone-aware **UTC** datetimes (`to_utc()` in `base.py`) — mixing naive and aware values makes any later comparison raise `TypeError`
+  - `html_text.py` — stdlib `html.parser`-based HTML→text conversion (`html_to_text()`); used by `MinifluxFetcher` when `miniflux.strip_html` is on
 - **`summarizer/`** — LLM steps; structured output via Pydantic
   - `llm_client.py` — shared LLM call logic, retry handling, step config resolution; OpenAI-compatible and Vertex AI paths
   - `summarizer.py` — per-article summarization
   - `grouper.py` — topic grouping (LLM-based or embedding-based)
   - `embedder.py` — embedding retrieval (separate endpoint from the chat LLM)
   - `digest.py` — category digest generation
-- **`outputs/`** — `create_database()` returns `Database` (SQLite) or `FirestoreDatabase` depending on `database.backend`; both expose `save_batch()` / `is_article_processed()` / `is_email_processed()` / `execution_lock()`. Plus `DiscordOutput` (webhook embeds, description truncated at the 4096-char Discord limit)
-- **`scripts/`** — `migrate_sqlite_to_firestore.py` (one-shot data migration, supports `--dry-run`);
+- **`outputs/`** — `create_database()` returns `Database` (SQLite) or `FirestoreDatabase` depending on `database.backend`; both expose `save_batch()` / `is_article_processed()` / `is_url_processed()` / `is_email_processed()` / `mark_email_processed()` / `record_email_attempt()` / `execution_lock()`. Plus `DiscordOutput` (webhook embeds, description truncated at the 4096-char Discord limit)
+- **`scripts/`** — `migrate_sqlite_to_firestore.py` (one-shot data migration; `--database` / `--project` required, supports `--dry-run`);
+  `backfill_embedding_vectors.py` (one-shot conversion of `articleSummaries.embedding` from a plain
+  array to Firestore's `Vector` type — required before the Viewer's kNN search can see a document;
+  idempotent; `--project` required, plus `--dry-run` / `--limit` / `--start-after` / `--batch-size`);
   `skip_stale_backlog.py` (marks-as-read/deletes Miniflux/POP3 backlog older than a cutoff after an
   outage, so the pipeline doesn't have to grind through days of stale entries; dry-run by default,
-  `--execute` + confirmation prompt required to actually change anything — see its module docstring)
+  `--execute` + confirmation prompt (skippable with `--yes`) required to actually change anything — see its module docstring)
 - **`infra/`** — Terraform for the Google Cloud deployment; see `infra/README.md` and `infra/DEPLOYMENT.md`
 
 ### LLM integration
@@ -142,6 +237,10 @@ Additional `llm:` config fields (all optional):
 - `max_retries` — retries on JSON parse / API errors (default: `3`)
 - `structured_output` — global toggle for structured output (default: `true`); set `false` for providers that don't support it
 - `extra_body` — provider-specific extra parameters passed through to the API (e.g. Ollama `think: true` for thinking mode)
+- `session_header` — header name for a per-run session ID some providers require for optimization
+  (e.g. OpenCode Zen's `x-opencode-session`); when set, `get_client()` (`summarizer/llm_client.py`)
+  sends a UUID generated once per process under that header name. Unset by default, so nothing is
+  sent unless a provider actually asks for it — the header name lives in config, not hardcoded per vendor
 - `thinking` / `disable_temperature_with_thinking` — set `thinking: true` on a step to auto-exclude `temperature` when using thinking models
 - `gemma4_think` — prepend `<|think|>` to the system prompt for Gemma 4 thinking stabilization
 
@@ -172,7 +271,11 @@ the Viewer renders it under two headings.
   every run, `reconcile_email_attempts()` (`pipeline.py`) counts attempts in `email_attempts` /
   `emailAttempts` and gives up on a message once it reaches `email.max_fetch_attempts`
   (default `3`), marking it processed. Articles merely carried over by
-  `max_articles_per_run` are never counted — they were not attempted.
+  `max_articles_per_run` are never counted — they were not attempted. A message whose
+  **parsing** fails never becomes an `Article`, so `EmailFetcher.fetch()` isolates it (the rest
+  of the mailbox is still fetched), records it in `failed_uidls`, and `run_pipeline()` counts it
+  right after fetching — before the "no new articles" early return. A `RETR` failure is a
+  connection problem and still aborts the fetch without counting anything
   Setting `email.delete_after_processing: true` makes `delete_processed_emails()` (`pipeline.py`)
   remove messages from the mailbox after persistence, via `EmailFetcher.delete_messages()`. Only two
   kinds are deleted: those in `SaveResult.saved`, and the ones `reconcile_email_attempts()` just gave
@@ -224,11 +327,20 @@ act on what really landed in the database.
 
 `scripts/migrate_sqlite_to_firestore.py` moves existing data across.
 
+**Firestore writes `embedding` as `Vector`, not as a list.** Firestore's vector search
+(`findNearest`, used by the Viewer) only considers fields of type `VectorValue`; a plain
+`array<double>` is **silently excluded from results** — no error, no log. `_article_writes()`
+therefore wraps the value in `google.cloud.firestore_v1.vector.Vector`, and
+`estimate_document_size()` has an explicit `Vector` branch because `Vector` subclasses
+`collections.abc.Sequence` rather than `list`, and would otherwise fall through to the
+`str(value)` path and size commits by the length of a 1536-element repr. The SQLite backend
+is unaffected and still stores JSON.
+
 ## Deployment
 
 - **`Dockerfile`** — builds on a pinned `uv` image, installs with `uv sync --frozen --no-dev`,
   runs as `nobody`. It does a plain `COPY . .`, so anything not listed in `.dockerignore`
-  (which excludes `config.yaml`, `data`, `tests`, `infra`, `.git`, `.venv`, caches) is baked
+  (which excludes `config.yaml`, `.env*`, `data`, `tests`, `infra`, `.git`, `.venv`, local tool dirs, caches) is baked
   into the image
 - **`cloudbuild.yaml`** — Cloud Build config for the summarizer image
 - **`infra/`** — Terraform: Cloud Run Job, Cloud Scheduler, Firestore, Secret Manager, IAM.
@@ -280,8 +392,13 @@ overrides where it looks. This split is deliberate: ambient environment variable
 (`GOOGLE_CLOUD_PROJECT` is set by common `gcloud`/ADC tooling, for instance) must not
 silently override a config file the user pointed at.
 
-`_apply_environment_overrides()` covers **every** config key. The authoritative
-env-var → config-key mapping is the Cloud Run Job definition in `infra/main.tf`.
+`_apply_environment_overrides()` covers the keys the Cloud Run Job needs, **not every key**:
+`llm.extra_body`, `llm.gemma4_think`, `summarizer.digest_max_length`,
+`summarizer.category_max_retries`, `summarizer.steps.<step>.thinking`, most step `parameters`
+(only temperature / reasoning effort), and the `discord.*` embed tuning keys have no environment
+variable — on Cloud Run they stay at their defaults. Adding a key there means extending
+`_apply_environment_overrides()` *and* `infra/main.tf`. The authoritative env-var → config-key
+mapping is the Cloud Run Job definition in `infra/main.tf`.
 
 > Note: with no `config.yaml` present, the env-only defaults target Vertex AI. Local runs should
 > always have a `config.yaml`.
@@ -292,9 +409,10 @@ Notable optional keys (see `config.yaml.example` for full comments):
 - `summarizer.individual_max_length` / `digest_max_length` — character limits for per-article summaries and the digest. `digest_max_length` (default `3000`) is split across categories by `_allocate_chars()` (`summarizer/digest.py`): the `MIN_CHARS_PER_CATEGORY` floor of 120 is reserved for every category first, then the remainder is distributed **in proportion to article count**, so the total never exceeds the limit
 - `summarizer.max_articles_per_run` — cap on articles processed in one run (default: `100`, max `200`); the remainder is carried over, with the quota allocated round-robin across sources by `select_articles()` (`pipeline.py`). **Paired with `miniflux.fetch_limit` — see below**
 - `miniflux.fetch_limit` — how many unread entries to request from Miniflux in one run (default: `100`, max `1000` = Miniflux's own `MaxEntryLimit`). **These two are a pair, and the smaller one wins.** Miniflux caps `/v1/entries` at 100 when `limit` is omitted, so raising `max_articles_per_run` alone changes nothing — the cap never fires because the input never reaches it. Set `fetch_limit` above `max_articles_per_run` (roughly +25%), since dedup drops ~10% of every fetch. The fetcher also pins `order=published_at&direction=asc` so a backlog drains oldest-first
+- `miniflux.strip_html` — convert each Miniflux entry's HTML body to plain text with `fetchers.html_text.html_to_text()` before it becomes `Article.content` (default: `true`; env `MINIFLUX_STRIP_HTML`; Terraform `miniflux_strip_html`). Miniflux delivers full HTML, and tags/attributes make up most of the LLM input tokens (measured ≈5,200 tokens/article as HTML vs ≈980 as text, about 80% less; input is ~83% of the monthly LLM bill). Markup is not needed for summarization. Set `false` to pass raw HTML through as before (debugging / comparison, or when the summary should depend on HTML structure). Email bodies are already tag-stripped, so this only affects Miniflux
 - `summarizer.steps.<step>.thinking` — per-step thinking toggle
 - `email.max_fetch_attempts` — give up on a POP3 message after this many runs fetch it without persisting it (default: `3`); prevents a permanently failing message from being fully re-downloaded on every run
 - `discord.post_individual_articles` / `embed_color` / `footer_text` — Discord embed tuning. `post_individual_articles` defaults to **`false`**; enabling it re-posts every article as its own embed, duplicating what the category digest already covers
 - `llm.provider` / `project_id` / `location` — provider selection and Vertex AI target
 - `llm.embedding_model` / `embedding_base_url` / `embedding_api_key` — embedding endpoint, independent of the chat LLM
-- `llm.max_retries` / `structured_output` / `extra_body` — LLM behavior tuning
+- `llm.max_retries` / `structured_output` / `extra_body` / `session_header` — LLM behavior tuning

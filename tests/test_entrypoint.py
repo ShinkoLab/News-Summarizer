@@ -500,3 +500,29 @@ def test_dry_run_bypasses_the_run_lock(sandbox):
     finally:
         holder.kill()
         holder.wait()
+
+
+def test_dry_run_with_forced_output_still_takes_the_lock(sandbox):
+    tmp_path, script, log = sandbox
+    holder = _hold_lock(tmp_path)
+    try:
+        result = subprocess.run(
+            ["sh", str(script), "run-once", "--dry-run", "--output", "db"],
+            env=_env(tmp_path, NEWS_SUMMARIZER_LOCK_WAIT_SECONDS="2"),
+            timeout=15,
+        )
+        assert result.returncode == 75
+        assert _main_calls(log) == []
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_email_only_fallback_runs_with_source_email(sandbox):
+    """MINIFLUX_BASE_URL 未設定の `all` + メール設定済みは、RSS を切ってメールだけ動かす。"""
+    tmp_path, script, log = sandbox
+    env = _env(tmp_path, MINIFLUX_BUNDLED="", EMAIL_HOST="pop.example.com")
+    env.pop("MINIFLUX_API_KEY")
+    env["MINIFLUX_API_KEY"] = "k"
+    subprocess.run(["sh", str(script), "run-once"], env=env, timeout=20)
+    assert _main_calls(log) == ["main.py --source email"]

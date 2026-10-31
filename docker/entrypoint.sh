@@ -161,6 +161,7 @@ provision_api_key() {
     fi
     # base_url なしの api_key だけを main.py に見せると config.py が落ちる。メール側だけ動かす。
     unset MINIFLUX_API_KEY
+    SOURCE=email  # RSS を有効のままにすると Miniflux 設定なしで毎回エラーになる
     return 0
   fi
   if [ -n "${MINIFLUX_API_KEY:-}" ]; then
@@ -216,15 +217,20 @@ run_summarizer() {
     set -- main.py --source "$SOURCE" "$@"
   fi
   # --dry-run / --help は DB にも Miniflux にも書かない（pipeline の plain --dry-run はロックを
-  # 取らない）ので、実行中の本番ジョブを待たずにすぐ走らせる。
+  # 取らない）ので、実行中の本番ジョブを待たずにすぐ走らせる。ただし --output で出力先を
+  # 強制している場合（--dry-run --output db 等）は実際に書き込むのでロックを取る。
+  forces_output=0
+  bypass=0
   for arg in "$@"; do
     case "$arg" in
-      --dry-run|-h|--help)
-        run_bg "$PYTHON" "$@"
-        return
-        ;;
+      --output|--output=*) forces_output=1 ;;
+      --dry-run|-h|--help) bypass=1 ;;
     esac
   done
+  if [ "$bypass" -eq 1 ] && [ "$forces_output" -eq 0 ]; then
+    run_bg "$PYTHON" "$@"
+    return
+  fi
   run_bg "$LOCK_RUNNER" "$SCRIPT_DIR/with_lock.py" "$LOCK_FILE" "$lock_mode" "$lock_wait" -- "$PYTHON" "$@"
 }
 

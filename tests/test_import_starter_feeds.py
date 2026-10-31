@@ -21,8 +21,11 @@ spec.loader.exec_module(helper)
 class FakeMiniflux:
     def __init__(self, feeds):
         self.feeds = feeds
-        # 取り込み直後に全フィードが取得済みになるよう、未来の時刻を返す（ナノ秒つき）
-        self.checked_at = "2999-01-01T00:00:00.123456789Z"
+        # Miniflux は取り込み時に checked_at を「いま」にする。以後の GET で進んで見えるよう、
+        # 呼び出しごとに値を変える（refresh 後に取得された状態を模す）。
+        self.checked_at = "2026-01-01T00:00:00Z"
+        self.get_count = 0
+        self.advance_after = 2  # 取り込み前の確認(1) + 取り込み直後の基準取得(2) の後に進む
         self.requests = []
         outer = self
 
@@ -43,6 +46,10 @@ class FakeMiniflux:
                 body = self.rfile.read(length) if length else b""
                 outer.requests.append((self.command, self.path, self.headers.get("X-Auth-Token"), body))
                 if self.path == "/v1/feeds":
+                    outer.get_count += 1
+                    if outer.feeds and outer.advance_after and outer.get_count > outer.advance_after:
+                        for f in outer.feeds:
+                            f["checked_at"] = "2026-01-01T00:05:00Z"
                     self._reply(outer.feeds)
                 elif self.path == "/v1/import":
                     outer.feeds = [
@@ -122,10 +129,10 @@ def test_waits_until_every_feed_was_checked(miniflux, tmp_path, monkeypatch):
 
     def fake(method, url, token, body=None, content_type="application/json"):
         result = original(method, url, token, body, content_type)
-        if method == "GET" and url.endswith("/v1/feeds") and server.feeds:
+        if method == "GET" and url.endswith("/v1/feeds") and server.feeds and server.get_count > 2:
             polls["n"] += 1
-            if polls["n"] < 3:  # 取り込み直後の確認 + 最初の待機は2つ目が未取得
-                return [dict(server.feeds[0]), {"id": 2, "checked_at": "0001-01-01T00:00:00Z"}]
+            if polls["n"] < 3:  # 1つ目だけ進み、2つ目は未取得のまま
+                return [dict(result[0]), {**result[1], "checked_at": "2026-01-01T00:00:00Z"}]
         return result
 
     monkeypatch.setattr(helper, "_request", fake)
@@ -136,11 +143,14 @@ def test_waits_until_every_feed_was_checked(miniflux, tmp_path, monkeypatch):
 
 def test_returns_false_when_feeds_are_never_checked(miniflux, tmp_path):
     server = miniflux([])
-    server.checked_at = "0001-01-01T00:00:00Z"
+    server.advance_after = 0  # checked_at が進まない
     assert helper.import_starter_feeds(server.url, "tok", OPML, tmp_path / "m", wait_seconds=1) is False
 
 
 def test_feed_with_parsing_error_counts_as_checked():
-    since = helper.datetime.now(helper.timezone.utc)
-    feeds = [{"checked_at": "0001-01-01T00:00:00Z", "parsing_error_count": 2}]
-    assert helper._all_checked(feeds, since) is True
+    feeds = [{"id": 1, "checked_at": "same", "parsing_error_count": 2}]
+    assert helper._all_checked(feeds, {1: "same"}) is True
+
+
+def test_unchanged_checked_at_is_not_checked():
+    assert helper._all_checked([{"id": 1, "checked_at": "same"}], {1: "same"}) is False

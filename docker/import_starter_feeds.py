@@ -16,10 +16,8 @@ from __future__ import annotations
 import json
 import os
 import sys
-import re
 import time
 import urllib.request
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # 取り込み直後の最初の取得を待つ上限（秒）。Miniflux はバックグラウンドでフィードを取得するため、
@@ -46,27 +44,18 @@ def _request(method: str, url: str, token: str, body: bytes | None = None, conte
         return None
 
 
-def _parse_time(value) -> datetime | None:
-    """Miniflux の ISO 8601 時刻（ナノ秒つき・Z/オフセットつき）を aware な datetime にする。"""
-    if not isinstance(value, str):
-        return None
-    value = re.sub(r"(\.\d{6})\d+", r"\1", value.replace("Z", "+00:00"))
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+def _all_checked(feeds, baseline: dict) -> bool:
+    """取り込んだ全フィードが取得された（checked_at が取り込み直後から進んだ、または取得エラーが付いた）か。
 
-
-def _all_checked(feeds, since: datetime) -> bool:
-    """取り込んだ全フィードが一度取得された（または取得エラーが付いた）か。"""
+    Miniflux は取り込み時に checked_at を「いま」にしてしまう（まだ取得していない）ので、
+    時刻の絶対値ではなく、取り込み直後の値からの変化で判定する。
+    """
     if not isinstance(feeds, list) or not feeds:
         return False
     for feed in feeds:
         if not isinstance(feed, dict):
             return False
-        checked = _parse_time(feed.get("checked_at"))
-        if (checked is None or checked < since) and not feed.get("parsing_error_count"):
+        if feed.get("checked_at") == baseline.get(feed.get("id")) and not feed.get("parsing_error_count"):
             return False
     return True
 
@@ -91,11 +80,10 @@ def import_starter_feeds(base_url: str, token: str, opml_path: Path, marker: Pat
         _touch(marker)
         return True
 
-    # サーバーとの時計のずれに備えて少し巻き戻す。
-    started = datetime.now(timezone.utc) - timedelta(seconds=5)
     _request("POST", f"{base_url}/v1/import", token, opml_path.read_bytes(), "application/xml")
     _touch(marker)
     imported = _request("GET", f"{base_url}/v1/feeds", token)
+    baseline = {f.get("id"): f.get("checked_at") for f in imported} if isinstance(imported, list) else {}
     count = len(imported) if isinstance(imported, list) else "?"
     print(f"[starter-feeds] スターターフィードを {count} 件取り込みました。Miniflux の画面で自由に追加・削除できます", file=sys.stderr)
 
@@ -106,11 +94,11 @@ def import_starter_feeds(base_url: str, token: str, opml_path: Path, marker: Pat
         print(f"[starter-feeds] フィードの更新依頼に失敗しました（次の自動更新を待ちます）: {exc}", file=sys.stderr)
         return False
     # 最速の1フィード分だけで main.py が走らないよう、取り込んだ全フィードが一度
-    # 取得される（checked_at が取り込み時刻より後、または取得エラー）まで待つ。
+    # 取得される（checked_at が取り込み直後から進む、または取得エラー）まで待つ。
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
         current = _request("GET", f"{base_url}/v1/feeds", token)
-        if _all_checked(current, started):
+        if _all_checked(current, baseline):
             print(f"[starter-feeds] 全 {len(current)} フィードの最初の取得が済みました", file=sys.stderr)
             return True
         time.sleep(3)

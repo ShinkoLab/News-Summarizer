@@ -92,7 +92,7 @@ PR を作る**前に**コードレビューを回し、**重要度「中」以�
    git fetch origin
    git tag vX.Y.Z origin/main && git push origin vX.Y.Z
    ```
-3. Cloud Run 用イメージはそのタグでビルドする（`infra/DEPLOYMENT.md` 参照）。あわせてタグの push で
+3. Cloud Run 用イメージはそのタグでビルドする（`infra/DEPLOYMENT.md` 参照）。あわせて安定版タグ（`vX.Y.Z`）の push で
    GitHub Actions（`.github/workflows/publish-image.yml`）が、gitleaks（全履歴）・Trivy・禁止ファイル検査を
    通過した場合だけ `ghcr.io/shinkolab/news-summarizer` へ multi-arch イメージを公開する（Cloud Build の流れとは別の配布経路）
 

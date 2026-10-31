@@ -753,6 +753,10 @@ docker run --rm -v news-data:/data \
   Compose が URL から直接ビルドする（clone は不要）。手元の News-Viewer を開発しているときは
   `.env` に `NEWS_VIEWER_CONTEXT=../News-Viewer` を設定して差し替える。別の版を pull したいときは
   `NEWS_SUMMARIZER_IMAGE` / `NEWS_VIEWER_IMAGE` で指定する
+- `--build` したイメージは公開イメージと同じ名前（例: `news-summarizer:2.7.0`）で手元に残り、以後の
+  `docker compose up -d` もそれを使い続ける。公開イメージに戻すときは `docker compose pull` する
+- pull に失敗した（オフライン・GHCR の障害など）ときは、Compose がソースからのビルドに切り替える
+  （数分かかる）
 - Viewer: http://localhost:3080、Miniflux（同梱時）: http://localhost:8080
 - 同梱 Miniflux のイメージは `2.3.4` に固定している（`MINIFLUX_IMAGE` で変更可）。すでに新しい版で作った Miniflux の volume を使い回す場合は、同じ版を `MINIFLUX_IMAGE` に指定する（DB スキーマを戻せないため）
 - LLM は Compose に含まれない。ホスト上の Ollama / llama-swap か、クラウドの OpenAI 互換

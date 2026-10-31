@@ -86,7 +86,7 @@ PR を作る**前に**コードレビューを回し、**重要度「中」以�
 1. 機能 PR のブランチ上で `pyproject.toml` の `version` を上げ（`uv lock` で `uv.lock` も更新）、
    `CHANGELOG.md` の `[Unreleased]` を新バージョンの節に移す（コミットは `chore(release): vX.Y.Z`）。
    `docker-compose.yml` の `summarizer` / `summarizer-once` の既定イメージ
-   （`ghcr.io/shinkolab/news-summarizer:X.Y.Z`）も同じ版に上げる。News-Viewer を新しくリリースしたら
+   （`ghcr.io/shinkolab/news-summarizer:X.Y.Z`）と、同じ版を書いている README・`.env.example` の例も上げる。News-Viewer を新しくリリースしたら
    `web` の `image` と `build.context` の `#vX.Y.Z` もそろえて上げる
 2. PR を `main` にマージしたら、そのマージコミットに `vX.Y.Z` タグを打って push する
    （作業ブランチの HEAD ではなく `origin/main` を指定する）

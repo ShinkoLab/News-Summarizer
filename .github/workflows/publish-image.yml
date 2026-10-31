@@ -82,6 +82,11 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME is not on main; refusing to publish"
             exit 1
           fi
+      # スキャン用ビルドと digest push 用ビルドを同一イメージにするため、タイムスタンプを
+      # コミット時刻に固定する（SOURCE_DATE_EPOCH + rewrite-timestamp=true）。どちらか一方だけでは
+      # config の created / レイヤーの mtime がビルドごとに変わり、照合ステップで不一致になる。
+      - name: Pin build timestamps to the commit time
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
       - name: Build image for scanning
         id: build
@@ -89,8 +94,7 @@ jobs:
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          load: true
-          push: false
+          outputs: type=docker,rewrite-timestamp=true
           provenance: false
           sbom: false
           tags: scan-target:ci
@@ -154,6 +158,35 @@ jobs:
           echo "scanned image id:         $(docker inspect --format '{{.Id}}' scan-target:ci)"
           echo "scanned config digest:    $(jq -r '."containerimage.config.digest" // "n/a"' <<< "$BUILD_META")"
           echo "scanned manifest digest:  $(jq -r '."containerimage.digest" // "n/a"' <<< "$BUILD_META")"
+      # PR でもリリース時の「作り直しても同じイメージか」を確かめる（タグ push 時の照合と同じ条件）。
+      - name: Rebuild for reproducibility check
+        id: rebuild
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,push=false,rewrite-timestamp=true
+          provenance: false
+          sbom: false
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=News Summarizer: LLM-based news summarization pipeline (Cloud Run Job image)
+            org.opencontainers.image.licenses=ISC
+          cache-from: type=gha,scope=${{ matrix.arch }}
+      - name: Require a reproducible build
+        env:
+          BUILD_META: ${{ steps.build.outputs.metadata }}
+          REBUILD_META: ${{ steps.rebuild.outputs.metadata }}
+        run: |
+          set -euo pipefail
+          a=$(jq -r '."containerimage.config.digest" // ""' <<< "$BUILD_META")
+          b=$(jq -r '."containerimage.config.digest" // ""' <<< "$REBUILD_META")
+          echo "scan build config: $a"
+          echo "rebuild config:    $b"
+          if [ -z "$a" ] || [ "$a" != "$b" ]; then
+            echo "::error::image is not reproducible; the digest push would not match the scanned image"
+            exit 1
+          fi
       # ---- ここから先は検査が全て通った場合のタグ push 時だけ ----
       - name: Log in to GHCR
         if: env.IS_RELEASE == 'true'
@@ -176,7 +209,7 @@ jobs:
             org.opencontainers.image.description=News Summarizer: LLM-based news summarization pipeline (Cloud Run Job image)
             org.opencontainers.image.licenses=ISC
           cache-from: type=gha,scope=${{ matrix.arch }}
-          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true
       - name: Verify the pushed image is the scanned image
         if: env.IS_RELEASE == 'true'
         env:

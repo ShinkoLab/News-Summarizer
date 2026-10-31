@@ -156,6 +156,62 @@ def _run_with_patches(
 
 
 # ---------------------------------------------------------------------------
+# Optional email under `all`, and accurate Discord logging
+# ---------------------------------------------------------------------------
+
+class TestOptionalEmailAndDiscordLog:
+    def test_all_skips_unconfigured_email_without_error(self, minimal_config, caplog):
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="pipeline"):
+            with (
+                patch("pipeline.MinifluxFetcher") as MockRss,
+                patch("pipeline.EmailFetcher") as MockEmail,
+                patch("pipeline.create_database"),
+                patch("pipeline.DiscordOutput"),
+            ):
+                MockRss.return_value.fetch.return_value = []
+                run_pipeline(minimal_config, RunOptions(dry_run=True))
+
+        MockEmail.assert_not_called()
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+    def test_explicit_email_source_without_config_is_still_an_error(self, minimal_config, caplog):
+        import logging
+
+        with caplog.at_level(logging.ERROR, logger="pipeline"):
+            with (
+                patch("pipeline.MinifluxFetcher"),
+                patch("pipeline.EmailFetcher", side_effect=ValueError("no email")) as MockEmail,
+                patch("pipeline.create_database"),
+                patch("pipeline.DiscordOutput"),
+            ):
+                run_pipeline(minimal_config, RunOptions(dry_run=True, sources=frozenset({"email"})))
+
+        MockEmail.assert_called_once()
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+    @pytest.mark.parametrize("webhook, expected, unexpected", [
+        (None, "スキップ", "完了"),
+        ("https://discord.example/hook", "完了", "スキップ"),
+    ])
+    def test_discord_completion_log_matches_what_happened(
+        self, minimal_config, caplog, webhook, expected, unexpected
+    ):
+        import logging
+
+        discord = MagicMock()
+        discord.webhook_url = webhook
+        with caplog.at_level(logging.INFO, logger="pipeline"):
+            _run_with_patches(
+                minimal_config, RunOptions(dry_run=False), [_make_article("1")], discord_mock=discord
+            )
+        text = "\n".join(r.getMessage() for r in caplog.records if "Discord" in r.getMessage())
+        assert expected in text
+        assert unexpected not in text
+
+
+# ---------------------------------------------------------------------------
 # Empty article list returns early
 # ---------------------------------------------------------------------------
 
@@ -214,6 +270,7 @@ class TestTotalFailure:
 
     def test_all_summaries_failing_records_no_email_attempt(self, minimal_config):
         """全件失敗は環境側の障害。メールの試行回数を消費させない。"""
+        minimal_config.email = EmailConfig(host="pop.example.com", username="u", password="p")
         db_instance = _make_db(saved_source_ids=[])
 
         self._run_all_failing(
@@ -744,6 +801,7 @@ class TestEmailAttemptReconciliation:
     # 全件失敗は試行回数に数えない（TestTotalFailure）ため、ここでは別の記事を1件
     # 保存させて「そのメールだけが失敗した」部分失敗を作る。
     def test_unsaved_email_records_an_attempt(self, minimal_config):
+        minimal_config.email = EmailConfig(host="pop.example.com", username="u", password="p")
         articles = [
             _make_article(source_id="mail-ok", source_type="email"),
             _make_article(source_id="mail-1", source_type="email"),
@@ -757,6 +815,7 @@ class TestEmailAttemptReconciliation:
 
     def test_unparsable_email_records_an_attempt_even_with_no_articles(self, minimal_config):
         """解析に失敗したメールは Article にならない。新着なしの早期returnでも数える。"""
+        minimal_config.email = EmailConfig(host="pop.example.com", username="u", password="p")
         db_instance = _make_db()
 
         _run_with_patches(
@@ -865,6 +924,7 @@ class TestEmailAttemptReconciliation:
 
     def test_carried_over_email_records_no_attempt(self, minimal_config):
         """繰り越された（要約すら試みていない）メールでリトライ枠を消費しない。"""
+        minimal_config.email = EmailConfig(host="pop.example.com", username="u", password="p")
         minimal_config.summarizer.max_articles_per_run = 2
         articles = [
             _make_article(source_id="mail-ok", source_type="email"),

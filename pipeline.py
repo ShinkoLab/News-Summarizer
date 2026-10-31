@@ -91,7 +91,7 @@ class FetchResult:
     email_fetcher: EmailFetcher | None
 
 
-def fetch_articles(options: RunOptions, db) -> FetchResult:
+def fetch_articles(options: RunOptions, db, email_configured: bool = True) -> FetchResult:
     """Fetch articles from enabled sources with per-source error isolation."""
     articles: list[Article] = []
     rss_fetcher: MinifluxFetcher | None = None
@@ -105,7 +105,12 @@ def fetch_articles(options: RunOptions, db) -> FetchResult:
         except Exception as e:
             logger.error("RSSの取得中にエラーが発生しました: %s", e, exc_info=True)
 
-    if options.run_email:
+    if options.run_email and not email_configured and "email" not in options.sources:
+        # `all` はメールを任意扱いにする。未設定のたびに ERROR とスタックトレースを
+        # 出すと、RSS だけで使う構成（docker compose の既定）のログが毎回荒れる。
+        # `--source email` と明示したのに未設定なら、従来どおりエラーにする。
+        logger.info("Email（POP3）は未設定のためスキップします。")
+    elif options.run_email:
         try:
             logger.info("Email（POP3）から記事を取得中...")
             email_fetcher = EmailFetcher(db, dry_run=options.dry_run)
@@ -446,7 +451,12 @@ def persist_and_publish(
     if options.run_discord:
         discord_out = DiscordOutput()
         discord_out.post(digest, only_summaries)
-        logger.info("Discordへの送信が完了しました。")
+        # webhook 未設定なら post() は何も送らずに戻る（警告は post() 側で出力済み）。
+        # 送っていないのに「完了」とは記録しない。
+        if discord_out.webhook_url:
+            logger.info("Discordへの送信が完了しました。")
+        else:
+            logger.info("Discordへの送信はスキップしました（webhook URL 未設定）。")
     else:
         logger.info("[Dry-Run] Discordへの送信をスキップしました。")
         print("\n=== ダイジェスト結果 ===")
@@ -474,7 +484,7 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
     lock = db.execution_lock() if options.run_db else nullcontext()
 
     with lock:
-        fetched = fetch_articles(options, db)
+        fetched = fetch_articles(options, db, email_configured=config.email is not None)
         articles = fetched.articles
         rss_fetcher = fetched.rss_fetcher
 

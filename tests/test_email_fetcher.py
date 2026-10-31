@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from unittest.mock import MagicMock, patch
 
 from fetchers.email_fetcher import EmailFetcher
@@ -115,3 +116,69 @@ def test_fetch_quits_session_on_error():
 
     assert articles == []
     server.quit.assert_called_once()
+    # RETRの失敗は接続の問題。数えると一時的な障害だけでメールが打ち切られる
+    assert fetcher.failed_uidls == set()
+
+
+def _raw_message(subject: str, date: str | None) -> list[bytes]:
+    headers = [f"Subject: {subject}"]
+    if date is not None:
+        headers.append(f"Date: {date}")
+    return [h.encode() for h in headers] + [b"", b"body"]
+
+
+def _fetch_with_messages(messages: dict[str, list[bytes]]):
+    fetcher = _make_fetcher()
+    server = _fake_server({uidl: i + 1 for i, uidl in enumerate(messages)})
+    bodies = list(messages.values())
+    server.retr.side_effect = lambda num: (b"+OK", bodies[num - 1], 0)
+    fetcher.db.is_email_processed.return_value = False
+
+    with patch("fetchers.email_fetcher.poplib.POP3_SSL", return_value=server):
+        articles = fetcher.fetch()
+    return fetcher, articles
+
+
+def test_fetch_invalid_date_falls_back_and_keeps_going():
+    """不正なDateヘッダー1通で後続のメールを取り逃さない。"""
+    fetcher, articles = _fetch_with_messages({
+        "uid-a": _raw_message("broken", "not a date"),
+        "uid-b": _raw_message("ok", "Mon, 05 Jan 2026 09:00:00 +0900"),
+    })
+
+    assert [a.source_id for a in articles] == ["uid-a", "uid-b"]
+    assert articles[0].published_at.tzinfo is not None
+    assert fetcher.failed_uidls == set()
+
+
+def test_fetch_normalizes_dates_to_utc():
+    """-0000 は naive で返るが、UTCとして扱いタイムゾーン付きにそろえる。"""
+    _, articles = _fetch_with_messages({
+        "uid-a": _raw_message("jst", "Mon, 05 Jan 2026 09:00:00 +0900"),
+        "uid-b": _raw_message("unknown", "Mon, 05 Jan 2026 00:00:00 -0000"),
+    })
+
+    assert [a.published_at.utcoffset().total_seconds() for a in articles] == [0, 0]
+    assert articles[0].published_at == articles[1].published_at
+    assert articles[1].published_at.tzinfo is UTC
+
+
+def test_fetch_isolates_a_message_that_fails_to_parse():
+    """解析で落ちた1通は failed_uidls に記録し、残りは取得を続ける。"""
+    fetcher = _make_fetcher()
+    server = _fake_server({"uid-a": 1, "uid-b": 2})
+    server.retr.return_value = (b"+OK", _raw_message("ok", None), 0)
+    fetcher.db.is_email_processed.return_value = False
+    original = fetcher._parse_message
+
+    def parse(uidl, lines):
+        if uidl == "uid-a":
+            raise ValueError("malformed")
+        return original(uidl, lines)
+
+    with patch("fetchers.email_fetcher.poplib.POP3_SSL", return_value=server), \
+        patch.object(fetcher, "_parse_message", side_effect=parse):
+        articles = fetcher.fetch()
+
+    assert [a.source_id for a in articles] == ["uid-b"]
+    assert fetcher.failed_uidls == {"uid-a"}

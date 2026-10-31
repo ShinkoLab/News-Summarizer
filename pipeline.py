@@ -240,7 +240,10 @@ def unify_group_categories(
         if len(candidates) == 1:
             winner = candidates.pop()
         else:
-            oldest = min(indices, key=lambda i: (pairs[i][0].published_at, i))
+            # 最古の記事は同票のカテゴリの中から選ぶ。全記事から選ぶと、票の少ない
+            # カテゴリの記事が最古だったときにそのカテゴリが勝ってしまう。
+            tied = [i for i in indices if pairs[i][1].category in candidates]
+            oldest = min(tied, key=lambda i: (pairs[i][0].published_at, i))
             winner = pairs[oldest][1].category
 
         for i in indices:
@@ -376,20 +379,20 @@ def reconcile_email_attempts(
             if db.is_email_processed(uidl):
                 continue
             attempts = db.record_email_attempt(uidl)
+            # 打ち切りの書き込みも同じ try に入れる。ここで例外が漏れると、取得直後に
+            # 呼ぶ経路では RSS を含む実行全体が要約前に止まる。失敗しても次回また数える。
+            if attempts >= max_attempts:
+                db.mark_email_processed(uidl)
+                given_up.add(uidl)
+                logger.warning(
+                    "メールの取得試行が%d回に達したため、処理済みとして打ち切ります "
+                    "(uidl: %s)",
+                    attempts,
+                    uidl,
+                )
         except Exception as e:
             logger.error(
                 "メールの試行回数の記録に失敗しました (uidl: %s): %s", uidl, e, exc_info=True
-            )
-            continue
-
-        if attempts >= max_attempts:
-            db.mark_email_processed(uidl)
-            given_up.add(uidl)
-            logger.warning(
-                "メールの取得試行が%d回に達したため、処理済みとして打ち切ります "
-                "(uidl: %s)",
-                attempts,
-                uidl,
             )
 
     return given_up
@@ -474,8 +477,24 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
         fetched = fetch_articles(options, db)
         articles = fetched.articles
         rss_fetcher = fetched.rss_fetcher
+
+        # 解析に失敗したメールは Article にならず、後段の試行回数管理に乗らない。
+        # 早期returnより前に数えておかないと、毎回フルRETRされ続ける。
+        # 打ち切った分の削除は、POP3セッションを増やさないよう後段の削除にまとめる
+        # （早期returnする場合だけその場で削除する）。
+        unparsable_given_up: set[str] = set()
+        if fetched.email_fetcher is not None and fetched.email_fetcher.failed_uidls:
+            unparsable_given_up = reconcile_email_attempts(
+                db,
+                fetched.email_fetcher.failed_uidls,
+                set(),
+                options,
+                config.email.max_fetch_attempts if config.email else 3,
+            )
+
         if not articles:
             logger.info("新規記事はありませんでした。処理を終了します。")
+            delete_processed_emails(fetched.email_fetcher, unparsable_given_up)
             return
 
         dedup = filter_new_articles(articles, db)
@@ -493,6 +512,7 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
             logger.info("同一URLの重複記事を%d件除外しました。", dedup.duplicate_urls)
         if not articles:
             logger.info("未処理の記事はありませんでした。処理を終了します。")
+            delete_processed_emails(fetched.email_fetcher, unparsable_given_up)
             return
 
         max_articles = config.summarizer.max_articles_per_run
@@ -539,7 +559,7 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
             # 保存できたメールと、試行上限で打ち切ったメール（＝二度と取得しない）だけを
             # 削除する。失敗して次回に回すメールはサーバに残す。
             delete_processed_emails(
-                fetched.email_fetcher, saved_uidls | given_up_uidls
+                fetched.email_fetcher, saved_uidls | given_up_uidls | unparsable_given_up
             )
 
         # 要約できなかった場合は _process() 内で送出済み。ここに来るのは保存の全件失敗。

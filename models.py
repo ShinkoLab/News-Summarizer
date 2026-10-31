@@ -74,4 +74,4 @@ class DigestResult(BaseModel):
     overview: str                    # 全体概要（2〜3文）
     categories: list[CategoryDigest] # カテゴリ別ダイジェスト
     total_articles: int              # 総記事数
-    generated_at: datetime = Field(default_factory=datetime.now)  # 生成日時
+    generated_at: datetime = Field(default_factory=datetime.now)  # 生成日時（表示用のローカル時刻）。記事の published_at（UTC aware）とは比較しないこと

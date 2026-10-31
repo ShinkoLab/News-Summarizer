@@ -189,3 +189,20 @@ def test_fetch_does_not_log_html_strip_savings_when_disabled(caplog):
         _fetch_with(False, [dict(_HTML_ENTRY)])
 
     assert "テキスト化" not in caplog.text
+
+
+def test_fetch_dates_are_always_timezone_aware():
+    """代替日時が naive だと、正常な日時と比較した時点で TypeError になる。"""
+    entries = [
+        {"id": 1, "content": "a", "title": "ok", "published_at": "2024-01-01T09:00:00+09:00"},
+        {"id": 2, "content": "b", "title": "broken", "published_at": "not a date"},
+        {"id": 3, "content": "c", "title": "missing", "published_at": None},
+    ]
+
+    with patch("fetchers.rss_fetcher.config", _fake_config()):
+        fetcher = MinifluxFetcher(dry_run=False)
+        with patch("fetchers.rss_fetcher.httpx.get", return_value=_entries_response(entries)):
+            articles = fetcher.fetch()
+
+    assert [a.published_at.utcoffset().total_seconds() for a in articles] == [0, 0, 0]
+    assert articles[0].published_at.hour == 0

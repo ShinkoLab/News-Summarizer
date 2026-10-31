@@ -1,8 +1,8 @@
 import httpx
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import List
 from models import Article
-from fetchers.base import BaseFetcher
+from fetchers.base import BaseFetcher, to_utc
 from fetchers.html_text import html_to_text
 from config import config
 from logger import get_logger
@@ -95,12 +95,12 @@ class MinifluxFetcher(BaseFetcher):
 
             # Minifluxの日時フォーマットのパース
             try:
-                pub_date_str = entry.get("published_at", "")
+                pub_date_str = entry.get("published_at") or ""
                 if pub_date_str.endswith("Z"):
                     pub_date_str = pub_date_str[:-1] + "+00:00"
-                published_at = datetime.fromisoformat(pub_date_str)
+                published_at = to_utc(datetime.fromisoformat(pub_date_str))
             except ValueError:
-                published_at = datetime.now()
+                published_at = datetime.now(UTC)
 
             articles.append(Article(
                 source_type="rss",
@@ -109,7 +109,7 @@ class MinifluxFetcher(BaseFetcher):
                 content=content_used,
                 url=entry.get("url"),
                 published_at=published_at,
-                fetched_at=datetime.now(),
+                fetched_at=datetime.now(UTC),
                 feed_title=entry.get("feed", {}).get("title", "")
             ))
 

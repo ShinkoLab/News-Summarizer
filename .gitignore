@@ -31,3 +31,6 @@ data/
 # OS
 .DS_Store
 Thumbs.db
+
+# ローカルのエージェントツール設定
+.antigravitycli/

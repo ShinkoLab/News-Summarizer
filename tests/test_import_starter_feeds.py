@@ -154,3 +154,7 @@ def test_feed_with_parsing_error_counts_as_checked():
 
 def test_unchanged_checked_at_is_not_checked():
     assert helper._all_checked([{"id": 1, "checked_at": "same"}], {1: "same"}) is False
+
+
+def test_empty_baseline_is_never_treated_as_checked():
+    assert helper._all_checked([{"id": 1, "checked_at": "x"}], {}) is False

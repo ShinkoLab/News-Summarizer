@@ -109,7 +109,7 @@ def fetch_articles(options: RunOptions, db, *, email_configured: bool) -> FetchR
         # `all` はメールを任意扱いにする。未設定のたびに ERROR とスタックトレースを
         # 出すと、RSS だけで使う構成（docker compose の既定）のログが毎回荒れる。
         # `--source email` と明示したのに未設定なら、従来どおりエラーにする。
-        logger.info("Email（POP3）は未設定のためスキップします。")
+        logger.warning("Email（POP3）は未設定のためスキップします。")
     elif options.run_email:
         try:
             logger.info("Email（POP3）から記事を取得中...")

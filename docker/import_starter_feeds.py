@@ -50,7 +50,8 @@ def _all_checked(feeds, baseline: dict) -> bool:
     Miniflux は取り込み時に checked_at を「いま」にしてしまう（まだ取得していない）ので、
     時刻の絶対値ではなく、取り込み直後の値からの変化で判定する。
     """
-    if not isinstance(feeds, list) or not feeds:
+    # 基準が取れていない（取り込み直後の GET が失敗した）なら判定できない。未完了として待つ。
+    if not isinstance(feeds, list) or not feeds or not baseline:
         return False
     for feed in feeds:
         if not isinstance(feed, dict):

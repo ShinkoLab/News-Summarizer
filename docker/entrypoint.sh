@@ -124,6 +124,10 @@ provision_api_key() {
   fi
   if [ -n "${MINIFLUX_API_KEY:-}" ]; then
     export MINIFLUX_BASE_URL="$MINIFLUX_DEFAULT_BASE_URL"
+  elif [ "$SOURCE" != "email" ]; then
+    # キーが無いと miniflux 設定そのものが作られず、RSS 取得は「設定が見つかりません」と
+    # ログに出るだけで終了コード 0 になる。見落とされないよう、ここで明示する。
+    echo "[entrypoint] Miniflux API キーがありません。RSS は取得されません（MINIFLUX_API_KEY か管理者情報を確認してください）" >&2
   fi
 }
 

@@ -723,7 +723,8 @@ Miniflux と Viewer のポートは既定でループバック（`127.0.0.1`）�
 変更する**こと（Viewer に認証は無い）。`LLM_MODEL` は必須で、空のままだと summarizer が
 起動時にエラーで終了する。
 
-**トラブルシューティング**: 管理者パスワード（`MINIFLUX_ADMIN_PASSWORD`）は Postgres の
+**トラブルシューティング**: ログに `Miniflux API キーがありません` が出ていれば、API キーの自動発行が
+失敗している（この状態では RSS が取得されず、終了コードも 0 のまま）。原因の例: 管理者パスワード（`MINIFLUX_ADMIN_PASSWORD`）は Postgres の
 volume を初めて初期化するときにだけ反映される。後から `.env` を書き換えると API key の自動発行が
 401 で失敗し続けるので、`docker compose down -v` で volume を作り直すか、Miniflux UI で
 パスワードを合わせるか、`MINIFLUX_API_KEY` を直接設定する。
@@ -789,7 +790,7 @@ News-Summarizer/
 ├── scripts/
 │   └── migrate_sqlite_to_firestore.py # 既存履歴の移行
 ├── infra/                    # Google Cloud Terraform構成
-├── Dockerfile                # Cloud Run Job用イメージ
+├── Dockerfile                # Dockerイメージ（Cloud Run Job・Compose 共用。ENTRYPOINT は docker/entrypoint.sh）
 ├── .dockerignore             # イメージから除外するファイル
 ├── cloudbuild.yaml           # Artifact Registryへのビルド
 ├── docker/                   # Docker実行用エントリポイント・APIキー自動発行スクリプト

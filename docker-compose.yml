@@ -2,7 +2,8 @@
 x-summarizer-environment: &summarizer-environment
     DATABASE_BACKEND: sqlite
     SQLITE_DATABASE_PATH: /data/news_summarizer.db
-    MINIFLUX_BASE_URL: http://miniflux:8080
+    # MINIFLUX_BASE_URL はここで渡さない: entrypoint.sh が既定（http://miniflux:8080）を
+    # 使い、API キーが確定した場合にだけ export する（メールのみの実行を壊さないため）。
     MINIFLUX_API_KEY: ${MINIFLUX_API_KEY:-}
     MINIFLUX_ADMIN_USERNAME: ${MINIFLUX_ADMIN_USERNAME:-admin}
     MINIFLUX_ADMIN_PASSWORD: ${MINIFLUX_ADMIN_PASSWORD:-miniflux}

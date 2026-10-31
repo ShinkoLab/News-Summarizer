@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docker/provision_miniflux_key.py`（管理者アカウントから Miniflux API キーを自動発行）。
   Dockerfile の `ENTRYPOINT` / `CMD`（既定 `run-once`）を変更した。Cloud Run Job は
   `config.yaml` が無い従来どおり環境変数で動作する
+- 安定版タグ（`vX.Y.Z`）の push で GitHub Actions が `ghcr.io/shinkolab/news-summarizer` へ
+  multi-arch イメージを公開する。gitleaks（全履歴）・Trivy・禁止ファイル検査を通過した場合のみ。
+  Cloud Build の流れとは別の配布経路
 
 ### Changed
 

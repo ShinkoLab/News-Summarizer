@@ -138,11 +138,20 @@ def test_empty_llm_model_fails_fast(sandbox):
 
 def test_run_once_without_key_exits_nonzero_for_rss(sandbox):
     tmp_path, script, log = sandbox
-    env = _env()
+    env = _env(NEWS_SUMMARIZER_SOURCE="rss")
     env.pop("MINIFLUX_API_KEY")
     result = subprocess.run(["sh", str(script), "run-once"], env=env, timeout=20)
     assert result.returncode == 1
     assert not log.exists()
+
+
+def test_source_all_without_key_still_runs_for_email(sandbox):
+    _, script, log = sandbox
+    env = _env(NEWS_SUMMARIZER_SOURCE="all")
+    env.pop("MINIFLUX_API_KEY")
+    result = subprocess.run(["sh", str(script), "run-once"], env=env, timeout=20)
+    assert result.returncode == 0
+    assert log.exists()
 
 
 def test_email_only_run_needs_no_key(sandbox):

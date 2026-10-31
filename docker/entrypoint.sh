@@ -101,7 +101,7 @@ effective_source() {
   echo "$SOURCE"
 }
 
-# 鍵が必要なのに得られなかったら 1 を返す（呼び出し側が run-once で異常終了に使う）。
+# ソースが rss のみで鍵が得られなかったら 1 を返す（run-once の異常終了に使う）。
 provision_api_key() {
   needs_miniflux=1
   if [ "$(effective_source "$@")" = "email" ]; then
@@ -146,7 +146,11 @@ provision_api_key() {
     # キーが無いと miniflux 設定そのものが作られず、RSS 取得は「設定が見つかりません」と
     # ログに出るだけで終了コード 0 になる。見落とされないよう、ここで明示する。
     echo "[entrypoint] Miniflux API キーがありません。RSS は取得されません（MINIFLUX_API_KEY か管理者情報を確認してください）" >&2
-    return 1
+    # RSS だけを指定した実行は何も処理できないので異常終了させる。all はメール側が
+    # 動けるため警告だけで続行する。
+    if [ "$(effective_source "$@")" = "rss" ]; then
+      return 1
+    fi
   fi
 }
 

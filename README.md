@@ -724,7 +724,7 @@ Miniflux と Viewer のポートは既定でループバック（`127.0.0.1`）�
 起動時にエラーで終了する。
 
 **トラブルシューティング**: ログに `Miniflux API キーがありません` が出ていれば、API キーの自動発行が
-失敗している（この状態では RSS が取得されない。`summarizer-once` は終了コード 1、run-loop は次の周回で再挑戦する）。原因の例: 管理者パスワード（`MINIFLUX_ADMIN_PASSWORD`）は Postgres の
+失敗している（この状態では RSS が取得されない。`--source rss` の `summarizer-once` は終了コード 1（`all` は警告のみでメール側は動く）、run-loop は次の周回で再挑戦する）。原因の例: 管理者パスワード（`MINIFLUX_ADMIN_PASSWORD`）は Postgres の
 volume を初めて初期化するときにだけ反映される。後から `.env` を書き換えると API key の自動発行が
 401 で失敗し続けるので、`docker compose down -v` で volume を作り直すか、Miniflux UI で
 パスワードを合わせるか、`MINIFLUX_API_KEY` を直接設定する。

@@ -207,6 +207,10 @@ config source (see **Deployment** below). For the full design spec see `README.m
   `skip_stale_backlog.py` (marks-as-read/deletes Miniflux/POP3 backlog older than a cutoff after an
   outage, so the pipeline doesn't have to grind through days of stale entries; dry-run by default,
   `--execute` + confirmation prompt (skippable with `--yes`) required to actually change anything — see its module docstring)
+- **`docker/`** — container entrypoint for the Docker image and the Compose stack: `entrypoint.sh`
+  (`run-once` / `run-loop` modes, forwards SIGTERM/SIGINT; `run-loop` keeps looping when `main.py`
+  exits non-zero, `run-once` propagates the exit code) and `provision_miniflux_key.py` (creates a
+  Miniflux API key from the admin credentials when `MINIFLUX_API_KEY` is unset)
 - **`infra/`** — Terraform for the Google Cloud deployment; see `infra/README.md` and `infra/DEPLOYMENT.md`
 
 ### LLM integration
@@ -342,6 +346,13 @@ is unaffected and still stores JSON.
   runs as `nobody`. It does a plain `COPY . .`, so anything not listed in `.dockerignore`
   (which excludes `config.yaml`, `.env*`, `data`, `tests`, `infra`, `.git`, `.venv`, local tool dirs, caches) is baked
   into the image
+- **`docker-compose.yml` / `.env.example`** — self-hosted full stack (Postgres + Miniflux +
+  `summarizer` run-loop + `summarizer-once` under the `manual` profile + `web` = News-Viewer built
+  from the sibling clone `../News-Viewer`, SQLite on a shared volume). The summarizer services are
+  configured purely by environment variables (no `config.yaml` in the image), so every variable
+  there must exist in `_apply_environment_overrides()` — add both together. `web`'s
+  `CATEGORY_ORDER` is a hardcoded copy of `categories.yaml`'s order (Terraform derives it in
+  production); update it when reordering categories. See README "フルスタック"
 - **`cloudbuild.yaml`** — Cloud Build config for the summarizer image
 - **`infra/`** — Terraform: Cloud Run Job, Cloud Scheduler, Firestore, Secret Manager, IAM.
   `infra/README.md` for the layout, `infra/DEPLOYMENT.md` for the actual runbook and

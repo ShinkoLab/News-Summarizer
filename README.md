@@ -721,6 +721,14 @@ API key の自動発行が失敗している可能性がある。`docker compose
 （`depends_on: condition: service_healthy` で通常は防がれるが、Miniflux 側の管理者アカウント
 作成が想定より遅れた場合に発生し得る）。
 
+取り込み量は `.env` の `MAX_ARTICLES_PER_RUN` / `MINIFLUX_FETCH_LIMIT`（対で、小さい方が効く）、
+HTML 除去は `MINIFLUX_STRIP_HTML` で調整できる（意味は上の設定項目の節を参照）。
+全記事の要約が1件も成功しなかった実行は `main.py` が終了コード1で終わるが、`summarizer`
+（run-loop）は止まらず次の間隔で再試行する。`summarizer-once` は終了コードをそのまま返す。
+
+Viewer のカテゴリ表示順（`CATEGORY_ORDER`）は `categories.yaml` の定義順の写しで、
+`docker-compose.yml` に直書きしてある（本番は Terraform が注入）。並べ替えたら合わせて更新する。
+
 Summarizer と Viewer は `summarizer-data` volume の `/data/news_summarizer.db` を共有する。
 Summarizer は書き込み、Viewer は読み取り専用で参照する。
 

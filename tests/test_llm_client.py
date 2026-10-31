@@ -422,3 +422,44 @@ class TestOpenAIResponsesProvider:
                 llm_client.call_with_retry(client, kwargs)
 
         client.responses.parse.assert_not_called()
+
+
+class TestExampleInstance:
+    """プレーンテキスト JSON フォールバックで見せる具体例の生成。"""
+
+    def test_flat_model(self):
+        from summarizer.llm_client import _example_instance
+
+        assert _example_instance(ArticleSummary) == {
+            "title": "...",
+            "summary": "...",
+            "keywords": ["..."],
+            "category": "...",
+        }
+
+    def test_nested_models_and_scalars(self):
+        from pydantic import BaseModel
+
+        from models import GroupingResult
+        from summarizer.llm_client import _example_instance, _example_value
+
+        assert _example_instance(GroupingResult) == {
+            "groups": [{"group_id": 0, "topic": "...", "article_indices": [0]}]
+        }
+
+        class Scalars(BaseModel):
+            f: float
+            b: bool
+
+        assert _example_instance(Scalars) == {"f": 0.0, "b": True}
+        assert _example_value(str) == "..."
+
+    def test_inject_json_instruction_embeds_example_not_schema(self):
+        from summarizer.llm_client import _inject_json_instruction
+
+        messages = [{"role": "user", "content": "要約して"}]
+        out = _inject_json_instruction(messages, ArticleSummary)
+        assert messages[0]["content"] == "要約して"  # 入力を破壊しない
+        content = out[-1]["content"]
+        assert "\"keywords\": [" in content
+        assert "$defs" not in content and "\"properties\"" not in content

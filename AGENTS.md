@@ -18,7 +18,7 @@ This file provides guidance to coding agents (Claude Code, Codex, etc.) when wor
   最新の `main` から切って `main` へ PR を出す。
 - 新しい作業を始める前に必ずブランチを切る。`main` に直接コミット・push しない。必ず PR を通す。
   GitHub のブランチ保護（ルールセット）で `main` への直接 push を禁止する
-  （**現状は未設定**。CI も未導入なので、導入したらその成功をマージ条件にする）。
+  （**現状は未設定**。CI は `.github/workflows/publish-image.yml` の PR 検証（スキャンまで）のみ導入済みなので、保護を入れるときはその成功をマージ条件にする）。
 - ブランチ名は英小文字のケバブケースにする（例: `feature/strip-html-content`、
   `fix/opencode-session-header`）。
 
@@ -92,7 +92,9 @@ PR を作る**前に**コードレビューを回し、**重要度「中」以�
    git fetch origin
    git tag vX.Y.Z origin/main && git push origin vX.Y.Z
    ```
-3. イメージはそのタグでビルドする（`infra/DEPLOYMENT.md` 参照）
+3. Cloud Run 用イメージはそのタグでビルドする（`infra/DEPLOYMENT.md` 参照）。あわせてタグの push で
+   GitHub Actions（`.github/workflows/publish-image.yml`）が、gitleaks（全履歴）・Trivy・禁止ファイル検査を
+   通過した場合だけ `ghcr.io/shinkolab/news-summarizer` へ multi-arch イメージを公開する（Cloud Build の流れとは別の配布経路）
 
 ### マージ後のブランチ削除
 

@@ -60,8 +60,8 @@ class DiscordOutput:
         """
         if isinstance(error, httpx.HTTPStatusError):
             return f"HTTP {error.response.status_code}"
-        message = str(error).replace(self.webhook_url, "<webhook URL>") if self.webhook_url else str(error)
-        return f"{type(error).__name__}: {message}"
+        # post() は webhook_url が空なら送らずに戻るので、ここでは必ず値がある。
+        return f"{type(error).__name__}: {str(error).replace(self.webhook_url, '<webhook URL>')}"
 
     def _create_digest_embed(self, digest: DigestResult) -> dict:
         now_str = digest.generated_at.strftime("%Y-%m-%d %H:%M")

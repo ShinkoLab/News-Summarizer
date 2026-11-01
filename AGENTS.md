@@ -69,6 +69,25 @@ docs: consolidate branch strategy into main only
 chore(release): v2.6.0
 ```
 
+### ドキュメントの更新
+
+仕様（動作、設定キー、環境変数、DB スキーマ、LLM の出力の型、失敗したときの振る舞い、運用手順）を
+変えたら、**同じ PR で** 下の文書も直す。コードだけ直して文書を後回しにしない。
+
+| 変えたもの | 直す文書 |
+| --- | --- |
+| 処理の流れ、モジュールの役割、重複排除、グルーピング、ダイジェスト、LLM の呼び方、設定の読み込み | `docs/architecture.md` |
+| `models.py` の型、SQLite のスキーマ、Firestore のコレクション | `docs/data-model.md` |
+| 失敗したときの振る舞い、終了コード、メールの試行回数・削除、実行ロック、ログ、`scripts/` | `docs/operations.md` |
+| 利用者の手順、Docker Compose の構成、`.env` の変数 | `README.md`、`.env.example` |
+| 設定キー | `config.yaml.example`（環境変数も足すなら `config.py` と `infra/main.tf` も。**Configuration** 参照） |
+| Google Cloud の構成・手順 | `infra/README.md`、`infra/DEPLOYMENT.md` |
+| 利用者から見える変更 | `CHANGELOG.md` の `[Unreleased]` |
+
+このファイルの **Architecture** 以下も同じ事実を書いているので、`docs/` と食い違わないよう両方を直す
+（`docs/` は人が読む日本語の設計資料、このファイルはエージェント向けの規則と注意点）。
+PR 前のコードレビューでは、仕様の変更に文書が追いついているかも確かめる。
+
 ### PR 前のコードレビュー
 
 PR を作る**前に**コードレビューを回し、**重要度「中」以上の指摘が 0 件になってから** PR を出す。
@@ -184,7 +203,8 @@ Miniflux (RSS) + POP3 (Email)
 
 Runs locally as a CLI and on Google Cloud as a Cloud Run Job — same code, different
 config source (see **Deployment** below). `README.md` is for users (quickstart, Compose operation);
-the design lives in this file and the code.
+`docs/` is the human-readable design (Japanese: `architecture.md`, `data-model.md`, `operations.md`).
+Keep this file and `docs/` in sync — see 「ドキュメントの更新」 above.
 
 ### Key modules
 

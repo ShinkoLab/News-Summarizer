@@ -247,7 +247,13 @@ docker run --rm -v news-data:/data \
 uv run pytest
 ```
 
-モジュール構成・重複排除・保存先の仕組みなどの設計は [`AGENTS.md`](AGENTS.md) にまとめてある。
+設計は [`docs/`](docs/) にまとめてある。
+
+- [処理の流れと設計](docs/architecture.md)
+- [データモデル](docs/data-model.md)（DB のスキーマ、LLM の出力の型）
+- [運用](docs/operations.md)（失敗したときの振る舞い、メール、二重実行の防止、運用スクリプト）
+
+開発の規則は [`AGENTS.md`](AGENTS.md)。
 変更履歴は [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 免責事項

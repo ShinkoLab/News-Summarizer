@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GHCR 公開ワークフローは再ビルドせず、検査したイメージそのものをステージングパッケージ経由で公開する
 - PR の CI がステージングパッケージに push した版は、照合が終わったら自動で削除する
 
+### Security
+- Discord の webhook の URL（それだけで投稿できる）がログに出ないようにした。httpx / httpcore の
+  リクエストのログは、`logging.level` に関係なく WARNING 以上しか出さない。そのため、LLM や
+  Miniflux への `HTTP Request: ...` の行も出なくなる。Discord への投稿に失敗したときは、
+  HTTP のステータスか例外の種類だけを出す。以前の版で出したログには URL が残っているので、
+  ログを人に渡したことがあれば webhook を作り直す
+
 ## [2.7.0] - 2026-11-01
 
 ### Added

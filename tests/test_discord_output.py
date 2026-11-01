@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 import config as config_module
@@ -380,3 +381,36 @@ class TestProseRendering:
     def test_default_config_does_not_post_individual_articles(self):
         """既定ではダイジェストのみを投稿する（全記事の二重配信を避ける）。"""
         assert DiscordConfig().post_individual_articles is False
+
+
+# ---------------------------------------------------------------------------
+# post() — webhook の URL をログに残さない
+# ---------------------------------------------------------------------------
+
+class TestErrorLogsDoNotLeakWebhookUrl:
+    WEBHOOK_URL = "https://discord.com/api/webhooks/123/secret-token"
+
+    def _make_output(self) -> DiscordOutput:
+        out = DiscordOutput.__new__(DiscordOutput)
+        out.webhook_url = self.WEBHOOK_URL
+        out.embed_color = 0x58B9C2
+        out.footer_text = ""
+        out.post_individual_articles = True
+        return out
+
+    def test_http_status_error_logs_status_only(self, caplog):
+        request = httpx.Request("POST", self.WEBHOOK_URL)
+        response = httpx.Response(404, request=request)
+        with patch("httpx.post", return_value=response):
+            self._make_output().post(_make_digest(), [])
+
+        assert "HTTP 404" in caplog.text
+        assert "secret-token" not in caplog.text
+
+    def test_request_error_redacts_url(self, caplog):
+        error = httpx.ConnectError(f"cannot connect to {self.WEBHOOK_URL}")
+        with patch("httpx.post", side_effect=error):
+            self._make_output().post(_make_digest(), _make_summaries(1))
+
+        assert "ConnectError" in caplog.text
+        assert "secret-token" not in caplog.text

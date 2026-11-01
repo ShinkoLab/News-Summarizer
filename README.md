@@ -126,13 +126,15 @@ docker compose run --rm summarizer-once --dry-run
 docker compose run --rm summarizer-once --source email
 ```
 
-- 実行は二重に走らないので、手動実行の前に `docker compose stop summarizer` で止める必要はない。
+- 実行はロックで1つずつに限られるので、手動実行の前に `docker compose stop summarizer` で止める必要はない。
   `summarizer-once` は定期実行が終わるまで待ってから動く
   （`NEWS_SUMMARIZER_LOCK_WAIT_SECONDS`、既定 3600 秒で諦めて終了コード 75）。定期実行側は
   手動実行中ならその周回を飛ばす。ロックを取れないファイルシステム（一部の NFS など）では、
   警告を出してロックなしで実行する
 - 取得元: `NEWS_SUMMARIZER_SOURCE` の既定は `all`（RSS + メール）。`EMAIL_*` が未設定ならメールは
   自動的に無視される。`rss` / `email` で絞ることもできる
+- メール: 処理したメールは既定ではサーバーから削除しない。`EMAIL_DELETE_AFTER_PROCESSING=true` にすると、
+  保存できたメールと、`EMAIL_MAX_FETCH_ATTEMPTS`（既定 3）回取得しても保存できずに諦めたメールだけを削除する
 - 取り込み量: `.env` の `MAX_ARTICLES_PER_RUN` / `MINIFLUX_FETCH_LIMIT`（対で、小さい方が効く。
   お試し向けの既定は 20 / 25）で調整する。超えた分は次回に繰り越す。HTML 本文のテキスト化
   （LLM の入力トークンを約 8 割減らす）は `MINIFLUX_STRIP_HTML` で切り替えられる（既定は有効）
@@ -251,6 +253,14 @@ docker run --rm -v news-data:/data \
 # 定期実行し続ける場合は、同じ引数でコマンドを run-loop にし、
 # -e NEWS_SUMMARIZER_INTERVAL_SECONDS=3600 を足す
 ```
+
+### 運用スクリプト
+
+`scripts/` に、一度だけ使う運用の道具がある。使い方は `uv run python -m scripts.<名前> --help` で確認できる。
+
+- `skip_stale_backlog.py`: 障害のあとに溜まった古い未読記事・メールを、要約せずに既読化・削除する（既定はドライラン）
+- `migrate_sqlite_to_firestore.py`: SQLite の履歴を Firestore へ移す
+- `backfill_embedding_vectors.py`: Firestore の Embedding を、Viewer の意味検索で使える形式に変換する
 
 ### テストと設計資料
 

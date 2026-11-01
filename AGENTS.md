@@ -80,7 +80,7 @@ chore(release): v2.6.0
 | `models.py` の型、SQLite のスキーマ、Firestore のコレクション | `docs/data-model.md` |
 | 失敗したときの振る舞い、終了コード、メールの試行回数・削除、実行ロック、ログ、`scripts/` | `docs/operations.md` |
 | 利用者の手順、Docker Compose の構成、`.env` の変数 | `README.md`、`.env.example` |
-| 設定キー | `config.yaml.example`（環境変数も足すなら `config.py` と `infra/main.tf` も。**Configuration** 参照） |
+| 設定キー | `config.yaml.example`（環境変数も足すなら `config.py`、`infra/main.tf`、`docker-compose.yml`、`.env.example` も。**Configuration** と **Deployment** の Compose env rules 参照） |
 | Google Cloud の構成・手順 | `infra/README.md`、`infra/DEPLOYMENT.md` |
 | 利用者から見える変更 | `CHANGELOG.md` の `[Unreleased]` |
 

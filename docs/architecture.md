@@ -89,7 +89,7 @@ Miniflux の既読化は2か所で行う。
 - LLM モード（既定）: 記事のタイトルと本文の先頭 300 文字を並べて LLM に渡し、グループを作らせる
 - Embedding モード（`summarizer.steps.grouper.use_embeddings: true`）: 個別要約を Embedding にし、
   コサイン類似度（`similarity_threshold`、既定 0.85）でまとめる。LLM はグループに名前を付けるだけ。
-  記事が多くても LLM の入力があふれない。Embedding は保存もして、Viewer の意味検索に使う
+  記事が多くても LLM の入力があふれない。Embedding は保存もして、Google Cloud 構成では Viewer の意味検索に使う（SQLite の Viewer はキーワード検索だけ）
 
 グルーピングが失敗したら、グループなしで続ける。
 

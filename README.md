@@ -235,11 +235,8 @@ docker run --rm -v news-data:/data \
 
 ### 運用スクリプト
 
-`scripts/` に、一度だけ使う運用の道具がある。使い方は `uv run python -m scripts.<名前> --help` で確認できる。
-
-- `skip_stale_backlog.py`: 障害のあとに溜まった古い未読記事・メールを、要約せずに既読化・削除する（既定はドライラン）
-- `migrate_sqlite_to_firestore.py`: SQLite の履歴を Firestore へ移す
-- `backfill_embedding_vectors.py`: Firestore の Embedding を、Viewer の意味検索で使える形式に変換する
+障害のあとに溜まった記事の切り捨てや、Firestore へのデータ移行に使う道具が `scripts/` にある。
+一覧と使い方は[運用](docs/operations.md#運用スクリプト)を参照。
 
 ### テストと設計資料
 

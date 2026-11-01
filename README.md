@@ -235,11 +235,8 @@ docker run --rm -v news-data:/data \
 
 ### 運用スクリプト
 
-`scripts/` に、一度だけ使う運用の道具がある。使い方は `uv run python -m scripts.<名前> --help` で確認できる。
-
-- `skip_stale_backlog.py`: 障害のあとに溜まった古い未読記事・メールを、要約せずに既読化・削除する（既定はドライラン）
-- `migrate_sqlite_to_firestore.py`: SQLite の履歴を Firestore へ移す
-- `backfill_embedding_vectors.py`: Firestore の Embedding を、Viewer の意味検索で使える形式に変換する
+障害のあとに溜まった記事の切り捨てや、Firestore へのデータ移行に使う道具が `scripts/` にある。
+一覧と使い方は[運用](docs/operations.md#運用スクリプト)を参照。
 
 ### テストと設計資料
 
@@ -247,7 +244,13 @@ docker run --rm -v news-data:/data \
 uv run pytest
 ```
 
-モジュール構成・重複排除・保存先の仕組みなどの設計は [`AGENTS.md`](AGENTS.md) にまとめてある。
+設計は [`docs/`](docs/) にまとめてある。
+
+- [処理の流れと設計](docs/architecture.md)
+- [データモデル](docs/data-model.md)（DB のスキーマ、LLM の出力の型）
+- [運用](docs/operations.md)（失敗したときの振る舞い、メール、二重実行の防止、運用スクリプト）
+
+開発の規則は [`AGENTS.md`](AGENTS.md)。
 変更履歴は [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 免責事項

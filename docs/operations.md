@@ -73,6 +73,13 @@ Cloud Run は成功として記録する。そこで次の2つのときは `RunF
 ログは標準エラー出力にだけ出す（ファイルには書かない）。量は `logging.level`
 （環境変数は `LOG_LEVEL`）で変える。Docker Compose では `docker compose logs -f summarizer` で見る。
 
+Discord の webhook の URL は、それだけで投稿できる認証情報なのでログに出さない。
+
+- httpx / httpcore は、リクエストのたびに URL を INFO / DEBUG で出す。そこでこの2つだけは、
+  `logging.level` を INFO や DEBUG にしても WARNING 以上しか出さない
+- Discord への投稿に失敗したときは、HTTP のステータスか例外の種類だけを出す。httpx の例外の
+  メッセージとトレースバックには URL が入るので使わない
+
 ## 運用スクリプト
 
 `scripts/` にある、一度だけ使う道具。使い方は `uv run python -m scripts.<名前> --help` で確認できる。

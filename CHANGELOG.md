@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   するようになり、初回のビルドが不要になった。手元のコードで動かすときは `--build` を付ける。
   `NEWS_SUMMARIZER_IMAGE` / `NEWS_VIEWER_IMAGE` で版を差し替えられる
 - GHCR 公開ワークフローは再ビルドせず、検査したイメージそのものをステージングパッケージ経由で公開する
+- PR の CI がステージングパッケージに push した版は、照合が終わったら自動で削除する
 
 ## [2.7.0] - 2026-11-01
 

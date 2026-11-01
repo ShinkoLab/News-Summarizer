@@ -9,7 +9,8 @@ name: Publish image
 #      タグ無し・digest 指定で push し、config digest がスキャン対象と一致することを確認
 #   4. publish ジョブは再ビルドせず、各アーキテクチャの digest から manifest list を作ってタグ付けするだけ
 # 検査に失敗した時点で後続ステップは実行されないため、その arch のイメージは push されない。
-# PR では検証（スキャンまで）だけを行い、ログインも push もしない。
+# 同一リポジトリからの PR でもステージングへの push と照合までを行い（本番タグは付けない）、
+# 終わったらその PR のステージング版を削除する。fork の PR はスキャンまで。
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
@@ -53,8 +54,8 @@ jobs:
     name: Build, scan and push by digest (${{ matrix.platform }})
     needs: gitleaks
     runs-on: ${{ matrix.runner }}
-    # packages: write はタグ push 時の「スキャン済みイメージの digest push」にだけ使う。
-    # PR / workflow_dispatch ではログインしないのでトークンは使われない
+    # packages: write はステージングへの push と、PR 実行分のステージング版の削除に使う。
+    # fork の PR / workflow_dispatch ではログインしないのでトークンは使われない
     permissions:
       contents: read
       packages: write
@@ -201,6 +202,33 @@ jobs:
           echo "verified: pushed image is the scanned image"
           mkdir -p /tmp/digests
           touch "/tmp/digests/${PUSH_DIGEST#sha256:}"
+      # PR の push は経路の検証のためだけなので、照合の成否にかかわらず消す（放っておくと
+      # PR ごとに Public な版が 2 つずつ溜まる）。リリース時の版は公開イメージの出所として残す。
+      # 削除の失敗は検査結果ではないので、警告にとどめて CI は落とさない。
+      - name: Delete this PR's staging version
+        if: always() && env.CAN_STAGE == 'true' && env.IS_RELEASE != 'true' && steps.push.outcome != 'skipped'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          pkg="${STAGING_IMAGE##*/}"
+          tag="${GITHUB_SHA}-${{ matrix.arch }}"
+          ids=$(gh api --paginate "/users/${OWNER}/packages/container/${pkg}/versions" \
+            --jq ".[] | select(.metadata.container.tags | index(\"${tag}\")) | .id")
+          if [ -z "$ids" ]; then
+            echo "no staging version tagged ${tag}; nothing to delete"
+            exit 0
+          fi
+          for id in $ids; do
+            if gh api -X DELETE "/users/${OWNER}/packages/container/${pkg}/versions/${id}"; then
+              echo "deleted ${pkg} version ${id} (${tag})"
+            else
+              echo "::warning::could not delete ${pkg} version ${id} (${tag}); delete it by hand"
+              exit 1
+            fi
+          done
       - name: Upload digest
         if: env.IS_RELEASE == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -1,11 +1,26 @@
 # AI ニュース要約システム
 
-ローカル環境またはGoogle Cloud上で動作する、AIを活用したニュース記事の自動要約・配信システム。
-複数ソース（RSS / メールマガジン）から記事を収集し、LLMで要約・分類した上で、Discord等への通知やWebアプリ連携用のデータとして提供する。
+RSS とメールマガジンから記事を集め、LLM で要約・分類して、カテゴリ別のダイジェストにまとめるシステム。
+結果は Web ビューア（[News-Viewer](https://github.com/ShinkoLab/News-Viewer)）で読めるほか、Discord にも投稿できる。
+手元の Docker Compose でも、Google Cloud 上でも動く。
+
+```
+Miniflux（RSS） + POP3（メール）
+        ↓  記事を取得し、処理済みの記事と重複 URL を除く
+  個別要約（LLM）  … 記事ごとに日本語の要約・キーワード・カテゴリ
+        ↓
+  グルーピング     … 同じ話題の記事をまとめる（LLM、または Embedding の類似度）
+        ↓
+  ダイジェスト（LLM）… カテゴリ別の散文（既定で全体 3000 文字以内）
+        ↓
+  SQLite / Firestore に保存（Viewer が読む） + Discord Webhook
+```
+
+英語の記事も、出力はすべて日本語になる。
 
 ## クイックスタート（Docker Compose）
 
-このリポジトリを clone して、`.env` を数行直し、`docker compose up -d` するだけで試せる。
+このリポジトリを clone して、`.env` を数行直し、`docker compose up -d` で試せる。
 Miniflux（RSS リーダー）・要約バッチ・Web ビューアがまとめて起動する。必要なのは Docker と、
 OpenAI 互換の LLM（ホストの Ollama など）だけ。
 
@@ -20,7 +35,7 @@ cp .env.example .env
 #    - 無料: ホストの Ollama   → LLM_MODEL に `ollama list` のモデル名（既定の LLM_BASE_URL のまま）
 #    - 有料: OpenRouter など → .env 内の (b)(c) のコメントを外して API キーとモデル名を入れる
 
-# 3. 起動（GHCR の公開イメージを pull するのでビルドは不要）
+# 3. 起動
 docker compose up -d
 
 # 4. ブラウザで開く
@@ -28,691 +43,180 @@ docker compose up -d
 #    http://localhost:8080  Miniflux（ログインは .env の MINIFLUX_ADMIN_USERNAME / PASSWORD）
 ```
 
-- **Miniflux は同梱が既定**。初回に定番の RSS フィード5件（`docker/feeds.opml`）を自動登録するので、
-  すぐに動く。フィードの追加・削除は Miniflux の画面（http://localhost:8080）で行う。
-  **すでに自前の Miniflux があるなら**、`.env` に `COMPOSE_FILE=docker-compose.yml` を書いて
-  `MINIFLUX_BASE_URL`（コンテナから届く URL。ホスト上なら `http://host.docker.internal:8080`）と
-  `MINIFLUX_API_KEY` を設定する。同梱の Miniflux / PostgreSQL は起動せず、フィードも触らない
-- **費用に注意**: 1 回の実行で記事ごとに LLM を呼ぶ（個別要約 + グルーピング + ダイジェスト）。
-  有料の API では実行ごとに料金がかかる。お試し向けに既定は「1 回 20 件、3 時間おき」。
-  慣れたら `.env` の `MAX_ARTICLES_PER_RUN` / `MINIFLUX_FETCH_LIMIT`（対で、小さい方が効く）と
-  `NEWS_SUMMARIZER_INTERVAL_SECONDS` で増やす。Ollama なら無料
-- **この構成の Viewer は検索がキーワード検索のみ**。意味検索（ベクトル検索）は
-  Firestore を使う Google Cloud 構成が前提
+- **Miniflux は同梱が既定**。初回に定番の RSS フィード5件（`docker/feeds.opml`）を自動登録する。
+  フィードの追加・削除は Miniflux の画面（<http://localhost:8080>）で行う。
+  自前の Miniflux につなぐ方法は[既存の Miniflux につなぐ](#既存の-miniflux-につなぐ)を参照
+- 1 回の実行で記事ごとに LLM を呼ぶ（個別要約 + グルーピング + ダイジェスト）ので、有料の API では費用に注意する。
+  お試し向けに既定は「1 回 20 件、3 時間おき」。増やし方は[実行の間隔と手動実行](#実行の間隔と手動実行)を参照
 - 止めるとき: `docker compose down`（データも消すなら `down -v`）。ログは `docker compose logs -f summarizer`
 
-詳細は後述の[フルスタック](#フルスタックdocker-compose-up)の節を参照。
+## Docker Compose の構成と運用
+
+### 起動するもの
+
+`.env` の `COMPOSE_FILE` で、Miniflux を同梱するかどうかが決まる。
+
+| `.env` の `COMPOSE_FILE` | 起動するもの |
+| --- | --- |
+| 未設定（既定） | PostgreSQL + Miniflux（同梱）+ `summarizer` + `web` |
+| `docker-compose.yml` | `summarizer` + `web` だけ。`MINIFLUX_BASE_URL` / `MINIFLUX_API_KEY` の既存 Miniflux に接続 |
+
+この構成の Viewer の検索はキーワード検索だけ。意味検索（ベクトル検索）は、Firestore を使う
+[Google Cloud 構成](#本格運用google-cloud)が前提になっている。
+
+### 同梱の Miniflux
+
+- `.env` の `MINIFLUX_API_KEY` が空なら、管理者ユーザーで API key を自動発行してから要約を始める。
+  発行に失敗したときは、定期実行の次の周回でまた試す
+- フィードが 0 件のときだけ `docker/feeds.opml` のスターターフィードを取り込む。一度済んだら
+  再取り込みしない。`MINIFLUX_IMPORT_STARTER_FEEDS=false` で無効化できる。失敗しても警告だけで続行する
+- イメージは `2.3.4` に固定している（`MINIFLUX_IMAGE` で変更可）。すでに新しいバージョンで作った Miniflux の
+  volume を使い回す場合は、同じバージョンを `MINIFLUX_IMAGE` に指定する（DB スキーマを戻せないため）
+
+### 既存の Miniflux につなぐ
+
+`.env` に `COMPOSE_FILE=docker-compose.yml` を書き、`MINIFLUX_BASE_URL`（コンテナから届く URL。
+ホスト上なら `http://host.docker.internal:8080`）と `MINIFLUX_API_KEY` を設定する。
+同梱の Miniflux / PostgreSQL は起動せず、フィードも触らない。
+
+API key は自動発行しないので、`MINIFLUX_API_KEY` は必須。スターターフィードを入れたいときは
+`MINIFLUX_IMPORT_STARTER_FEEDS=true` にする（フィードが 0 件のユーザーにだけ登録する）。
+
+### イメージ
+
+- `summarizer` / `web` は既定で GHCR の公開イメージ（`ghcr.io/shinkolab/news-summarizer:2.7.0` /
+  `ghcr.io/shinkolab/news-viewer:1.5.3`）を pull する
+- 手元のコードで動かすときは `docker compose up -d --build`。Summarizer はこのリポジトリから、
+  Viewer は [News-Viewer](https://github.com/ShinkoLab/News-Viewer) のリリースタグ（`v1.5.3`）を
+  Compose が URL から直接ビルドする。手元の News-Viewer を開発しているときは
+  `.env` に `NEWS_VIEWER_CONTEXT=../News-Viewer` を設定して差し替える。別のバージョンを pull したいときは
+  `NEWS_SUMMARIZER_IMAGE` / `NEWS_VIEWER_IMAGE` で指定する
+- `--build` したイメージは公開イメージと同じ名前（例: `news-summarizer:2.7.0`）で手元に残り、以後の
+  `docker compose up -d` もそれを使い続ける。公開イメージに戻すときは `docker compose pull` する
+- pull に失敗した（オフライン・GHCR の障害など）ときは、Compose がソースからのビルドに切り替える
+  （数分かかる）
+
+### LLM
+
+ホスト上の Ollama / llama-swap か、クラウドの OpenAI 互換エンドポイントを `.env` で指定する。
+`.env.example` に Ollama・OpenRouter・その他の設定例がある。
+
+- `LLM_MODEL` は必須で、空のままだと summarizer が起動時にエラーで終了する
+- サーバーが `response_format` を受け付けない／無視するモデルでは `LLM_STRUCTURED_OUTPUT=false` にする
+- ホスト上の LLM には `http://host.docker.internal:<ポート>` で届く。ネイティブ Linux でも
+  `docker-compose.yml` の `extra_hosts` で設定済みなので、追加の設定は要らない
+
+### 実行の間隔と手動実行
+
+`summarizer` サービスは `NEWS_SUMMARIZER_INTERVAL_SECONDS`（既定 3 時間）間隔で定期実行し続ける。
+手動で一度だけ実行したい場合や CLI オプションを渡したい場合は `summarizer-once` を使う。
+
+```bash
+docker compose run --rm summarizer-once
+docker compose run --rm summarizer-once --dry-run
+docker compose run --rm summarizer-once --source email
+```
+
+- 実行はロックで1つずつに限られるので、手動実行の前に `docker compose stop summarizer` で止める必要はない。
+  `summarizer-once` は定期実行が終わるまで待ってから動く
+  （待つのは `NEWS_SUMMARIZER_LOCK_WAIT_SECONDS`、既定 3600 秒まで）。定期実行側は
+  手動実行中ならその周回を飛ばす。ロックを取れないファイルシステム（一部の NFS など）では、
+  警告を出してロックなしで実行する
+- 取得元: `NEWS_SUMMARIZER_SOURCE` の既定は `all`（RSS + メール）。`EMAIL_*` が未設定ならメールは
+  自動的に無視される。`rss` / `email` で絞ることもできる
+- メール: 処理したメールは既定ではサーバーから削除しない。`EMAIL_DELETE_AFTER_PROCESSING=true` にすると、
+  保存できたメールと、`EMAIL_MAX_FETCH_ATTEMPTS`（既定 3）回取得しても保存できずに諦めたメールだけを削除する
+- 取り込み量: `.env` の `MAX_ARTICLES_PER_RUN` / `MINIFLUX_FETCH_LIMIT`（対で、小さい方が効く。
+  お試し向けの既定は 20 / 25）で調整する。超えた分は次回に繰り越す。HTML 本文のテキスト化
+  （LLM の入力トークンを約 8 割減らす）は `MINIFLUX_STRIP_HTML` で切り替えられる（既定は有効）
+- 全記事の要約が1件も成功しなかったときも、定期実行の `summarizer` は止まらず次の間隔で再試行する
+
+### 外部に公開するとき
+
+Miniflux と Viewer のポートは既定でループバック（`127.0.0.1`）にだけ公開する。LAN など外へ
+出す場合は `.env` に `BIND_ADDRESS=0.0.0.0` を設定し、**先に管理者・Postgres のパスワードを
+変更する**こと（Viewer に認証は無い）。
+
+### トラブルシューティング
+
+ログに `Miniflux API キーがありません` が出ていれば、API キーの自動発行が失敗している。
+この状態では RSS が取得されない（`--source rss` の `summarizer-once` は終了コード 1、`all` は警告だけで
+メール側は動く）。
+
+管理者パスワード（`MINIFLUX_ADMIN_PASSWORD`）は、Postgres の volume を初めて初期化するときにだけ反映される。
+後から `.env` で変えると API key の自動発行が 401 で失敗し続けるので、`docker compose down -v` で volume を作り直すか、Miniflux UI でパスワードを合わせるか、
+`MINIFLUX_API_KEY` を直接設定する。
+
+それ以外で `summarizer` / `summarizer-once` のログに Miniflux の 401 が出る場合も、API key の
+自動発行が失敗している可能性がある。`docker compose ps` で `miniflux` が healthy に
+なっていることを確認してから `docker compose run --rm summarizer-once` を再実行する。
+
+## 設定とカスタマイズ
+
+### カテゴリ（`categories.yaml`）
+
+分類に使うカテゴリはリポジトリ直下の `categories.yaml` で定義する。現在は定義順に
+**AI・機械学習 / テクノロジー / 経済・ビジネス / 政治・社会 / 事件・事故・災害 / 科学・環境 /
+健康・ライフ / カルチャー** の8分類。
+
+- 各カテゴリの `description` と、判定の原則（`principles`）・優先規則（`tiebreak_rules`）は
+  そのまま要約プロンプトに入る。分類の精度はこのファイルの文言を直すだけで調整できる
+- ダイジェストのカテゴリはこのファイルの定義順に並ぶ
+- Compose の Viewer の表示順（`CATEGORY_ORDER`）は、この定義順を `docker-compose.yml` に
+  写したもの。並べ替えたら合わせて更新する
+- 読み込むパスは `CATEGORIES_PATH` 環境変数で差し替えられる
+
+### Discord への投稿
+
+`.env` の `DISCORD_WEBHOOK_URL`（`config.yaml` なら `discord.webhook_url`）を設定すると、
+実行ごとにダイジェストを Embed で投稿する。全体の概要のあとにカテゴリごとの散文が続き、
+記事の多いカテゴリには特に目立つ話題を最大3件だけ箇条書きで添える。
+
+`config.yaml` の `discord.post_individual_articles: true` にすると、ダイジェストのあとに全記事の
+要約を1件ずつ投稿する。ダイジェストと同じ記事が二重に届くので、既定では無効にしている。
+環境変数では設定できないため、Docker Compose では使えない。
 
 ## 本格運用（Google Cloud）
 
-家族だけが利用する低固定費構成として、SummarizerをCloud Run Job、Viewerを最小インスタンス0の
-Cloud Run、永続化をFirestore、生成AIをVertex AIへ移します。Viewerは直接IAPで許可した
-Googleアカウントだけが閲覧できます。サービスアカウント鍵は作らず、Secret Managerと
-Application Default Credentialsを使用します。
+家族だけが使う低固定費の構成として、Summarizer を Cloud Run Job、Viewer を Cloud Run、保存先を Firestore、
+LLM を Vertex AI で動かせる。構築の手順は [`infra/README.md`](infra/README.md) を参照。
 
-構築、コンテナ配布、SQLite履歴移行、切替確認の具体的な手順は
-[`infra/README.md`](infra/README.md)を参照してください。Terraformには月額予算通知、
-Viewer最大1インスタンス、Job再試行なし、Artifact Registryの世代削除も含まれます。
+## 開発
 
-## 目次
+### ローカルで実行する
 
-- [クイックスタート](#クイックスタートdocker-compose)
-- [本格運用（Google Cloud）](#本格運用google-cloud)
-- [システム概要](#システム概要)
-- [アーキテクチャ](#アーキテクチャ)
-- [技術スタック](#技術スタック)
-- [モジュール構成](#モジュール構成)
-- [データフロー](#データフロー)
-- [設定ファイル](#設定ファイル)
-- [データモデル](#データモデル)
-- [入力仕様](#入力仕様)
-- [AI処理仕様](#ai処理仕様)
-- [出力仕様](#出力仕様)
-- [実行方式](#実行方式)
-- [ディレクトリ構成](#ディレクトリ構成)
-- [セットアップ](#セットアップ)
-- [将来の拡張](#将来の拡張)
+Python 3.12 と [uv](https://docs.astral.sh/uv/) を使う（`mise.toml` で固定）。
+ローカル実行の設定は `config.yaml` に書く。全項目の説明は `config.yaml.example` にある。
 
-
-## システム概要
-
-### 解決する課題
-
-日常的に多数のニュースソースを追いかける作業は時間がかかる。本システムは、記事の収集・要約・分類・配信を自動化し、効率的な情報収集を実現する。
-
-### 主要機能
-
-- **記事収集**: Miniflux API および POP3 メールサーバーからの記事取得
-- **差分管理**: 前回処理分との差分のみを処理（重複回避）
-- **類似記事統合**: LLMによる同一トピック記事のグルーピング
-- **個別要約**: 各記事の要点を100〜200文字に要約
-- **ダイジェスト生成**: カテゴリ別に散文で整理したサマリー（既定で全体3000文字以内、記事数に応じてカテゴリへ配分）
-- **多言語対応**: 日本語・英語の記事を処理し、出力は日本語に統一
-- **配信**: Discord Webhook（Embed形式）での通知
-- **データ保存**: ローカルはSQLite、Google CloudではFirestoreへ永続化（Webアプリ連携用）
-
-## アーキテクチャ
-
-```
-┌─────────────────┐     ┌─────────────────┐
-│  Miniflux API   │     │  POP3サーバー     │
-│  (RSS記事)       │     │  (メールマガジン)  │
-└────────┬────────┘     └────────┬────────┘
-         │                       │
-         ▼                       ▼
-┌─────────────────┐     ┌─────────────────┐
-│  RSS取得         │     │  メール取得       │
-│  (rss_fetcher)  │     │  (email_fetcher) │
-└────────┬────────┘     └────────┬────────┘
-         │                       │
-         └───────────┬───────────┘
-                     ▼
-          ┌─────────────────────┐
-          │  記事正規化          │
-          │  (共通フォーマット化)  │
-          └──────────┬──────────┘
-                     ▼
-          ┌─────────────────────┐
-          │  個別要約 (LLM)      │
-          │  100〜200文字/記事    │
-          └──────────┬──────────┘
-                     ▼
-          ┌─────────────────────┐
-          │  類似記事グルーピング  │
-          │  ・Embeddingモード:   │
-          │    類似度→クラスタ化   │
-          │    +LLMでトピック命名  │
-          │  ・LLMモード(デフォルト)│
-          │    直接グルーピング    │
-          └──────────┬──────────┘
-                     ▼
-          ┌─────────────────────┐
-          │  ダイジェスト生成     │
-          │  (LLM)              │
-          │  カテゴリ別整理       │
-          │  既定3000文字以内     │
-          └──────────┬──────────┘
-                     ▼
-         ┌───────────┴───────────┐
-         ▼                       ▼
-┌─────────────────┐     ┌─────────────────┐
-│  Discord         │     │ Firestore/SQLite │
-│  Webhook出力     │     │  データ保存       │
-│  (Embed形式)     │     │  (Webアプリ連携)  │
-└─────────────────┘     └─────────────────┘
+```bash
+uv sync                                  # 依存パッケージのインストール
+cp config.yaml.example config.yaml       # 設定ファイルを作り、各サービスの接続情報を入れる
+uv run python main.py --dry-run          # 動作確認
 ```
 
+`--dry-run` は DB 保存・Discord 投稿・Miniflux の既読化をしないだけで、Miniflux からの取得と
+LLM の呼び出しは実際に行う（有料の API では料金がかかる）。
 
-## 技術スタック
-
-| カテゴリ | 技術 | 備考 |
-|---------|------|------|
-| 言語 | Python 3.12+ | `uv` + `mise` で管理 |
-| AIモデル | Vertex AI Gemini / Ollama（または任意のOpenAI互換API） | `llm.provider` で切り替え可能 |
-| AI連携 | Google Gen AI SDK / openai (Python SDK) | Structured Output を活用 |
-| Embedding | Vertex AI / Ollama embedding モデル（任意） | グルーピング精度向上に使用 |
-| RSS取得 | Miniflux API | HTTP クライアント経由 |
-| メール取得 | poplib（標準ライブラリ） | POP3 + UIDL による差分管理 |
-| データベース | Firestore / SQLite | クラウドとローカルを設定で切り替え |
-| 通知 | Discord Webhook | Embed 形式 |
-| 設定管理 | YAML | PyYAML を使用 |
-| HTTP | httpx | Miniflux API / Webhook 通信 |
-
-
-## モジュール構成
-
-本システムは以下のモジュール単位で構成する。各モジュールは独立して動作可能な設計とする。
-
-### 1. 記事取得モジュール (`fetchers/`)
-
-外部ソースから記事を取得し、共通フォーマット（正規化済み記事）として返す。
-
-#### `fetchers/rss_fetcher.py` — RSS取得スクリプト
-
-- Miniflux API から**未読記事**を取得
-- 本文の HTML は既定で `fetchers/html_text.py` によりテキスト化（`miniflux.strip_html: false` で無効化）
-- 取得後、Miniflux 上で**既読にマーク**（差分管理はMiniflux側に委譲）
-- 記事を共通フォーマット（`Article` データクラス）に変換して返す
-
-#### `fetchers/email_fetcher.py` — メール取得スクリプト
-
-- POP3 サーバーに接続し、メールを取得
-- `UIDL` コマンドで取得したメッセージIDを SQLite に記録し、**処理済みメールをスキップ**
-- メール本文（HTML/テキスト）をパースし、共通フォーマットに変換
-- サーバー上のメールは既定では**削除しない**。`email.delete_after_processing: true` で、
-  DB保存に成功したメールと試行上限で打ち切ったメールのみを削除する（`--dry-run` 時はスキップ）
-
-### 2. AI処理モジュール (`summarizer/`)
-
-LLM を使用した記事の分析・要約処理を担当する。
-
-#### `summarizer/llm_client.py` — LLMクライアント
-
-- Vertex AIまたはOpenAI互換APIを用いた共通 LLM 呼び出しロジック
-- ステップ別パラメータの解決・マージ
-- JSONパースエラー時の自動リトライ（`llm.max_retries` で設定）
-- `structured_output: false` 時はプロンプト指示+手動パースにフォールバック
-
-#### `summarizer/summarizer.py` — 個別要約
-
-- 各記事を LLM で要約（記事取得直後に実行）
-- 出力言語は**日本語に統一**
-- Structured Output で要約テキスト・キーワード・カテゴリを取得
-
-#### `summarizer/grouper.py` — 類似記事グルーピング
-
-- **LLMモード**（デフォルト）: 記事一覧を LLM に渡して同一トピックをグルーピング
-- **Embeddingモード**（`use_embeddings: true`）: 個別要約テキストを embedding してコサイン類似度でクラスタリング → LLM はトピック名付けのみ
-
-#### `summarizer/embedder.py` — Embedding取得
-
-- `llm.embedding_model` に設定したモデルで embedding ベクトルを取得
-- Ollama の embedding エンドポイントを OpenAI SDK 経由で使用
-
-#### `summarizer/digest.py` — ダイジェスト生成
-
-- 個別要約をカテゴリ別に整理し、全体ダイジェストを LLM で生成
-- カテゴリ分類も LLM が実施
-
-### 3. 出力モジュール (`outputs/`)
-
-要約結果を各チャネルに配信する。
-
-#### `outputs/discord_output.py` — Discord 出力
-
-- Discord Webhook API を使用して Embed 形式で投稿
-- ダイジェストと個別要約をそれぞれ適切な Embed に整形
-
-#### `outputs/database.py` / `outputs/firestore_database.py` — データベース保存
-
-- FirestoreまたはSQLiteに要約結果・メタデータを保存
-- Webアプリケーションからの参照に対応するスキーマ設計
-- 処理済みメールIDの管理もここで担当
-
-### 4. 制御モジュール
-
-#### `main.py` — CLIエントリポイント
-
-- CLI引数（`--dry-run` / `--output` / `--source` / `--config` / `--stream` / `--debug`）をパース
-- `RunOptions` を構築して `pipeline.run_pipeline()` に委譲するのみ
-
-#### `pipeline.py` — パイプライン本体
-
-- `run_pipeline(config, options)` を公開し、Fetch → Summarize → Group → Digest → Output を順に実行
-- `RunOptions`（frozen dataclass）でドライラン・強制出力先・ソース選択・ストリーミング等を保持
-- ソース単位・記事単位でエラー分離（例外を握りつぶして続行）
-
-#### `config.py` — 設定読み込み
-
-- YAML 設定ファイルの読み込みとバリデーション
-
-#### `models.py` — データモデル定義
-
-- 各モジュール間で受け渡すデータ構造（dataclass / Pydantic model）の定義
-- `Article`, `ArticleGroup`, `GroupingResult`, `ArticleSummary`, `CategoryDigest`, `TopicLabel`, `TopicNamingResult`, `DigestResult`
-
-#### `logger.py` — ロギング設定
-
-- `setup_logging()` / `get_logger()` を提供
-- stderr のみに出力（ファイルログなし）
-- ログレベルは `logging.level` で制御
-
-
-## データフロー
-
-### メイン処理フロー
-
-```
-1. 設定ファイル読み込み (config.yaml)
-2. 記事取得
-   a. Miniflux API から未読記事を取得 → 取得直後に既読マーク（--dry-run 時はスキップ）
-   b. POP3 サーバーからメールを取得（processed_emails テーブルで処理済みスキップ）
-   c. 取得した記事を共通フォーマット (Article) に正規化
-3. 新規記事が0件の場合、処理を終了
-4. 個別要約
-   a. 各記事を LLM で要約 (Structured Output)
-   b. 日本語で出力（ArticleSummary: title / summary / keywords / category）
-5. 類似記事グルーピング
-   a. LLMモード: 記事一覧をそのままLLMに渡してグルーピング
-   b. Embeddingモード: 要約テキストをembedding→コサイン類似度でクラスタリング
-                       →LLMがトピック名を付与
-6. ダイジェスト生成
-   a. 個別要約を LLM に渡し、カテゴリ分類 + 全体ダイジェスト生成
-7. 出力（--dry-run 時はスキップ。`--output` 指定時は対応ターゲットのみ強制実行）
-   a. SQLite にバッチと要約を保存し、処理済みメールの UIDL を `processed_emails` に登録
-   b. Discord Webhook で Embed 投稿
+```bash
+uv run python main.py                          # 通常実行
+uv run python main.py --config path.yaml       # 設定ファイルを指定
+uv run python main.py --dry-run --output discord  # ドライランでも Discord にだけは投稿する（db / all も指定可）
+uv run python main.py --source rss             # RSS だけ（email でメールだけ）
+uv run python main.py --stream                 # LLM の出力をターミナルに流す（デバッグ用）
+uv run python main.py --debug                  # Embedding・類似度の詳細を表示（デバッグ用）
 ```
 
-
-## 設定ファイル
-
-### `config.yaml`
-
-`config.yaml.example` をコピーして使用する。主要な設定項目は以下の通り。
-
-```yaml
-# LLM の設定
-llm:
-  # provider: "openai"  # "openai"（OpenAI互換エンドポイント、デフォルト） | "vertex"（Vertex AI）
-  base_url: "http://127.0.0.1:11434/v1"
-  model: "your-model-name"
-  # api_key: "your-api-key"  # 省略時は "ollama"
-  # provider: "vertex" の場合に指定
-  # project_id: "your-gcp-project"
-  # location: "asia-northeast1"
-
-  # embedding_model: "bge-m3"  # Embeddingグルーピングを使う場合
-  # Embedding だけ別プロバイダに向ける場合（未指定時は上の base_url / api_key を使用）
-  # embedding_base_url: "https://openrouter.ai/api/v1"
-  # embedding_api_key: "your-embedding-api-key"
-
-  # 全ステップ共通の LLM パラメータ（ステップ別設定で上書き可）
-  # parameters:
-  #   temperature: 0.3
-  #   max_tokens: 8192
-  #   reasoning_effort: "medium"
-
-  # APIプロバイダー固有の拡張フィールド（例: Ollama の thinking モード）
-  # extra_body:
-  #   think: true
-
-  # thinking モード関連
-  # gemma4_think: true                    # Gemma 4 向け <|think|> 自動注入
-  # disable_temperature_with_thinking: true  # thinking 有効時に temperature を自動除外
-
-  # JSONパース・API エラー時の再試行回数（デフォルト: 3）
-  # max_retries: 3
-  # Structured Output を使用するか（デフォルト: true。未対応プロバイダでは false）
-  # structured_output: true
-
-# Miniflux API の設定
-miniflux:
-  base_url: "http://your-miniflux-host"
-  api_key: "your-miniflux-api-key"
-  # 本文の HTML をテキスト化してから LLM に渡す（既定 true。入力トークン約80%減）
-  # strip_html: true
-
-# POP3 メールサーバーの設定
-email:
-  host: "your-mail-server.example.com"
-  port: 995
-  username: "your-email@example.com"
-  password: "your-email-password"
-  use_ssl: true
-
-# Discord Webhook の設定
-discord:
-  webhook_url: "https://discord.com/api/webhooks/your-webhook-url"
-  embed_color: 5814786
-  footer_text: "AI News Summarizer"
-  post_individual_articles: false  # 個別記事をダイジェスト後に投稿するか（既定 false。true にすると全記事がダイジェストと二重に届く）
-
-# データベースの設定
-database:
-  # backend: "sqlite"  # "sqlite"（デフォルト） | "firestore"（Cloud Run 実行時）
-  path: "data/news_summarizer.db"
-  # backend: "firestore" の場合に指定
-  # project_id: "your-gcp-project"
-  # firestore_database: "(default)"
-
-# 要約設定
-summarizer:
-  individual_max_length: 200
-  digest_max_length: 3000
-  # 1回の実行で処理する記事数の上限（デフォルト: 100）。超過分は次回に繰り越す
-  # max_articles_per_run: 100
-  # カテゴリ一覧・定義文・フォールバックは categories.yaml で管理する（後述）
-  # カテゴリ検証失敗時の再試行回数（デフォルト: 3）
-  # category_max_retries: 3
-  steps:
-    grouper:
-      # use_embeddings: true  # Embeddingモードを有効化
-      # similarity_threshold: 0.65  # コサイン類似度の閾値（コード上のデフォルトは 0.85）
-      parameters:
-        temperature: 0.1
-    summarizer:
-      parameters:
-        temperature: 0.3
-    digest: {}  # グローバル設定を継承
-
-# ロギング設定
-logging:
-  level: "INFO"  # DEBUG | INFO | WARNING | ERROR
-```
-
-### カテゴリ定義 (`categories.yaml`)
-
-カテゴリ分類の定義はリポジトリ直下の `categories.yaml` に置く。`config.yaml`
-（gitignored）とは別ファイルで、機密情報を含まないため git 管理し、Docker
-イメージにも同梱される。ローカル実行・Cloud Run 実行の双方がこの同じファイルを
-読むため、カテゴリ一覧の二重管理が起きない。読み込むパスは `CATEGORIES_PATH`
-環境変数で差し替えできる（既定 `categories.yaml`）。
-
-```yaml
-categories:
-  - name: AI・機械学習
-    description: >
-      生成AI・LLM、機械学習・深層学習、AIモデル／研究／製品、
-      AIの技術・応用・倫理（技術が主眼のもの）。
-  - name: 政治・社会
-    description: >
-      政治・選挙・政策・外交・国際政治、行政・法律・司法、社会問題・労働、
-      教育制度・教育政策。戦争・紛争・軍事行動とその被害もここに含める。
-      「国際」「中東」などの地域は軸にせず、記事の内容で判断する。
-  - name: 事件・事故・災害
-    description: >
-      地震・台風・洪水・土砂災害・山火事などの自然災害、航空・鉄道・交通事故、
-      火災・爆発・産業事故、殺人・強盗などの犯罪・テロ、避難・救助・被害状況。
-      発生と被害そのものを伝える記事が対象。
-  # …計8カテゴリ
-
-principles:          # 判定の原則
-  - 見出しと第1段落が「何について書かれているか（記事の主眼）」で判断する。
-
-tiebreak_rules:      # 複数カテゴリに該当する場合の優先規則
-  - "企業の決算・株価・資金調達・M&A が主眼 → 業種を問わず 経済・ビジネス。"
-
-fallback: 未分類     # 定義外カテゴリが返され続けた場合の値（意図的に categories 外）
-```
-
-現在のカテゴリは定義順に **AI・機械学習 / テクノロジー / 経済・ビジネス /
-政治・社会 / 事件・事故・災害 / 科学・環境 / 健康・ライフ / カルチャー** の8分類。
-`description`・`principles`・`tiebreak_rules` はそのまま要約プロンプトに注入され、
-ダイジェストのカテゴリ表示順もこのファイルの定義順に従う（上の並びがそのまま
-表示順になる）。分類精度の調整はこのファイルの文言変更だけで完結し、コード変更は不要。
-
-`categories` が空、または名前が重複している場合は設定読み込み時点で
-`ValidationError` になる。
-
-> **既存の `config.yaml` からの移行**: `summarizer.categories` と
-> `summarizer.fallback_category` は `categories.yaml` へ移設され、設定キーとしては
-> 廃止された。`SummarizerConfig` は未知のキーを拒否する（`extra="forbid"`）ため、
-> 手元の `config.yaml` にこれらが残っていると起動時に `ValidationError` で
-> **失敗する**。両キーを削除すること。
-
-## データモデル
-
-### 共通記事フォーマット (`Article`)
-
-```python
-@dataclass
-class Article:
-    """各ソースから取得した記事の共通フォーマット"""
-    source_type: str       # "rss" | "email"
-    source_id: str         # ソース固有のID（Miniflux entry_id / POP3 UIDL）
-    title: str             # 記事タイトル
-    content: str           # 記事本文
-    url: str | None        # 記事URL（メールの場合はNone）
-    published_at: datetime # 公開日時
-    fetched_at: datetime   # 取得日時
-    feed_title: str | None # フィード名（RSSの場合）
-```
-
-### LLM Structured Output スキーマ
-
-#### グルーピング結果（LLMモード）
-
-```python
-class ArticleGroup(BaseModel):
-    """類似記事のグループ"""
-    group_id: int                # グループID
-    topic: str                   # トピック（短い説明）
-    article_indices: list[int]   # グループに属する記事のインデックス
-
-class GroupingResult(BaseModel):
-    """グルーピング全体の結果"""
-    groups: list[ArticleGroup]
-```
-
-#### トピック命名結果（Embeddingモード用）
-
-```python
-class TopicLabel(BaseModel):
-    """クラスタへのトピック名付与結果"""
-    group_id: int  # クラスタID
-    topic: str     # トピック名（日本語、15文字以内）
-
-class TopicNamingResult(BaseModel):
-    """全クラスタのトピック命名結果"""
-    topics: list[TopicLabel]
-```
-
-#### 個別要約結果
-
-```python
-class ArticleSummary(BaseModel):
-    """個別記事の要約"""
-    title: str          # 要約タイトル（日本語）
-    summary: str        # 要約本文（100〜200文字、日本語）
-    keywords: list[str] # キーワード（3〜5個）
-    category: str       # カテゴリ（categories.yaml の定義から選択）
-```
-
-#### ダイジェスト結果
-
-```python
-class CategoryDigest(BaseModel):
-    """カテゴリ別ダイジェスト"""
-    category: str           # カテゴリ名
-    articles: list[str]     # 記事の箇条書き（各1〜2文）
-    article_count: int      # 記事数
-
-class DigestResult(BaseModel):
-    """ダイジェスト全体"""
-    overview: str                    # 全体概要（2〜3文）
-    categories: list[CategoryDigest] # カテゴリ別ダイジェスト
-    total_articles: int              # 総記事数
-    generated_at: datetime           # 生成日時
-```
-
-### SQLite テーブル設計
-
-```sql
--- 実行バッチの管理
-CREATE TABLE batches (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    executed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    total_articles INTEGER NOT NULL,
-    digest_text TEXT  -- ダイジェスト全文
-);
-
--- 個別記事の要約
-CREATE TABLE article_summaries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    batch_id INTEGER NOT NULL REFERENCES batches(id),
-    source_type TEXT NOT NULL,          -- 'rss' | 'email'
-    source_id TEXT NOT NULL,            -- ソース固有ID
-    original_title TEXT NOT NULL,       -- 元のタイトル
-    original_url TEXT,                  -- 元のURL
-    summary_title TEXT NOT NULL,        -- 要約タイトル（日本語）
-    summary_text TEXT NOT NULL,         -- 要約本文（日本語）
-    keywords TEXT NOT NULL,             -- キーワード（JSON配列）
-    category TEXT NOT NULL,             -- カテゴリ
-    group_id INTEGER,                   -- 類似記事グループID
-    group_topic TEXT,                   -- グループトピック
-    published_at TIMESTAMP,            -- 元記事の公開日時
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- 処理済みメールIDの管理
-CREATE TABLE processed_emails (
-    uidl TEXT PRIMARY KEY,             -- POP3 UIDL
-    processed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- インデックス
-CREATE INDEX idx_summaries_batch ON article_summaries(batch_id);
-CREATE INDEX idx_summaries_category ON article_summaries(category);
-CREATE INDEX idx_summaries_created ON article_summaries(created_at);
-```
-
-### Firestore コレクション設計
-
-Google Cloudでは同じデータを`batches`、`articleSummaries`、`processedEmails`へ保存します。
-記事ドキュメントIDは`source_type`と`source_id`から決定的に生成し、Cloud Schedulerの重複実行時も
-同じ記事を二重保存しません。1回の結果はFirestoreの一括書き込みで確定し、実行の排他制御には
-`pipelineLocks/current`の期限付きリースを使います。
-
-## 入力仕様
-
-### Miniflux API
-
-| 項目 | 内容 |
-|------|------|
-| エンドポイント | `GET /v1/entries?status=unread` |
-| 認証 | API Key（`X-Auth-Token` ヘッダー） |
-| 差分管理 | 処理後に `PUT /v1/entries` で既読にマーク |
-| 取得データ | タイトル、本文（HTML）、URL、公開日時、フィード名 |
-| 本文抽出 | HTML → テキスト変換は `fetchers/html_text.py`（標準ライブラリ `html.parser`）。`miniflux.strip_html`（既定 `true`）で切り替え可能。`false` で HTML のまま LLM に渡す |
-
-### POP3 メール
-
-| 項目 | 内容 |
-|------|------|
-| プロトコル | POP3 over SSL（ポート 995） |
-| 差分管理 | `UIDL` でメッセージID取得 → FirestoreまたはSQLiteで管理 |
-| パース | `email` 標準ライブラリで MIME パース |
-| 本文抽出 | HTML → テキスト変換（`fetchers/email_fetcher.py` の `strip_tags()` による正規表現でのタグ除去） |
-| 削除 | 既定は**しない**（サーバー上に保持）。`delete_after_processing: true` で保存成功分＋打ち切り分を削除 |
-
-## AI処理仕様
-
-### 共通設定
-
-- **APIプロバイダー**: `llm.provider: vertex`ではVertex AI、`openai`ではOpenAI互換APIを使用
-- **認証**: Vertex AIはApplication Default Credentials、OpenAI互換APIは`llm.api_key`を使用
-- **レスポンス形式**: Structured Output（`response_format` パラメータ）
-- **出力言語**: 日本語に統一
-
-### 類似記事統合
-
-LLM に記事タイトルと本文の冒頭を渡し、同一トピックの記事をグルーピングする。
-
-- **入力**: 記事一覧（タイトル + 本文冒頭300文字程度）
-- **出力**: `GroupingResult`（Structured Output）
-- **判定基準**: 同じニュース・イベントを扱っている記事を同一グループとする
-
-### 個別要約
-
-各記事（またはグループの代表記事）を要約する。
-
-- **入力**: 記事本文（全文）
-- **出力**: `ArticleSummary`（Structured Output）
-- **文字数**: 100〜200文字
-- **言語**: 英語記事も日本語で要約
-
-### ダイジェスト生成
-
-個別要約を統合し、カテゴリ別のダイジェストを生成する。
-
-- **入力**: 個別要約の一覧
-- **出力**: `DigestResult`（Structured Output）
-- **文字数**: 全体で `summarizer.digest_max_length` 以内（既定3000文字）。各カテゴリへは記事数に比例して配分し、記事の少ないカテゴリにも下限120文字を確保する（合計が上限を超えないよう、下限を先に確保してから残りを比例配分する）
-- **構成**: 全体概要 + カテゴリ別サマリー
-
-## 出力仕様
-
-### Discord Embed
-
-Discord Webhook を使用して Embed 形式で投稿する。1回の実行で以下を投稿：
-
-#### ダイジェスト Embed
+定期実行は cron などで起動する。
 
 ```
-┌─────────────────────────────────────┐
-│ 📰 ニュースダイジェスト              │
-│ 2026-03-21 18:00                    │
-├─────────────────────────────────────┤
-│                                     │
-│ [全体概要: 2〜3文]                   │
-│                                     │
-│ テクノロジー (3件)                   │
-│ [カテゴリ本文: 1〜2段落の散文]        │
-│ • [特筆トピック1]                    │
-│ • [特筆トピック2]                    │
-│                                     │
-│ AI・機械学習 (4件)                   │
-│ [カテゴリ本文: 1〜2段落の散文]        │
-│ • [特筆トピック1]                    │
-│                                     │
-├─────────────────────────────────────┤
-│ AI News Summarizer │ 全12件の記事    │
-└─────────────────────────────────────┘
-```
-
-カテゴリ本文は散文でまとめ、その下に特筆すべきトピックを**最大3件**だけ箇条書きで添える。
-箇条書きの件数はカテゴリの記事数に応じて決まり（`summarizer/digest.py` の `_highlight_quota()`）、
-5件未満のカテゴリは散文のみ、それ以上は記事数の1/3を上限に最大3件まで。記事が少ないカテゴリでは
-散文が全記事を言い切ってしまい、箇条書きが本文の言い換えになるため。
-件数表示は記事数であり、箇条書きの行数とは一致しない。
-
-#### 個別記事 Embed（オプション、既定は無効）
-
-`discord.post_individual_articles: true` にすると、ダイジェストの後に全記事の要約を
-1件ずつ Embed で投稿する。カテゴリ別ダイジェストと同じ記事が二重に届くため既定では無効。
-
-### Firestore / SQLite 保存
-
-- 各実行をバッチとして記録
-- 個別要約・ダイジェストともにDB保存
-- FirestoreではViewerが`batch_id`で記事を取得し、SQLiteでは従来どおりJOINして参照可能
-
-## 実行方式
-
-### 実行頻度
-
-ローカルではcron、Google CloudではCloud SchedulerからCloud Run Jobを起動します。
-家族利用向けTerraformの既定値は、LLM利用料と外部APIアクセスを抑えるため1日1回です。
-
-```
-# cron の例（1日5回: 7時, 10時, 13時, 16時, 20時）
+# 1日5回（7時, 10時, 13時, 16時, 20時）の例
 0 7,10,13,16,20 * * * cd /path/to/News-Summarizer && uv run python main.py
 ```
 
-### エラーハンドリング
+### Docker で単体実行する
 
-| 状況 | 挙動 |
-|------|------|
-| Miniflux API 接続失敗 | スキップして続行、ログ出力 |
-| POP3 接続失敗 | スキップして続行、ログ出力 |
-| LLM API 接続失敗 | 処理を中断（要約不可のため） |
-| Discord Webhook 送信失敗 | ログ出力、DB保存は継続 |
-| 新規記事なし | 正常終了（出力なし） |
-
-### コマンドライン
-
-```bash
-# 通常実行
-uv run python main.py
-
-# 設定ファイルを指定して実行
-uv run python main.py --config /path/to/config.yaml
-
-# ドライラン（DB保存・Discord送信・既読化をスキップ）
-uv run python main.py --dry-run
-
-# ドライランでも Discord だけは送信する
-uv run python main.py --dry-run --output discord
-
-# 特定ソースのみ実行
-uv run python main.py --source rss
-uv run python main.py --source email
-
-# LLM出力をターミナルにストリーミング（デバッグ用）
-uv run python main.py --stream
-
-# Embedding・類似度の詳細情報を表示（デバッグ用）
-uv run python main.py --debug
-```
-
-### Docker実行
-
-このリポジトリの `Dockerfile` は `docker/entrypoint.sh` をエントリポイントとし、`config.yaml`
-を置かず環境変数のみで動かす前提のコンテナ用に、`main.py` を単発実行する `run-once` と、
-コンテナ内で `sleep` を挟みながら定期実行し続ける `run-loop` の2モードを提供する
-（既定は `run-once`）。Miniflux の管理者アカウント情報（`MINIFLUX_ADMIN_USERNAME` /
-`MINIFLUX_ADMIN_PASSWORD`）が設定されていて `MINIFLUX_API_KEY` が未設定の場合は、
-起動時に `docker/provision_miniflux_key.py` が Miniflux の API キーを自動発行する。
+`Dockerfile` のイメージは `config.yaml` を持たず、環境変数だけで動く。コマンドは単発実行の
+`run-once`（既定）と、`sleep` を挟んで定期実行し続ける `run-loop` の2つ。
 
 ```bash
 docker build -t news-summarizer .
@@ -729,182 +233,22 @@ docker run --rm -v news-data:/data \
 # -e NEWS_SUMMARIZER_INTERVAL_SECONDS=3600 を足す
 ```
 
-### フルスタック（`docker compose up`）
+### 運用スクリプト
 
-最短手順は冒頭の[クイックスタート](#クイックスタートdocker-compose)。ここは仕組みと運用の詳細。
+`scripts/` に、一度だけ使う運用の道具がある。使い方は `uv run python -m scripts.<名前> --help` で確認できる。
 
-構成は2ファイルに分かれている:
+- `skip_stale_backlog.py`: 障害のあとに溜まった古い未読記事・メールを、要約せずに既読化・削除する（既定はドライラン）
+- `migrate_sqlite_to_firestore.py`: SQLite の履歴を Firestore へ移す
+- `backfill_embedding_vectors.py`: Firestore の Embedding を、Viewer の意味検索で使える形式に変換する
 
-| `.env` の `COMPOSE_FILE` | 起動するもの |
-| --- | --- |
-| 未設定（既定） | PostgreSQL + Miniflux（同梱）+ `summarizer` + `web`（`docker-compose.override.yml` を Compose が自動で読む） |
-| `docker-compose.yml` | `summarizer` + `web` だけ。`MINIFLUX_BASE_URL` / `MINIFLUX_API_KEY` の既存 Miniflux に接続 |
-
-`docker-compose.yml` が Summarizer と Viewer、`docker-compose.override.yml` が同梱 Miniflux と
-`summarizer` の `depends_on: miniflux` を持つ。1ファイルにまとめて `profiles` で切り替えない
-のは、起動しないサービスへの `depends_on` がエラーになり、依存先のプロファイルは強制的に
-起動されてしまうため。既定では `COMPOSE_FILE` を使わないので、Windows のパス区切り（`;`）も気にしなくてよい。
-
-- `summarizer` / `web` は既定で GHCR の公開イメージ（`ghcr.io/shinkolab/news-summarizer:2.7.0` /
-  `ghcr.io/shinkolab/news-viewer:1.5.3`）を pull する。公開イメージは、gitleaks・Trivy・禁止ファイル検査を
-  通ったものだけが GitHub Actions から配布される
-- 手元のコードで動かすときは `docker compose up -d --build`。Summarizer はこのリポジトリから、
-  Viewer は [News-Viewer](https://github.com/ShinkoLab/News-Viewer) のリリースタグ（`v1.5.3`）を
-  Compose が URL から直接ビルドする（clone は不要）。手元の News-Viewer を開発しているときは
-  `.env` に `NEWS_VIEWER_CONTEXT=../News-Viewer` を設定して差し替える。別の版を pull したいときは
-  `NEWS_SUMMARIZER_IMAGE` / `NEWS_VIEWER_IMAGE` で指定する
-- `--build` したイメージは公開イメージと同じ名前（例: `news-summarizer:2.7.0`）で手元に残り、以後の
-  `docker compose up -d` もそれを使い続ける。公開イメージに戻すときは `docker compose pull` する
-- pull に失敗した（オフライン・GHCR の障害など）ときは、Compose がソースからのビルドに切り替える
-  （数分かかる）
-- Viewer: http://localhost:3080、Miniflux（同梱時）: http://localhost:8080
-- 同梱 Miniflux のイメージは `2.3.4` に固定している（`MINIFLUX_IMAGE` で変更可）。すでに新しい版で作った Miniflux の volume を使い回す場合は、同じ版を `MINIFLUX_IMAGE` に指定する（DB スキーマを戻せないため）
-- LLM は Compose に含まれない。ホスト上の Ollama / llama-swap か、クラウドの OpenAI 互換
-  エンドポイントを `.env` で指定する。`.env.example` に Ollama・OpenRouter・その他の設定例がある。
-  サーバーが `response_format` を受け付けない／無視するモデルでは `LLM_STRUCTURED_OUTPUT=false`
-  にする（プレーンテキスト JSON のフォールバックに切り替わる）
-- ネイティブ Linux でも `docker-compose.yml` の `extra_hosts: host.docker.internal:host-gateway`
-  で `host.docker.internal` が引ける
-
-`summarizer` サービスは `NEWS_SUMMARIZER_INTERVAL_SECONDS`（既定 3 時間）間隔で定期実行し続ける。
-手動で一度だけ実行したい場合や CLI オプションを渡したい場合は `summarizer-once`（`profiles: manual`）を使う:
+### テストと設計資料
 
 ```bash
-docker compose run --rm summarizer-once
-docker compose run --rm summarizer-once --dry-run
-docker compose run --rm summarizer-once --source email
+uv run pytest
 ```
 
-**二重実行の防止**: SQLite には実行ロックが無いため、`docker/entrypoint.sh` は `main.py` を
-`/data` 上のロックファイル（`docker/with_lock.py`、`flock`）経由で起動して直列化する。
-`summarizer-once` を `summarizer` の実行中に走らせると、終わるまで待つ
-（`NEWS_SUMMARIZER_LOCK_WAIT_SECONDS`、既定 3600 秒で諦めて終了コード 75）。定期実行側は、
-手動実行中なら今回の周回をスキップして 60 秒以内に取り直す。ロックファイルを作れない／`flock`
-未対応のファイルシステム（一部の NFS など）ではロックなしで実行し、警告を出す。したがって `docker compose stop summarizer`
-は不要。
-
-**取得元**: `NEWS_SUMMARIZER_SOURCE` の既定は `all`（RSS + メール）。`EMAIL_*` が未設定ならメールは
-自動的に無視される。`rss` / `email` で絞ることもできる。
-
-**同梱 Miniflux のとき**:
-
-- `.env` の `MINIFLUX_API_KEY` が空なら、起動時（run-loop は各周回の頭でも未取得なら）管理者
-  ユーザーで API key を自動発行してから `main.py` を実行する（`docker/provision_miniflux_key.py`）
-- フィードが 0 件のときだけ `docker/feeds.opml` のスターターフィードを取り込む
-  （`docker/import_starter_feeds.py`）。一度済んだら `/data` のマーカーで再取り込みしない。
-  `MINIFLUX_IMPORT_STARTER_FEEDS=false` で無効化できる。失敗しても警告だけで続行する
-- 起動時に SQLite のスキーマを作るので、最初の実行が終わる前でも Viewer は
-  「バッチがありません」と表示する（エラーにはならない）
-
-**既存の Miniflux に接続するとき**: 管理者パスワードでの API key 自動発行はしない
-（`MINIFLUX_API_KEY` は必須）。スターターフィードも既定では登録しない
-（`MINIFLUX_IMPORT_STARTER_FEEDS=true` を明示したときだけ、フィードが 0 件のユーザーに登録する）。
-
-Miniflux と Viewer のポートは既定でループバック（`127.0.0.1`）にだけ公開する。LAN など外へ
-出す場合は `.env` に `BIND_ADDRESS=0.0.0.0` を設定し、**先に管理者・Postgres のパスワードを
-変更する**こと（Viewer に認証は無い）。`LLM_MODEL` は必須で、空のままだと summarizer が
-起動時にエラーで終了する。
-
-**トラブルシューティング**: ログに `Miniflux API キーがありません` が出ていれば、API キーの自動発行が
-失敗している（この状態では RSS が取得されない。`--source rss` の `summarizer-once` は終了コード 1（`all` は警告のみでメール側は動く）、run-loop は次の周回で再挑戦する）。原因の例: 管理者パスワード（`MINIFLUX_ADMIN_PASSWORD`）は Postgres の
-volume を初めて初期化するときにだけ反映される。後から `.env` を書き換えると API key の自動発行が
-401 で失敗し続けるので、`docker compose down -v` で volume を作り直すか、Miniflux UI で
-パスワードを合わせるか、`MINIFLUX_API_KEY` を直接設定する。
-
-それ以外で `summarizer` / `summarizer-once` のログに Miniflux の 401 が出る場合、
-API key の自動発行が失敗している可能性がある。`docker compose ps` で `miniflux` が healthy に
-なっていることを確認してから `docker compose run --rm summarizer-once` を再実行する
-（`depends_on: condition: service_healthy` で通常は防がれるが、Miniflux 側の管理者アカウント
-作成が想定より遅れた場合に発生し得る）。
-
-取り込み量は `.env` の `MAX_ARTICLES_PER_RUN` / `MINIFLUX_FETCH_LIMIT`（対で、小さい方が効く。
-お試し向けの既定は 20 / 25）、HTML 除去は `MINIFLUX_STRIP_HTML` で調整できる
-（意味は上の設定項目の節を参照）。全記事の要約が1件も成功しなかった実行は `main.py` が
-終了コード1で終わるが、`summarizer`（run-loop）は止まらず次の間隔で再試行する。
-`summarizer-once` は終了コードをそのまま返す。
-
-Viewer のカテゴリ表示順（`CATEGORY_ORDER`）は `categories.yaml` の定義順の写しで、
-`docker-compose.yml` に直書きしてある（本番は Terraform が注入）。並べ替えたら合わせて更新する。
-
-Summarizer と Viewer は `summarizer-data` volume の `/data/news_summarizer.db` を共有する。
-Summarizer は書き込み、Viewer は読み取り専用で参照する。
-
-## ディレクトリ構成
-
-```
-News-Summarizer/
-├── README.md                  # 本ドキュメント
-├── AGENTS.md                  # コーディングエージェント向けガイド（実体）
-├── CLAUDE.md                  # AGENTS.md への参照のみ
-├── CHANGELOG.md               # 変更履歴（Keep a Changelog 準拠）
-├── LICENSE
-├── categories.yaml            # カテゴリ分類の定義（git管理・イメージに同梱）
-├── config.yaml.example        # 設定ファイルテンプレート
-├── config.yaml                # 設定ファイル（gitignore）
-├── pyproject.toml             # Python プロジェクト定義
-├── uv.lock                    # 依存ロックファイル
-├── mise.toml                  # ランタイム（Python 3.12 / Terraform）指定
-├── main.py                    # CLIエントリポイント
-├── pipeline.py                # パイプライン本体（RunOptions + run_pipeline）
-├── config.py                  # 設定読み込み・バリデーション
-├── models.py                  # データモデル定義
-├── logger.py                  # ロギング設定
-├── fetchers/                  # 記事取得モジュール
-│   ├── __init__.py
-│   ├── base.py               # 取得基底クラス
-│   ├── rss_fetcher.py        # Miniflux API からの RSS 記事取得
-│   ├── html_text.py          # HTML → テキスト変換（標準ライブラリ html.parser）
-│   └── email_fetcher.py      # POP3 メールマガジン取得
-├── summarizer/                # AI処理モジュール
-│   ├── __init__.py
-│   ├── llm_client.py         # 共通 LLM クライアント・リトライ処理
-│   ├── summarizer.py         # 個別要約
-│   ├── grouper.py            # 類似記事グルーピング（LLM / Embeddingモード）
-│   ├── embedder.py           # Embedding ベクトル取得
-│   └── digest.py             # ダイジェスト生成
-├── outputs/                   # 出力モジュール
-│   ├── __init__.py
-│   ├── discord_output.py     # Discord Webhook 出力
-│   ├── database.py           # SQLite データ保存・バックエンド選択
-│   └── firestore_database.py # Firestore データ保存
-├── scripts/
-│   └── migrate_sqlite_to_firestore.py # 既存履歴の移行
-├── infra/                    # Google Cloud Terraform構成
-├── Dockerfile                # Dockerイメージ（Cloud Run Job・Compose 共用。ENTRYPOINT は docker/entrypoint.sh）
-├── .dockerignore             # イメージから除外するファイル
-├── cloudbuild.yaml           # Artifact Registryへのビルド
-├── docker/                   # Docker実行用エントリポイント・APIキー自動発行・スターターフィード（feeds.opml）・実行ロック
-├── docker-compose.yml        # Summarizer + Viewer
-├── docker-compose.override.yml # 同梱 Miniflux（PostgreSQL + Miniflux）。Compose が自動で重ねる
-├── .env.example              # docker-compose.yml 用の設定テンプレート
-├── tests/                     # pytest テストスイート
-└── data/                      # データディレクトリ（自動生成）
-    └── news_summarizer.db    # SQLite データベース
-```
-
-## セットアップ
-
-```bash
-# 依存パッケージのインストール
-uv sync
-
-# 設定ファイルの作成
-cp config.yaml.example config.yaml
-# config.yaml を編集して各サービスの認証情報を入力
-
-# 動作確認（ドライラン）
-uv run python main.py --dry-run
-```
-
-## 将来の拡張
-
-以下は現時点では対象外とし、必要に応じて追加する。
-
-| 拡張項目 | 概要 |
-|---------|------|
-| **Slack Webhook 出力** | Slack 用の出力モジュール追加 |
-| **REST API** | Webアプリ向けの読み取り専用 API サーバー |
-| **イベント駆動実行** | cron の代替（ファイル監視、Webhook トリガー等） |
+モジュール構成・重複排除・保存先の仕組みなどの設計は [`AGENTS.md`](AGENTS.md) にまとめてある。
+変更履歴は [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 免責事項
 

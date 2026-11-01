@@ -183,7 +183,8 @@ Miniflux (RSS) + POP3 (Email)
 ```
 
 Runs locally as a CLI and on Google Cloud as a Cloud Run Job — same code, different
-config source (see **Deployment** below). For the full design spec see `README.md`.
+config source (see **Deployment** below). `README.md` is for users (quickstart, Compose operation);
+the design lives in this file and the code.
 
 ### Key modules
 
@@ -361,7 +362,7 @@ is unaffected and still stores JSON.
   `NEWS_SUMMARIZER_INTERVAL_SECONDS`, `MINIFLUX_BUNDLED`, `MINIFLUX_ADMIN_*`,
   `MINIFLUX_IMPORT_STARTER_FEEDS`) or the OS (`TZ`) — add config keys in both places together.
   `web`'s `CATEGORY_ORDER` is a hardcoded copy of `categories.yaml`'s order (Terraform derives it
-  in production); update it when reordering categories. See README "フルスタック"
+  in production); update it when reordering categories. See README "Docker Compose の構成と運用"
 - **`cloudbuild.yaml`** — Cloud Build config for the summarizer image
 - **`docker-compose.yml` + `docker-compose.override.yml`** — self-host stack for trying the project
   (clone → edit `.env` → `docker compose up -d`). `docker-compose.yml` holds `summarizer`

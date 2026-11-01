@@ -44,7 +44,7 @@ docker compose up -d
 ```
 
 - **Miniflux は同梱が既定**。初回に定番の RSS フィード5件（`docker/feeds.opml`）を自動登録する。
-  フィードの追加・削除は Miniflux の画面（http://localhost:8080）で行う。
+  フィードの追加・削除は Miniflux の画面（<http://localhost:8080>）で行う。
   自前の Miniflux につなぐ方法は[既存の Miniflux につなぐ](#既存の-miniflux-につなぐ)を参照
 - 1 回の実行で記事ごとに LLM を呼ぶ（個別要約 + グルーピング + ダイジェスト）ので、有料の API では費用に注意する。
   お試し向けに既定は「1 回 20 件、3 時間おき」。増やし方は[実行の間隔と手動実行](#実行の間隔と手動実行)を参照

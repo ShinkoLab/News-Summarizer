@@ -5,10 +5,10 @@ name: Publish image
 # 公開するのは「スキャンとガードを通過したイメージそのもの」だけ:
 #   1. gitleaks で全履歴をスキャン
 #   2. アーキテクチャごとに 1 回ビルドし、そのイメージを Trivy とファイル検査にかける
-#   3. 全て通った後に限り、同じ job の中で同じビルド（キャッシュ 100% ヒット）を
-#      タグ無し・digest 指定で push し、config digest がスキャン対象と一致することを確認
+#   3. 全て通った後に限り、同じ job の中でスキャンしたイメージそのもの（再ビルドしない）を
+#      ステージングパッケージへ push し、config digest がスキャン対象と一致することを確認
 #   4. publish ジョブは再ビルドせず、各アーキテクチャの digest から manifest list を作ってタグ付けするだけ
-# 検査に失敗した時点で後続ステップは実行されないため、その arch のイメージは push されない。
+# 検査に失敗した時点で後続の push は実行されないため、その arch のイメージは push されない。
 # 同一リポジトリからの PR でもステージングへの push と照合までを行い（本番タグは付けない）、
 # 終わったらその PR のステージング版を削除する。fork の PR はスキャンまで。
 on:
@@ -215,20 +215,33 @@ jobs:
           set -euo pipefail
           pkg="${STAGING_IMAGE##*/}"
           tag="${GITHUB_SHA}-${{ matrix.arch }}"
-          ids=$(gh api --paginate "/users/${OWNER}/packages/container/${pkg}/versions" \
-            --jq ".[] | select(.metadata.container.tags | index(\"${tag}\")) | .id")
-          if [ -z "$ids" ]; then
-            echo "no staging version tagged ${tag}; nothing to delete"
-            exit 0
+          api="/users/${OWNER}/packages/container/${pkg}/versions"
+          # push 直後は一覧に出るまで遅れることがあるので、少し待って引き直す。
+          # 見つからないまま終わると版が残るので、そのときは黙らず警告する
+          found=""
+          for _ in 1 2 3 4 5 6; do
+            found=$(gh api --paginate "$api" \
+              --jq ".[] | select(.metadata.container.tags | index(\"${tag}\")) | \"\(.id) \(.metadata.container.tags | length)\"")
+            [ -n "$found" ] && break
+            sleep 5
+          done
+          if [ -z "$found" ]; then
+            echo "::warning::no ${pkg} version tagged ${tag} found; delete it by hand if it exists"
+            exit 1
           fi
-          for id in $ids; do
-            if gh api -X DELETE "/users/${OWNER}/packages/container/${pkg}/versions/${id}"; then
+          while read -r id ntags; do
+            # 他のタグも付いている版は、同一内容の既存の版（リリース時の版など）にタグが足されただけ。消さない
+            if [ "$ntags" -ne 1 ]; then
+              echo "::warning::${pkg} version ${id} has other tags besides ${tag}; leaving it"
+              continue
+            fi
+            if gh api -X DELETE "${api}/${id}"; then
               echo "deleted ${pkg} version ${id} (${tag})"
             else
               echo "::warning::could not delete ${pkg} version ${id} (${tag}); delete it by hand"
               exit 1
             fi
-          done
+          done <<< "$found"
       - name: Upload digest
         if: env.IS_RELEASE == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

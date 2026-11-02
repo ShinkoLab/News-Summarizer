@@ -17,8 +17,20 @@ def to_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+class FetchError(RuntimeError):
+    """Source fetch failed; articles obtained before failure remain usable.
+
+    Successful fetches return a list, including an empty list for no new articles.
+    Message-local parse failures are handled by the fetcher, not this exception.
+    """
+
+    def __init__(self, message: str, articles: list[Article] | None = None):
+        super().__init__(message)
+        self.articles = list(articles) if articles is not None else []
+
+
 class BaseFetcher(ABC):
     @abstractmethod
     def fetch(self) -> List[Article]:
-        """新規記事を取得してArticleのリストを返す"""
+        """Return new articles (possibly empty); raise FetchError on source failure."""
         pass

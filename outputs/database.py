@@ -7,6 +7,7 @@ from typing import Optional, TYPE_CHECKING
 from config import config
 from models import Article, ArticleSummary, SaveResult
 from urls import url_key
+from outputs.delivery import MAX_PENDING
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -31,6 +32,12 @@ class Database:
 
     def init_db(self):
         schema = """
+        CREATE TABLE IF NOT EXISTS discord_outbox (
+            id TEXT PRIMARY KEY, batch_id INTEGER NOT NULL,
+            payloads TEXT NOT NULL, next_payload INTEGER NOT NULL,
+            created_at REAL NOT NULL, next_attempt_at REAL NOT NULL,
+            attempts INTEGER NOT NULL
+        );
         -- 実行バッチの管理
         CREATE TABLE IF NOT EXISTS batches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -249,6 +256,7 @@ class Database:
         summaries: list[tuple[Article, ArticleSummary, int | None, str | None]],
         digest: "DigestResult",
         embeddings=None,
+        *, delivery: dict | None = None,
     ) -> SaveResult:
         """Persist a completed pipeline result in a single SQLite transaction.
 
@@ -308,12 +316,37 @@ class Database:
                         (article.source_id,),
                     )
 
+            if delivery is not None:
+                if conn.execute("SELECT COUNT(*) FROM discord_outbox").fetchone()[0] >= MAX_PENDING:
+                    raise RuntimeError("Discord outbox is full; restore delivery before saving more articles")
+                conn.execute(
+                    "INSERT INTO discord_outbox VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (delivery['id'], batch_id, delivery['payloads'], delivery['next_payload'],
+                     delivery['created_at'], delivery['next_attempt_at'], delivery['attempts']),
+                )
             conn.commit()
             logger.debug("バッチを一括保存しました (batch_id: %d)", batch_id)
             return SaveResult(
                 batch_id=int(batch_id),
                 saved=[(article.source_type, article.source_id) for article, *_ in summaries],
             )
+
+    def pending_deliveries(self, limit=MAX_PENDING):
+        with self.get_connection() as conn:
+            return [dict(row) for row in conn.execute(
+                "SELECT * FROM discord_outbox ORDER BY created_at, id LIMIT ?", (limit,)
+            )]
+
+    def update_delivery(self, delivery_id, next_payload, next_attempt_at, attempts):
+        with self.get_connection() as conn:
+            conn.execute(
+                "UPDATE discord_outbox SET next_payload=?, next_attempt_at=?, attempts=? WHERE id=?",
+                (next_payload, next_attempt_at, attempts, delivery_id),
+            )
+
+    def delete_delivery(self, delivery_id):
+        with self.get_connection() as conn:
+            conn.execute("DELETE FROM discord_outbox WHERE id=?", (delivery_id,))
 
     @contextmanager
     def execution_lock(self):

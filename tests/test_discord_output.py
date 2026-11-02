@@ -380,3 +380,28 @@ class TestProseRendering:
     def test_default_config_does_not_post_individual_articles(self):
         """既定ではダイジェストのみを投稿する（全記事の二重配信を避ける）。"""
         assert DiscordConfig().post_individual_articles is False
+
+@pytest.mark.parametrize('fail_at', [0, 1, 2])
+def test_all_http_posts_check_status_and_propagate_failure(fail_at):
+    import httpx
+    output = TestPost()._make_output(post_individual=True)
+    responses = [httpx.Response(204, request=httpx.Request('POST', output.webhook_url))
+                 for _ in range(3)]
+    responses[fail_at] = httpx.Response(500, request=httpx.Request('POST', output.webhook_url))
+    with patch('httpx.post', side_effect=responses) as post:
+        with pytest.raises(httpx.HTTPStatusError):
+            output.post(_make_digest(), _make_summaries(11))
+    assert post.call_count == fail_at + 1
+
+@pytest.mark.parametrize('query', ['', '?thread_id=123&wait=false', '?thread_id=123&wait=true'])
+def test_send_requests_confirmed_discord_delivery_and_preserves_thread(query):
+    import httpx
+    output = TestPost()._make_output()
+    output.webhook_url = 'https://discord.example/api/webhooks/id/token' + query
+    with patch('httpx.post', return_value=MagicMock()) as post:
+        output.send_payload({'content': 'confirmed'})
+    url = httpx.URL(post.call_args.args[0])
+    assert url.params.get_list('wait') == ['true']
+    if query:
+        assert url.params['thread_id'] == '123'
+    post.return_value.raise_for_status.assert_called_once_with()

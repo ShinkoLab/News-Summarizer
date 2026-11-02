@@ -5,7 +5,9 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 
+from fetchers.base import FetchError
 from fetchers.rss_fetcher import MinifluxFetcher
 
 
@@ -206,3 +208,46 @@ def test_fetch_dates_are_always_timezone_aware():
 
     assert [a.published_at.utcoffset().total_seconds() for a in articles] == [0, 0, 0]
     assert articles[0].published_at.hour == 0
+
+
+
+def test_fetch_empty_is_success():
+    articles, mark = _fetch_with(True, [])
+    assert articles == []
+    mark.assert_not_called()
+
+
+@pytest.mark.parametrize("failure_stage", ["request", "status", "json"])
+def test_fetch_source_failure_raises_explicit_error(failure_stage):
+    response = _entries_response([])
+    failure = {
+        "request": httpx.ConnectError("offline"),
+        "status": httpx.HTTPStatusError("unauthorized", request=MagicMock(), response=MagicMock()),
+        "json": ValueError("invalid JSON"),
+    }[failure_stage]
+    if failure_stage == "status":
+        response.raise_for_status.side_effect = failure
+    if failure_stage == "json":
+        response.json.side_effect = failure
+    with patch("fetchers.rss_fetcher.config", _fake_config()):
+        fetcher = MinifluxFetcher()
+    with patch("fetchers.rss_fetcher.httpx.get", return_value=response) as get:
+        if failure_stage == "request":
+            get.side_effect = failure
+        with pytest.raises(FetchError) as caught:
+            fetcher.fetch()
+
+    assert caught.value.articles == []
+    assert caught.value.__cause__ is failure
+
+
+def test_fetch_preserves_articles_before_invalid_entry():
+    entries = [dict(_HTML_ENTRY), {"content": "no id"}]
+    with patch("fetchers.rss_fetcher.config", _fake_config()):
+        fetcher = MinifluxFetcher()
+    with patch("fetchers.rss_fetcher.httpx.get", return_value=_entries_response(entries)):
+        with pytest.raises(FetchError) as caught:
+            fetcher.fetch()
+
+    assert [a.source_id for a in caught.value.articles] == ["1"]
+    assert isinstance(caught.value.__cause__, KeyError)

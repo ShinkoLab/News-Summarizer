@@ -216,7 +216,14 @@ Keep this file and `docs/` in sync — see 「ドキュメントの更新」 abo
   error isolation would otherwise end the run normally and Cloud Run would record it as a success.
   Such a total failure is environmental, so it does **not** count toward the email attempt limit
   (otherwise an outage alone would exhaust `max_fetch_attempts` and give up on every message).
-  A partial failure (at least one summary saved) still exits 0
+  A partial failure (at least one summary saved) still exits 0, unless an unexpected later
+  output exception aborts the run. Raised storage errors are converted to `RunFailedError`;
+  unexpected aborted processing never consumes email retries. Confirmed `SaveResult` is retained
+  in `RunFailedError.saved_result` if a post-save step raises, so saved email cleanup remains safe.
+  Fetchers return lists on success (including empty) or raise `FetchError` carrying partial
+  articles. `FetchResult` tracks successful/failed sources; all attempted sources failing with
+  no partial articles raises `RunFailedError`. Optional unconfigured email under `all` is not
+  an attempted source; explicitly requested unconfigured email is a failure
 - **`config.py`** / **`config.yaml`** — Pydantic config layer; `config.yaml` is gitignored, use `config.yaml.example` as template. Most keys can also be supplied via environment variables (see **Configuration**)
 - **`models.py`** — All data structures: `Article` (common fetch format, dataclass), `SaveResult` (what `save_batch()` actually persisted), plus Pydantic models for LLM structured outputs (`ArticleGroup`, `GroupingResult`, `ArticleSummary`, `CategoryDigest`, `TopicLabel`, `TopicNamingResult`, `DigestResult`)
 - **`logger.py`** — Logging setup (`setup_logging()` / `get_logger()`); outputs to stderr only, level controlled by `logging.level` in config
@@ -309,14 +316,19 @@ the Viewer renders it under two headings.
   **parsing** fails never becomes an `Article`, so `EmailFetcher.fetch()` isolates it (the rest
   of the mailbox is still fetched), records it in `failed_uidls`, and `run_pipeline()` counts it
   right after fetching — before the "no new articles" early return. A `RETR` failure is a
-  connection problem and still aborts the fetch without counting anything
+  connection problem and aborts the remaining fetch without charging the failed RETR; articles
+  already fetched are retained for processing. POP3 SSL uses `ssl.create_default_context()`
+  (trusted CA and hostname verification); SSL and plain POP3 both use a fixed 30-second timeout
+  per socket operation, not per run. Failed login closes the socket without QUIT.
   Setting `email.delete_after_processing: true` makes `delete_processed_emails()` (`pipeline.py`)
   remove messages from the mailbox after persistence, via `EmailFetcher.delete_messages()`. Only two
-  kinds are deleted: those in `SaveResult.saved`, and the ones `reconcile_email_attempts()` just gave
-  up on (it returns those UIDLs) — a message that merely failed this run stays on the server so the
+  kinds are deleted: saved messages and messages given up after the attempt limit. This includes
+  `SaveResult.saved`, newly given-up UIDLs, and `EmailFetcher.processed_uidls` collected during
+  the existing UIDL scan (no RETR), so failed deletion is retried even with no new articles — a message that merely failed this run stays on the server so the
   retry machinery above still works. POP3 message numbers are per-session, so the deletion opens a
   **second session** and rebuilds the UIDL→number map there; `DELE` is only committed by `QUIT`, so
-  any error skips `QUIT` and closes the socket instead, deleting nothing. `--dry-run` always skips
+  errors before `QUIT` skip it and close the socket instead, discarding deletion marks. A lost
+  `QUIT` response can have an ambiguous outcome; the next scan safely handles remaining UIDLs. `--dry-run` always skips
   deletion, even with `--output db`
 - **Article-level**: `filter_new_articles()` (`pipeline.py`) runs before summarization and applies
   two checks. `db.is_article_processed(source_type, source_id)` drops anything already stored, and
@@ -358,6 +370,49 @@ the Viewer renders it under two headings.
 Both backends return a `SaveResult` (`models.py`) — `batch_id`, the `(source_type, source_id)`
 pairs actually persisted, and a failure count — so mark-as-read and email bookkeeping only ever
 act on what really landed in the database.
+
+### Durable Discord delivery
+
+`outputs/delivery.py` freezes rendered JSON payloads once per generated batch, before persistence.
+SQLite writes `discord_outbox` in the article transaction. Firestore writes the **same UUID**
+`discordOutbox` document atomically in every article chunk (including its size/write overhead),
+not just in the final batch-document commit. Sending starts only after save, so these repeated
+sets cannot overwrite delivery progress. Partial saves and final batch-document failure retain
+recovery; all article chunks failing leave no outbox. The payload intentionally describes the
+entire generated batch, including unsaved articles on a partial save (the existing digest behavior).
+Those unsaved articles may appear in a later batch too.
+
+Drain pending deliveries before fetch (even when no articles arrive), and after new persistence.
+Startup delivery failures do not block fresh ingestion/persistence or POP3 cleanup; retain the
+error and report nonzero after those steps, including empty-article runs. Each drain handles at
+most 10 deliveries; there are at most two drains per pipeline run. Every
+HTTP POST uses `wait=true` to await message persistence (preserving other URL query parameters
+such as `thread_id`) and calls `raise_for_status()`. Checkpoint `next_payload` after each successful POST, retain
+failures with `next_attempt_at` (30-second exponential backoff capped at 6 hours, or a longer
+HTTP 429 `retry_after`/`Retry-After`),
+and delete completed deliveries. Failure exits nonzero; never log an unacknowledged post as sent.
+Non-429 HTTP failures skip the remaining payloads of that delivery but continue other deliveries
+within the drain bound before raising; 429 stops the drain immediately. At each drain's start,
+any future `next_attempt_at` conservatively pauses **all** sends to the current webhook, including
+newly persisted payloads (applies to non-429 backoff too). Cooldown deferral is not a new failure.
+No immediate retry loop or sleep. Pending storage is capped at 100 deliveries, payload JSON at 512 KiB;
+refuse new persistence rather than silently drop an existing delivery when full. Permanent 400s
+are retained too: inspect delivery/batch IDs and payload/progress, fix the cause, then resume.
+If deliberate discard is necessary, stop concurrent runs, back up the row/document, verify the ID,
+and delete only that outbox entry, acknowledging loss of its undelivered remainder. Do not casually
+change `next_payload` to bypass errors. Fixing renderer code does not mutate already frozen payloads.
+See `docs/operations.md` for the operator workflow.
+
+Discord recovery logs must contain only exception class/HTTP status, never exception text or
+tracebacks (including chained causes with secret-bearing URLs). `setup_logging()` keeps `httpx`
+and `httpcore` at WARNING or the configured higher level, including app debug mode.
+Webhook secrets are never stored; pending messages use the current configured webhook, or stay
+pending if it is unset. DB-only dry runs do not enqueue/send Discord; Discord-only forced output
+without DB remains direct and non-durable. This is **at-least-once**, not exactly-once: Discord
+acceptance followed by a timeout, or a crash before progress persistence, can duplicate a message.
+Webhook POST and DB acknowledgement cannot be one transaction. Preserve execution serialization
+(Firestore lease / Compose SQLite flock); direct SQLite CLI callers must avoid overlapping runs.
+Old pre-outbox failures are not backfilled. Completed entries are removed, not retained as an audit log.
 
 `scripts/migrate_sqlite_to_firestore.py` moves existing data across.
 

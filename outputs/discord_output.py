@@ -1,5 +1,4 @@
 import httpx
-from datetime import datetime
 from typing import List
 
 from models import DigestResult, ArticleSummary
@@ -20,36 +19,35 @@ class DiscordOutput:
         self.footer_text = discord_cfg.footer_text
         self.post_individual_articles = discord_cfg.post_individual_articles
 
+    def payloads(self, digest: DigestResult, summaries: List[ArticleSummary]) -> list[dict]:
+        """Render once; retries must never rebuild a changing payload."""
+        payloads = []
+        if digest.overview or digest.categories:
+            payloads.append({"embeds": [self._create_digest_embed(digest)]})
+        else:
+            logger.warning("ダイジェストが空のため、ダイジェスト投稿をスキップします。")
+        if summaries and self.post_individual_articles:
+            embeds = [self._create_summary_embed(s) for s in summaries]
+            payloads.extend({"embeds": embeds[i:i+10]} for i in range(0, len(embeds), 10))
+        return payloads
+
+    def send_payload(self, payload: dict) -> None:
+        if not self.webhook_url:
+            raise RuntimeError("Discord webhook URL is not configured")
+        # Discord wait=false can acknowledge before the message is saved.
+        # Preserve thread_id/other query parameters while overriding any wait=false.
+        url = httpx.URL(self.webhook_url).copy_set_param("wait", "true")
+        response = httpx.post(url, json=payload, timeout=10.0)
+        response.raise_for_status()
+
     def post(self, digest: DigestResult, summaries: List[ArticleSummary]):
         if not self.webhook_url:
             logger.warning("Discord webhook URLが設定されていません。Discord出力をスキップします。")
-            return
-
-        # 1. ダイジェストの投稿
-        # ダイジェスト生成が全て失敗して中身が空の場合は embed をスキップし、
-        # 個別記事の投稿だけ行う（個別記事はダイジェスト投稿の成否に依存させない）
-        if digest.overview or digest.categories:
-            digest_embed = self._create_digest_embed(digest)
-            payload = {
-                "embeds": [digest_embed]
-            }
-            try:
-                response = httpx.post(self.webhook_url, json=payload, timeout=10.0)
-                response.raise_for_status()
-            except httpx.HTTPError as e:
-                logger.error("Discordへのダイジェスト送信に失敗しました: %s", e, exc_info=True)
-        else:
-            logger.warning("ダイジェストが空のため、ダイジェスト投稿をスキップします。")
-
-        # 2. 個別記事の詳細を追加Embedとして投稿 (Discord制限で1回につき最大10個)
-        if summaries and self.post_individual_articles:
-            summary_embeds = [self._create_summary_embed(s) for s in summaries]
-            for i in range(0, len(summary_embeds), 10):
-                chunk = summary_embeds[i:i+10]
-                try:
-                    httpx.post(self.webhook_url, json={"embeds": chunk}, timeout=10.0)
-                except httpx.RequestError as e:
-                    logger.error("Discordへの記事要約送信に失敗しました: %s", e, exc_info=True)
+            return 0
+        payloads = self.payloads(digest, summaries)
+        for payload in payloads:
+            self.send_payload(payload)
+        return len(payloads)
 
     def _create_digest_embed(self, digest: DigestResult) -> dict:
         now_str = digest.generated_at.strftime("%Y-%m-%d %H:%M")

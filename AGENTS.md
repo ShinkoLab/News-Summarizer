@@ -216,7 +216,14 @@ Keep this file and `docs/` in sync — see 「ドキュメントの更新」 abo
   error isolation would otherwise end the run normally and Cloud Run would record it as a success.
   Such a total failure is environmental, so it does **not** count toward the email attempt limit
   (otherwise an outage alone would exhaust `max_fetch_attempts` and give up on every message).
-  A partial failure (at least one summary saved) still exits 0
+  A partial failure (at least one summary saved) still exits 0, unless an unexpected later
+  output exception aborts the run. Raised storage errors are converted to `RunFailedError`;
+  unexpected aborted processing never consumes email retries. Confirmed `SaveResult` is retained
+  in `RunFailedError.saved_result` if a post-save step raises, so saved email cleanup remains safe.
+  Fetchers return lists on success (including empty) or raise `FetchError` carrying partial
+  articles. `FetchResult` tracks successful/failed sources; all attempted sources failing with
+  no partial articles raises `RunFailedError`. Optional unconfigured email under `all` is not
+  an attempted source; explicitly requested unconfigured email is a failure
 - **`config.py`** / **`config.yaml`** — Pydantic config layer; `config.yaml` is gitignored, use `config.yaml.example` as template. Most keys can also be supplied via environment variables (see **Configuration**)
 - **`models.py`** — All data structures: `Article` (common fetch format, dataclass), `SaveResult` (what `save_batch()` actually persisted), plus Pydantic models for LLM structured outputs (`ArticleGroup`, `GroupingResult`, `ArticleSummary`, `CategoryDigest`, `TopicLabel`, `TopicNamingResult`, `DigestResult`)
 - **`logger.py`** — Logging setup (`setup_logging()` / `get_logger()`); outputs to stderr only, level controlled by `logging.level` in config
@@ -309,7 +316,10 @@ the Viewer renders it under two headings.
   **parsing** fails never becomes an `Article`, so `EmailFetcher.fetch()` isolates it (the rest
   of the mailbox is still fetched), records it in `failed_uidls`, and `run_pipeline()` counts it
   right after fetching — before the "no new articles" early return. A `RETR` failure is a
-  connection problem and still aborts the fetch without counting anything
+  connection problem and aborts the remaining fetch without charging the failed RETR; articles
+  already fetched are retained for processing. POP3 SSL uses `ssl.create_default_context()`
+  (trusted CA and hostname verification); SSL and plain POP3 both use a fixed 30-second timeout
+  per socket operation, not per run. Failed login closes the socket without QUIT.
   Setting `email.delete_after_processing: true` makes `delete_processed_emails()` (`pipeline.py`)
   remove messages from the mailbox after persistence, via `EmailFetcher.delete_messages()`. Only two
   kinds are deleted: those in `SaveResult.saved`, and the ones `reconcile_email_attempts()` just gave

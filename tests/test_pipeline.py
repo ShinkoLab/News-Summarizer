@@ -186,7 +186,8 @@ class TestOptionalEmailAndDiscordLog:
                 patch("pipeline.create_database"),
                 patch("pipeline.DiscordOutput"),
             ):
-                run_pipeline(minimal_config, RunOptions(dry_run=True, sources=frozenset({"email"})))
+                with pytest.raises(RunFailedError):
+                    run_pipeline(minimal_config, RunOptions(dry_run=True, sources=frozenset({"email"})))
 
         MockEmail.assert_called_once()
         assert [r for r in caplog.records if r.levelno >= logging.ERROR]
@@ -1148,3 +1149,130 @@ class TestSelectArticles:
 
         assert len(selected) == 5
         assert sum(1 for a in selected if a.source_type == "email") == 1
+
+
+class TestFetchFailureContract:
+    @pytest.mark.parametrize("rss_error,email_error,raises", [
+        (True, True, True),
+        (True, False, False),  # successful empty mailbox is not a failed source
+        (False, True, False),
+        (False, False, False),
+    ])
+    def test_source_outcomes(self, minimal_config, rss_error, email_error, raises):
+        from fetchers.base import FetchError
+        minimal_config.email = EmailConfig(host="pop.example.com", username="u", password="p")
+        with (
+            patch("pipeline.MinifluxFetcher") as rss,
+            patch("pipeline.EmailFetcher") as email,
+            patch("pipeline.create_database", return_value=_make_db()),
+            patch("pipeline.summarize_article") as summarize,
+        ):
+            rss.return_value.fetch.side_effect = FetchError("RSS down") if rss_error else None
+            rss.return_value.fetch.return_value = []
+            email.return_value.fetch.side_effect = FetchError("POP3 down") if email_error else None
+            email.return_value.fetch.return_value = []
+            email.return_value.failed_uidls = set()
+            if raises:
+                with pytest.raises(RunFailedError):
+                    run_pipeline(minimal_config, RunOptions())
+            else:
+                run_pipeline(minimal_config, RunOptions())
+            summarize.assert_not_called()
+
+    def test_failed_only_configured_source_is_not_empty_success(self, minimal_config):
+        with (
+            patch("pipeline.MinifluxFetcher", side_effect=ValueError("missing config")),
+            patch("pipeline.create_database", return_value=_make_db()),
+        ):
+            with pytest.raises(RunFailedError):
+                run_pipeline(minimal_config, RunOptions())
+
+    def test_partial_email_fetch_preserves_articles_without_transport_retry(self, minimal_config):
+        from fetchers.base import FetchError
+        article = _make_article("mail-ok", "email")
+        minimal_config.email = EmailConfig(host="pop.example.com", username="u", password="p")
+        db = _make_db()
+        email = MagicMock()
+        email.fetch.side_effect = FetchError("RETR disconnected", [article])
+        email.failed_uidls = set()
+        _run_with_email_mock(minimal_config, RunOptions(sources=frozenset({"email"})),
+                             [article], db, email)
+        assert db.save_batch.call_args.args[0][0][0] == article
+        db.record_email_attempt.assert_not_called()
+        email.delete_messages.assert_called_once_with({"mail-ok"})
+
+
+class TestRaisedStorageFailure:
+    def test_real_sqlite_insert_failure_never_exhausts_email_retries(self, minimal_config, tmp_path):
+        from outputs.database import Database
+        minimal_config.email = EmailConfig(host="pop.example.com", username="u", password="p",
+                                          delete_after_processing=True)
+        db = Database(db_path=str(tmp_path / "failure.db"))
+        # Fail the article insert, while leaving retry/processed tables fully writable.
+        with db.get_connection() as conn:
+            conn.execute("""CREATE TRIGGER reject_article BEFORE INSERT ON article_summaries
+                          BEGIN SELECT RAISE(FAIL, 'storage unavailable'); END""")
+            conn.commit()
+        email = MagicMock()
+        email.failed_uidls = set()
+        article = _make_article("mail-1", "email")
+        for _ in range(4):
+            with pytest.raises(RunFailedError, match="データベース"):
+                _run_with_email_mock(minimal_config, RunOptions(sources=frozenset({"email"})),
+                                     [article], db, email)
+            assert not db.is_email_processed("mail-1")
+            with db.get_connection() as conn:
+                assert conn.execute("SELECT COUNT(*) FROM email_attempts").fetchone()[0] == 0
+                assert conn.execute("SELECT COUNT(*) FROM article_summaries").fetchone()[0] == 0
+                assert conn.execute("SELECT COUNT(*) FROM batches").fetchone()[0] == 0
+        email.delete_messages.assert_not_called()
+        # A later healthy run can still save the original message.
+        with db.get_connection() as conn:
+            conn.execute("DROP TRIGGER reject_article")
+            conn.commit()
+        _run_with_email_mock(minimal_config, RunOptions(sources=frozenset({"email"})),
+                             [article], db, email)
+        assert db.is_email_processed("mail-1")
+        email.delete_messages.assert_called_once_with({"mail-1"})
+
+    def test_post_save_exception_keeps_confirmed_saved_outcome(self, minimal_config):
+        minimal_config.email = EmailConfig(host="pop.example.com", username="u", password="p")
+        db = _make_db(saved_source_ids=["mail-ok"])
+        discord = MagicMock()
+        discord.post.side_effect = RuntimeError("output aborted")
+        with patch("pipeline.delete_processed_emails") as delete:
+            with pytest.raises(RunFailedError, match="出力"):
+                _run_with_patches(minimal_config, RunOptions(),
+                                  [_make_article("mail-ok", "email"),
+                                   _make_article("mail-pending", "email")],
+                                  db_mock=db, discord_mock=discord)
+        db.record_email_attempt.assert_not_called()
+        db.mark_email_processed.assert_not_called()
+        assert delete.call_args.args[1] == {"mail-ok"}
+
+    @pytest.mark.parametrize("failure", [RuntimeError("stage aborted"), KeyboardInterrupt()])
+    def test_unexpected_abort_does_not_charge_message_retries(self, minimal_config, failure):
+        db = _make_db()
+        with patch("pipeline._process", side_effect=failure):
+            with pytest.raises(type(failure)):
+                _run_with_patches(minimal_config, RunOptions(sources=frozenset({"email"})),
+                                  [_make_article("mail-1", "email")], db_mock=db)
+        db.record_email_attempt.assert_not_called()
+        db.mark_email_processed.assert_not_called()
+
+
+def test_fetch_contract_tracks_partial_source_success(minimal_config):
+    from fetchers.base import FetchError
+    from pipeline import fetch_articles
+    article = _make_article("1")
+    with (
+        patch("pipeline.MinifluxFetcher") as rss,
+        patch("pipeline.EmailFetcher") as email,
+    ):
+        rss.return_value.fetch.return_value = [article]
+        email.return_value.fetch.side_effect = FetchError("POP3 down")
+        fetched = fetch_articles(RunOptions(), _make_db(), email_configured=True)
+    assert fetched.articles == [article]
+    assert fetched.succeeded_sources == {"rss"}
+    assert fetched.failed_sources == {"email"}
+    assert not fetched.total_failure

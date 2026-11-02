@@ -20,6 +20,7 @@ from logger import get_logger
 from models import Article, ArticleSummary, DigestResult, SaveResult
 from urls import url_key
 
+from fetchers.base import FetchError
 from fetchers.rss_fetcher import MinifluxFetcher
 from fetchers.email_fetcher import EmailFetcher
 from outputs.database import create_database
@@ -32,13 +33,18 @@ logger = get_logger(__name__)
 
 
 class RunFailedError(RuntimeError):
-    """処理対象の記事があったのに、1件も要約できなかった／1件も保存できなかった。
+    """取得・要約・保存の全件失敗、または処理段階の異常終了。
 
     APIキー失効やDB障害のような全件に効く障害でも、記事ごと・チャンクごとの
     エラー分離によってパイプライン自体は正常終了してしまい、Cloud Run Job が
     「成功」扱いになる。障害に気付けるよう、呼び出し側（main.py）で異常終了させる
     ために送出する。
     """
+
+    def __init__(self, message: str, *, saved_result: SaveResult | None = None):
+        super().__init__(message)
+        # Preserve confirmed writes even if a later output step raises.
+        self.saved_result = saved_result
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +95,12 @@ class FetchResult:
     articles: list[Article]
     rss_fetcher: MinifluxFetcher | None
     email_fetcher: EmailFetcher | None
+    succeeded_sources: frozenset[str] = frozenset()
+    failed_sources: frozenset[str] = frozenset()
+
+    @property
+    def total_failure(self) -> bool:
+        return bool(self.failed_sources) and not self.succeeded_sources and not self.articles
 
 
 def fetch_articles(options: RunOptions, db, *, email_configured: bool) -> FetchResult:
@@ -97,12 +109,19 @@ def fetch_articles(options: RunOptions, db, *, email_configured: bool) -> FetchR
     rss_fetcher: MinifluxFetcher | None = None
     email_fetcher: EmailFetcher | None = None
 
+    succeeded_sources: set[str] = set()
+    failed_sources: set[str] = set()
+
     if options.run_rss:
         try:
             logger.info("RSS（Miniflux）から記事を取得中...")
             rss_fetcher = MinifluxFetcher(dry_run=options.dry_run)
             articles.extend(rss_fetcher.fetch())
+            succeeded_sources.add("rss")
         except Exception as e:
+            failed_sources.add("rss")
+            if isinstance(e, FetchError):
+                articles.extend(e.articles)
             logger.error("RSSの取得中にエラーが発生しました: %s", e, exc_info=True)
 
     if options.run_email and not email_configured and "email" not in options.sources:
@@ -115,11 +134,17 @@ def fetch_articles(options: RunOptions, db, *, email_configured: bool) -> FetchR
             logger.info("Email（POP3）から記事を取得中...")
             email_fetcher = EmailFetcher(db, dry_run=options.dry_run)
             articles.extend(email_fetcher.fetch())
+            succeeded_sources.add("email")
         except Exception as e:
+            failed_sources.add("email")
+            if isinstance(e, FetchError):
+                articles.extend(e.articles)
             logger.error("Emailの取得中にエラーが発生しました: %s", e, exc_info=True)
 
     return FetchResult(
-        articles=articles, rss_fetcher=rss_fetcher, email_fetcher=email_fetcher
+        articles=articles, rss_fetcher=rss_fetcher, email_fetcher=email_fetcher,
+        succeeded_sources=frozenset(succeeded_sources),
+        failed_sources=frozenset(failed_sources),
     )
 
 
@@ -432,7 +457,10 @@ def persist_and_publish(
     result = SaveResult(batch_id=None, saved=[])
 
     if options.run_db:
-        result = db.save_batch(summaries, digest, embeddings)
+        try:
+            result = db.save_batch(summaries, digest, embeddings)
+        except Exception as e:
+            raise RunFailedError("データベースへの保存中にエラーが発生しました。") from e
         if result.is_partial:
             logger.warning(
                 "%d件の記事を保存できませんでした。未保存分は既読化せず次回に回します。",
@@ -444,27 +472,33 @@ def persist_and_publish(
         ]
         logger.info("データベースへの保存が完了しました。")
         if rss_fetcher is not None and rss_entry_ids:
-            rss_fetcher.mark_as_read(rss_entry_ids)
+            try:
+                rss_fetcher.mark_as_read(rss_entry_ids)
+            except Exception as e:
+                raise RunFailedError("保存後のRSS既読化に失敗しました。", saved_result=result) from e
     else:
         logger.info("[Dry-Run] データベースへの保存をスキップしました。")
 
-    if options.run_discord:
-        discord_out = DiscordOutput()
-        discord_out.post(digest, only_summaries)
-        # webhook 未設定なら post() は何も送らずに戻る（警告は post() 側で出力済み）。
-        # 送っていないのに「完了」とは記録しない。
-        if discord_out.webhook_url:
-            logger.info("Discordへの送信が完了しました。")
+    try:
+        if options.run_discord:
+            discord_out = DiscordOutput()
+            discord_out.post(digest, only_summaries)
+            # webhook 未設定なら post() は何も送らずに戻る（警告は post() 側で出力済み）。
+            # 送っていないのに「完了」とは記録しない。
+            if discord_out.webhook_url:
+                logger.info("Discordへの送信が完了しました。")
+            else:
+                logger.info("Discordへの送信はスキップしました（webhook URL 未設定）。")
         else:
-            logger.info("Discordへの送信はスキップしました（webhook URL 未設定）。")
-    else:
-        logger.info("[Dry-Run] Discordへの送信をスキップしました。")
-        print("\n=== ダイジェスト結果 ===")
-        print(digest.overview)
-        for c in digest.categories:
-            print(f"\n[{c.category}] ({c.article_count}件)\n{c.summary}")
-            for highlight in c.highlights:
-                print(f"  • {highlight}")
+            logger.info("[Dry-Run] Discordへの送信をスキップしました。")
+            print("\n=== ダイジェスト結果 ===")
+            print(digest.overview)
+            for c in digest.categories:
+                print(f"\n[{c.category}] ({c.article_count}件)\n{c.summary}")
+                for highlight in c.highlights:
+                    print(f"  • {highlight}")
+    except Exception as e:
+        raise RunFailedError("保存後の出力に失敗しました。", saved_result=result) from e
 
     return result
 
@@ -501,6 +535,10 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
                 options,
                 config.email.max_fetch_attempts if config.email else 3,
             )
+
+        if fetched.total_failure:
+            delete_processed_emails(fetched.email_fetcher, unparsable_given_up)
+            raise RunFailedError("要求されたすべてのソースからの記事取得に失敗しました。")
 
         if not articles:
             logger.info("新規記事はありませんでした。処理を終了します。")
@@ -542,13 +580,16 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
             article.source_id for article in articles if article.source_type == "email"
         }
         save_result = SaveResult(batch_id=None, saved=[])
-        # 全件失敗＝個々の記事ではなく環境（APIキー失効・DB障害など）の問題
-        total_failure = False
+        # Only a completed processing stage can establish message-local failures.
+        # Keep retries untouched if the stage aborts, including cancellation.
+        total_failure = True
         try:
             save_result = _process(articles, db, options, rss_fetcher)
             total_failure = options.run_db and not save_result.saved
-        except RunFailedError:
+        except RunFailedError as e:
             total_failure = True
+            if e.saved_result is not None:
+                save_result = e.saved_result
             raise
         finally:
             saved_uidls = {

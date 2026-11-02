@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- POP3 SSL の証明書・ホスト名を検証し、SSL / 非SSL とも接続・ソケット操作に30秒のタイムアウトを設定。認証失敗時のソケットも閉じる
+- SQLite などの保存例外でメールの再試行回数が消費され、未保存のまま処理済み・削除になる問題を修正。保存後の出力例外でも保存済みの結果を保持する
+- 全取得ソースの失敗を「新着なし」の正常終了と区別し、異常終了する。正常な0件取得と部分成功は維持し、POP3 の途中切断までに取得した記事も処理する
+
 ### Changed
 - `docker compose up` は GHCR の公開イメージ（`news-summarizer:2.7.0` / `news-viewer:1.5.3`）を pull
   するようになり、初回のビルドが不要になった。手元のコードで動かすときは `--build` を付ける。

@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import poplib
+import ssl
+
+import pytest
+
 from datetime import UTC
 from unittest.mock import MagicMock, patch
 
-from fetchers.email_fetcher import EmailFetcher
+from fetchers.base import FetchError
+from fetchers.email_fetcher import EmailFetcher, POP3_TIMEOUT_SECONDS
 
 
 def _fake_config(delete_after_processing: bool = True):
@@ -112,9 +118,11 @@ def test_fetch_quits_session_on_error():
     fetcher.db.is_email_processed.return_value = False
 
     with patch("fetchers.email_fetcher.poplib.POP3_SSL", return_value=server):
-        articles = fetcher.fetch()
+        with pytest.raises(FetchError) as caught:
+            fetcher.fetch()
 
-    assert articles == []
+    assert caught.value.articles == []
+    assert isinstance(caught.value.__cause__, OSError)
     server.quit.assert_called_once()
     # RETRの失敗は接続の問題。数えると一時的な障害だけでメールが打ち切られる
     assert fetcher.failed_uidls == set()
@@ -182,3 +190,126 @@ def test_fetch_isolates_a_message_that_fails_to_parse():
 
     assert [a.source_id for a in articles] == ["uid-b"]
     assert fetcher.failed_uidls == {"uid-a"}
+
+
+@pytest.mark.parametrize("use_ssl", [True, False])
+def test_connect_uses_bounded_timeout_and_verified_tls(use_ssl):
+    fetcher = _make_fetcher()
+    fetcher.use_ssl = use_ssl
+    constructor = "POP3_SSL" if use_ssl else "POP3"
+    with patch(f"fetchers.email_fetcher.poplib.{constructor}") as connect:
+        server = fetcher._connect()
+
+    args, kwargs = connect.call_args
+    assert args == (fetcher.host, fetcher.port)
+    assert kwargs["timeout"] == POP3_TIMEOUT_SECONDS == 30.0
+    if use_ssl:
+        assert isinstance(kwargs["context"], ssl.SSLContext)
+        assert kwargs["context"].verify_mode == ssl.CERT_REQUIRED
+        assert kwargs["context"].check_hostname is True
+    else:
+        assert "context" not in kwargs
+    server.user.assert_called_once_with(fetcher.username)
+    server.pass_.assert_called_once_with(fetcher.password)
+
+
+@pytest.mark.parametrize("command", ["user", "pass_"])
+@pytest.mark.parametrize("use_ssl", [True, False])
+def test_connect_closes_socket_on_login_failure(command, use_ssl):
+    fetcher = _make_fetcher()
+    fetcher.use_ssl = use_ssl
+    server = _fake_server({})
+    failure = poplib.error_proto("login rejected")
+    getattr(server, command).side_effect = failure
+    constructor = "POP3_SSL" if use_ssl else "POP3"
+    with patch(f"fetchers.email_fetcher.poplib.{constructor}", return_value=server):
+        with pytest.raises(poplib.error_proto) as caught:
+            fetcher._connect()
+
+    assert caught.value is failure
+    server.close.assert_called_once()
+    server.quit.assert_not_called()
+
+
+def test_fetch_empty_mailbox_is_success():
+    fetcher, articles = _fetch_with_messages({})
+    assert articles == []
+    assert fetcher.failed_uidls == set()
+
+
+def test_fetch_partial_retr_failure_preserves_articles_and_parse_failures():
+    fetcher = _make_fetcher()
+    server = _fake_server({"good": 1, "bad": 2, "unretrieved": 3})
+    server.retr.side_effect = [
+        (b"+OK", _raw_message("good", None), 0),
+        (b"+OK", [b"bad"], 0),
+        OSError("connection reset"),
+    ]
+    fetcher.db.is_email_processed.return_value = False
+    original = fetcher._parse_message
+
+    def parse(uidl, lines):
+        if uidl == "bad":
+            raise ValueError("malformed")
+        return original(uidl, lines)
+
+    with patch("fetchers.email_fetcher.poplib.POP3_SSL", return_value=server), \
+        patch.object(fetcher, "_parse_message", side_effect=parse):
+        with pytest.raises(FetchError) as caught:
+            fetcher.fetch()
+
+    assert [article.source_id for article in caught.value.articles] == ["good"]
+    assert fetcher.failed_uidls == {"bad"}
+    server.quit.assert_called_once()
+    server.dele.assert_not_called()
+
+
+@pytest.mark.parametrize("failure_stage", ["connect", "uidl", "db"])
+def test_fetch_source_failure_is_not_empty_success(failure_stage):
+    fetcher = _make_fetcher()
+    server = _fake_server({"uid-a": 1})
+    failure = OSError("unavailable")
+    if failure_stage == "uidl":
+        server.uidl.side_effect = failure
+    if failure_stage == "db":
+        fetcher.db.is_email_processed.side_effect = failure
+    with patch("fetchers.email_fetcher.poplib.POP3_SSL", return_value=server) as connect:
+        if failure_stage == "connect":
+            connect.side_effect = failure
+        with pytest.raises(FetchError) as caught:
+            fetcher.fetch()
+
+    assert caught.value.articles == []
+    assert caught.value.__cause__ is failure
+    assert fetcher.failed_uidls == set()
+
+
+def test_fetch_certificate_failure_propagates_as_source_failure():
+    fetcher = _make_fetcher()
+    failure = ssl.SSLCertVerificationError("certificate verify failed")
+    with patch("fetchers.email_fetcher.poplib.POP3_SSL", side_effect=failure):
+        with pytest.raises(FetchError) as caught:
+            fetcher.fetch()
+    assert caught.value.__cause__ is failure
+    assert caught.value.articles == []
+    assert fetcher.failed_uidls == set()
+
+
+def test_fetch_closes_socket_when_quit_fails():
+    fetcher = _make_fetcher()
+    server = _fake_server({})
+    server.quit.side_effect = OSError("disconnected")
+    with patch("fetchers.email_fetcher.poplib.POP3_SSL", return_value=server):
+        assert fetcher.fetch() == []
+    server.close.assert_called_once()
+
+
+def test_fetch_all_parse_failures_are_message_local_not_source_failure():
+    fetcher = _make_fetcher()
+    server = _fake_server({"bad": 1})
+    server.retr.return_value = (b"+OK", [b"bad"], 0)
+    fetcher.db.is_email_processed.return_value = False
+    with patch("fetchers.email_fetcher.poplib.POP3_SSL", return_value=server), \
+        patch.object(fetcher, "_parse_message", side_effect=ValueError("malformed")):
+        assert fetcher.fetch() == []
+    assert fetcher.failed_uidls == {"bad"}

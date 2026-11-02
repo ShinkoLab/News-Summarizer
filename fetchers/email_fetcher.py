@@ -1,4 +1,5 @@
 import poplib
+import ssl
 import email
 from email.policy import default
 from datetime import UTC, datetime
@@ -7,12 +8,15 @@ from typing import List
 import re
 
 from models import Article
-from fetchers.base import BaseFetcher, to_utc
+from fetchers.base import BaseFetcher, FetchError, to_utc
 from config import config
 from outputs.database import Database
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+# Bound each connection/socket operation, not the duration of an entire mailbox.
+POP3_TIMEOUT_SECONDS = 30.0
 
 def strip_tags(html: str) -> str:
     # 簡易なHTMLタグ除去
@@ -41,12 +45,23 @@ class EmailFetcher(BaseFetcher):
     def _connect(self):
         """POP3セッションを開いてログインする。"""
         if self.use_ssl:
-            server = poplib.POP3_SSL(self.host, self.port)
+            server = poplib.POP3_SSL(
+                self.host, self.port,
+                context=ssl.create_default_context(), timeout=POP3_TIMEOUT_SECONDS,
+            )
         else:
-            server = poplib.POP3(self.host, self.port)
+            server = poplib.POP3(self.host, self.port, timeout=POP3_TIMEOUT_SECONDS)
 
-        server.user(self.username)
-        server.pass_(self.password)
+        try:
+            server.user(self.username)
+            server.pass_(self.password)
+        except BaseException:
+            # The caller has not received the session yet and cannot close it.
+            try:
+                server.close()
+            except Exception as e:
+                logger.warning("POP3ソケットの切断に失敗しました: %s", e)
+            raise
         return server
 
     def _uidl_map(self, server) -> dict[str, int]:
@@ -93,7 +108,7 @@ class EmailFetcher(BaseFetcher):
                     )
 
         except Exception as e:
-            logger.error("POP3メール取得中にエラーが発生しました: %s", e, exc_info=True)
+            raise FetchError("POP3メール取得に失敗しました。", articles) from e
         finally:
             # fetch()はDELEを一切発行しないので、例外で抜けた場合もQUITして構わない。
             if server is not None:
@@ -101,6 +116,10 @@ class EmailFetcher(BaseFetcher):
                     server.quit()
                 except Exception as e:
                     logger.warning("POP3セッションの終了に失敗しました: %s", e)
+                    try:
+                        server.close()
+                    except Exception as close_error:
+                        logger.warning("POP3ソケットの切断に失敗しました: %s", close_error)
 
         return articles
 

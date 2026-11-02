@@ -25,7 +25,7 @@ from fetchers.rss_fetcher import MinifluxFetcher
 from fetchers.email_fetcher import EmailFetcher
 from outputs.database import create_database
 from outputs.discord_output import DiscordOutput
-from outputs.delivery import new_delivery, drain_deliveries
+from outputs.delivery import new_delivery, drain_deliveries, describe_delivery_error
 from summarizer.grouper import group_articles, group_summaries
 from summarizer.summarizer import summarize_article
 from summarizer.digest import generate_digest
@@ -549,7 +549,8 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
                 # A poison webhook payload must not prevent fresh persistence
                 # or POP3 cleanup. Report degraded delivery after useful work.
                 recovery_error = e
-                logger.error("保留中のDiscord配信に失敗しました。記事処理は継続します。", exc_info=True)
+                logger.error("保留中のDiscord配信に失敗しました (%s)。記事処理は継続します。",
+                             describe_delivery_error(e))
         fetched = fetch_articles(options, db, email_configured=config.email is not None)
         articles = fetched.articles
         rss_fetcher = fetched.rss_fetcher

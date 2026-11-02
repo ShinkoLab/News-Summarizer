@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Discord 配信失敗のログから Webhook URL を含み得る例外本文・traceback を除き、HTTP クライアントの URL 付き INFO / DEBUG ログも抑止する
+
 ### Fixed
 - POP3 の削除失敗で残った処理済みメールを、本文を再取得せず次回以降に削除再試行する（新着0件でも実行、dry-run は削除しない）
 - Discord の HTTP エラーを成功扱いせず異常終了し、SQLite / Firestore の永続 outbox から次回配信を再開する。投稿済みの進捗と生成時の内容を保持して再要約を避ける（応答喪失時の重複はあり得る）

@@ -133,6 +133,10 @@ Firestore が部分保存になった場合も payload は生成バッチ全体�
 ログは標準エラー出力にだけ出す（ファイルには書かない）。量は `logging.level`
 （環境変数は `LOG_LEVEL`）で変える。Docker Compose では `docker compose logs -f summarizer` で見る。
 
+Discord の配信失敗ログは例外クラスと HTTP ステータスだけを出し、Webhook URL を含み得る
+例外本文や traceback は出さない。`httpx` / `httpcore` は URL を INFO / DEBUG に記録するため、
+`logging.level` や `--debug` にかかわらず WARNING 以上（設定が ERROR 以上ならそのレベル）にする。
+
 ## 運用スクリプト
 
 `scripts/` にある、一度だけ使う道具。使い方は `uv run python -m scripts.<名前> --help` で確認できる。

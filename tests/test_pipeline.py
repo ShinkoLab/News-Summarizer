@@ -1358,3 +1358,63 @@ class TestDurableDeliveryRecovery:
                               db_mock=db, discord_mock=output)
         assert db.is_article_processed('rss', '2')
         assert len(db.pending_deliveries()) == 2
+
+    @pytest.mark.parametrize('failure, expected', [('status', 'HTTP 400'), ('rate_limit', 'HTTP 429'), ('network', 'ConnectError')])
+    @pytest.mark.parametrize('fresh', [False, True])
+    def test_recovery_logs_never_include_webhook_secret(self, minimal_config, tmp_path, caplog, monkeypatch, failure, expected, fresh):
+        import httpx
+        import logging
+        import logger as logging_module
+        from outputs.database import Database
+        from outputs.delivery import new_delivery
+        from outputs.discord_output import DiscordOutput
+        secret = 'synthetic-secret-do-not-log-827364'
+        url = f'https://discord.example/api/webhooks/123/{secret}?thread_id=456'
+        db = Database(str(tmp_path / 'secret-outbox.db'))
+        db.save_batch([(_make_article('1'), _make_summary(), None, None)],
+                      _make_digest(1), delivery=new_delivery([{'content': 'test'}]))
+        output = DiscordOutput()
+        output.webhook_url = url
+
+        def transport(request):
+            if failure == 'network':
+                raise httpx.ConnectError(f'cannot connect to {request.url}', request=request)
+            return httpx.Response(429 if failure == 'rate_limit' else 400,
+                                  json={'retry_after': 600}, request=request)
+
+        def post(request_url, **kwargs):
+            with httpx.Client(transport=httpx.MockTransport(transport)) as client:
+                return client.post(request_url, **kwargs)
+
+        root = logging.getLogger()
+        handlers = list(root.handlers)
+        monkeypatch.setattr(root, 'level', root.level)
+        for name in ('httpx', 'httpcore'):
+            log = logging.getLogger(name)
+            monkeypatch.setattr(log, 'level', log.level)
+        try:
+            with (patch.object(logging_module.config.logging, 'level', 'INFO'),
+                  patch('pipeline.create_database', return_value=db),
+                  patch('pipeline.DiscordOutput', return_value=output),
+                  patch('pipeline.fetch_articles', return_value=FetchResult([_make_article('2')] if fresh else [], None, None)),
+                  patch('pipeline.summarize_article', return_value=_make_summary()),
+                  patch('pipeline.group_articles', return_value=_make_grouping()),
+                  patch('pipeline.generate_digest', return_value=_make_digest(1)),
+                  patch('outputs.discord_output.httpx.post', side_effect=post)):
+                logging_module.setup_logging()
+                with pytest.raises(RunFailedError) as caught:
+                    run_pipeline(minimal_config, RunOptions())
+                # main.py reports only the generic wrapper, not its secret-bearing cause.
+                logging.getLogger('main').error('%s', caught.value)
+            assert expected in caplog.text
+            assert secret not in caplog.text
+            assert url not in caplog.text
+            assert 'Traceback' not in caplog.text
+            assert db.pending_deliveries()[0]['attempts'] == 1
+            if fresh:
+                assert db.is_article_processed('rss', '2')
+        finally:
+            for handler in list(root.handlers):
+                if handler not in handlers:
+                    root.removeHandler(handler)
+                    handler.close()

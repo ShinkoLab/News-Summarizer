@@ -403,6 +403,9 @@ and delete only that outbox entry, acknowledging loss of its undelivered remaind
 change `next_payload` to bypass errors. Fixing renderer code does not mutate already frozen payloads.
 See `docs/operations.md` for the operator workflow.
 
+Discord recovery logs must contain only exception class/HTTP status, never exception text or
+tracebacks (including chained causes with secret-bearing URLs). `setup_logging()` keeps `httpx`
+and `httpcore` at WARNING or the configured higher level, including app debug mode.
 Webhook secrets are never stored; pending messages use the current configured webhook, or stay
 pending if it is unset. DB-only dry runs do not enqueue/send Discord; Discord-only forced output
 without DB remains direct and non-durable. This is **at-least-once**, not exactly-once: Discord

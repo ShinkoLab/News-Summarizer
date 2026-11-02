@@ -21,6 +21,13 @@ def new_delivery(payloads: list[dict]) -> dict | None:
                 created_at=time.time(), next_attempt_at=0.0, attempts=0)
 
 
+def describe_delivery_error(error: Exception) -> str:
+    """Safe diagnostics: exception text/tracebacks can contain webhook tokens."""
+    if isinstance(error, httpx.HTTPStatusError):
+        return f"HTTPStatusError (HTTP {error.response.status_code})"
+    return type(error).__name__
+
+
 def retry_delay(error: Exception, attempts: int = 0) -> float:
     backoff = min(6 * 60 * 60, 30.0 * 2 ** min(max(attempts, 0), 10))
     if isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 429:

@@ -313,3 +313,81 @@ def test_fetch_all_parse_failures_are_message_local_not_source_failure():
         patch.object(fetcher, "_parse_message", side_effect=ValueError("malformed")):
         assert fetcher.fetch() == []
     assert fetcher.failed_uidls == {"bad"}
+
+
+def test_fetch_collects_processed_uidls_without_downloading_bodies():
+    fetcher = _make_fetcher()
+    server = _fake_server({"saved": 1, "new": 2, "given-up": 3})
+    fetcher.db.is_email_processed.side_effect = lambda uidl: uidl != "new"
+    server.retr.return_value = (b"+OK", _raw_message("new", None), 0)
+
+    with patch.object(fetcher, "_connect", return_value=server):
+        articles = fetcher.fetch()
+
+    assert fetcher.processed_uidls == {"saved", "given-up"}
+    assert [article.source_id for article in articles] == ["new"]
+    server.retr.assert_called_once_with(2)
+    server.dele.assert_not_called()
+
+
+def test_failed_deletion_is_retryable_on_later_empty_fetch():
+    fetcher = _make_fetcher()
+    fetcher.db.is_email_processed.return_value = True
+    failed_delete = _fake_server({"saved": 4})
+    failed_delete.dele.side_effect = OSError("disconnected")
+    next_fetch = _fake_server({"saved": 7})
+    next_delete = _fake_server({"saved": 2, "unprocessed": 1})
+
+    with patch.object(fetcher, "_connect", side_effect=[
+        failed_delete, next_fetch, next_delete,
+    ]):
+        assert fetcher.delete_messages({"saved"}) == 0
+        assert fetcher.fetch() == []
+        assert fetcher.processed_uidls == {"saved"}
+        assert fetcher.delete_messages(fetcher.processed_uidls) == 1
+
+    failed_delete.quit.assert_not_called()
+    failed_delete.close.assert_called_once()
+    next_fetch.retr.assert_not_called()
+    next_fetch.dele.assert_not_called()
+    next_delete.dele.assert_called_once_with(2)
+    next_delete.quit.assert_called_once()
+
+
+def test_fetch_resets_processed_uidls_between_calls_even_on_connect_failure():
+    fetcher = _make_fetcher()
+    fetcher.db.is_email_processed.return_value = True
+    server = _fake_server({"saved": 1})
+    with patch.object(fetcher, "_connect", side_effect=[server, OSError("offline")]):
+        assert fetcher.fetch() == []
+        assert fetcher.processed_uidls == {"saved"}
+        with pytest.raises(FetchError):
+            fetcher.fetch()
+    assert fetcher.processed_uidls == set()
+
+
+def test_processed_cleanup_candidates_survive_later_retr_failure():
+    fetcher = _make_fetcher()
+    server = _fake_server({"saved": 1, "new": 2})
+    fetcher.db.is_email_processed.side_effect = lambda uidl: uidl == "saved"
+    server.retr.side_effect = OSError("offline")
+    with patch.object(fetcher, "_connect", return_value=server):
+        with pytest.raises(FetchError):
+            fetcher.fetch()
+    assert fetcher.processed_uidls == {"saved"}
+    assert fetcher.failed_uidls == set()
+    server.retr.assert_called_once_with(2)
+
+
+@pytest.mark.parametrize("dry_run,delete_enabled", [(True, True), (False, False)])
+def test_recovered_cleanup_obeys_deletion_policy(dry_run, delete_enabled):
+    fetcher = _make_fetcher(delete_after_processing=delete_enabled, dry_run=dry_run)
+    fetcher.db.is_email_processed.return_value = True
+    server = _fake_server({"saved": 1})
+    with patch.object(fetcher, "_connect", return_value=server) as connect:
+        assert fetcher.fetch() == []
+        assert fetcher.processed_uidls == {"saved"}
+        assert fetcher.delete_messages(fetcher.processed_uidls) == 0
+        connect.assert_called_once()
+    server.retr.assert_not_called()
+    server.dele.assert_not_called()

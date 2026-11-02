@@ -41,6 +41,9 @@ class EmailFetcher(BaseFetcher):
         # 本文の解析に失敗したメール。Article にならないので保存側の試行回数管理に
         # 乗らず、放置すると毎回フルRETRされ続ける。パイプラインが別途数える。
         self.failed_uidls: set[str] = set()
+        # 保存済み／打ち切り済みだがメールボックスに残るUIDL。前回の削除失敗を
+        # パイプラインで再試行できるよう、本文を取得せず既存のUIDL走査で収集する。
+        self.processed_uidls: set[str] = set()
 
     def _connect(self):
         """POP3セッションを開いてログインする。"""
@@ -83,6 +86,7 @@ class EmailFetcher(BaseFetcher):
     def fetch(self) -> List[Article]:
         articles = []
         self.failed_uidls = set()
+        self.processed_uidls = set()
         server = None
         try:
             server = self._connect()
@@ -91,6 +95,7 @@ class EmailFetcher(BaseFetcher):
             for uidl, msg_num in self._uidl_map(server).items():
                 # DBで処理済みかチェック
                 if self.db.is_email_processed(uidl):
+                    self.processed_uidls.add(uidl)
                     continue
 
                 # RETRの失敗は接続の問題なので、後続も失敗する。ここは外側で打ち切り、

@@ -18,6 +18,7 @@ from models import (
     SaveResult,
 )
 from pipeline import (
+    FetchResult,
     RunFailedError,
     RunOptions,
     reconcile_email_attempts,
@@ -71,6 +72,13 @@ def _make_grouping(n: int = 1) -> GroupingResult:
     return GroupingResult(
         groups=[ArticleGroup(group_id=0, topic="テストトピック", article_indices=list(range(n)))]
     )
+
+
+def _discord_mock():
+    # Most orchestration tests do not exercise rendering/outbox internals.
+    output = MagicMock()
+    output.payloads.return_value = []
+    return output
 
 
 def _make_db(saved_source_ids: list[str] | None = None) -> MagicMock:
@@ -129,7 +137,7 @@ def _run_with_patches(
     grouping = _make_grouping(len(articles))
 
     db_instance = db_mock or _make_db()
-    discord_instance = discord_mock or MagicMock()
+    discord_instance = discord_mock or _discord_mock()
 
     with (
         patch("pipeline.MinifluxFetcher") as MockRss,
@@ -168,7 +176,7 @@ class TestOptionalEmailAndDiscordLog:
                 patch("pipeline.MinifluxFetcher") as MockRss,
                 patch("pipeline.EmailFetcher") as MockEmail,
                 patch("pipeline.create_database"),
-                patch("pipeline.DiscordOutput"),
+                patch("pipeline.DiscordOutput", return_value=_discord_mock()),
             ):
                 MockRss.return_value.fetch.return_value = []
                 run_pipeline(minimal_config, RunOptions(dry_run=True))
@@ -184,7 +192,7 @@ class TestOptionalEmailAndDiscordLog:
                 patch("pipeline.MinifluxFetcher"),
                 patch("pipeline.EmailFetcher", side_effect=ValueError("no email")) as MockEmail,
                 patch("pipeline.create_database"),
-                patch("pipeline.DiscordOutput"),
+                patch("pipeline.DiscordOutput", return_value=_discord_mock()),
             ):
                 with pytest.raises(RunFailedError):
                     run_pipeline(minimal_config, RunOptions(dry_run=True, sources=frozenset({"email"})))
@@ -201,7 +209,7 @@ class TestOptionalEmailAndDiscordLog:
     ):
         import logging
 
-        discord = MagicMock()
+        discord = _discord_mock()
         discord.webhook_url = webhook
         with caplog.at_level(logging.INFO, logger="pipeline"):
             _run_with_patches(
@@ -225,7 +233,7 @@ class TestEmptyArticles:
             patch("pipeline.EmailFetcher") as MockEmail,
             patch("pipeline.summarize_article") as mock_summarize,
             patch("pipeline.create_database"),
-            patch("pipeline.DiscordOutput"),
+            patch("pipeline.DiscordOutput", return_value=_discord_mock()),
         ):
             MockRss.return_value.fetch.return_value = []
             MockEmail.return_value.fetch.return_value = []
@@ -247,7 +255,7 @@ class TestTotalFailure:
             patch("pipeline.EmailFetcher") as MockEmail,
             patch("pipeline.summarize_article", side_effect=RuntimeError("401")),
             patch("pipeline.create_database", return_value=db_instance),
-            patch("pipeline.DiscordOutput") as MockDiscord,
+            patch("pipeline.DiscordOutput", return_value=_discord_mock()) as MockDiscord,
         ):
             MockRss.return_value.fetch.return_value = [
                 a for a in articles if a.source_type == "rss"
@@ -337,7 +345,7 @@ class TestDryRun:
 
     def test_dry_run_skips_discord(self, minimal_config):
         articles = [_make_article()]
-        discord_mock = MagicMock()
+        discord_mock = _discord_mock()
 
         _, discord_mock = _run_with_patches(
             minimal_config,
@@ -356,7 +364,7 @@ class TestDryRun:
 class TestForcedOutputs:
     def test_dry_run_forced_discord_calls_discord(self, minimal_config):
         articles = [_make_article()]
-        discord_mock = MagicMock()
+        discord_mock = _discord_mock()
 
         _, discord_mock = _run_with_patches(
             minimal_config,
@@ -383,7 +391,7 @@ class TestForcedOutputs:
     def test_forced_all_calls_both(self, minimal_config):
         articles = [_make_article()]
         db_mock = _make_db()
-        discord_mock = MagicMock()
+        discord_mock = _discord_mock()
 
         db_mock, discord_mock = _run_with_patches(
             minimal_config,
@@ -417,7 +425,7 @@ class TestNonDryRun:
 
     def test_non_dry_run_calls_discord(self, minimal_config):
         articles = [_make_article()]
-        discord_mock = MagicMock()
+        discord_mock = _discord_mock()
 
         _, discord_mock = _run_with_patches(
             minimal_config,
@@ -473,7 +481,7 @@ class TestSourceFiltering:
             patch("pipeline.group_articles", return_value=_make_grouping()),
             patch("pipeline.generate_digest", return_value=_make_digest()),
             patch("pipeline.create_database"),
-            patch("pipeline.DiscordOutput"),
+            patch("pipeline.DiscordOutput", return_value=_discord_mock()),
         ):
             MockRss.return_value.fetch.return_value = []
             run_pipeline(minimal_config, options)
@@ -490,7 +498,7 @@ class TestSourceFiltering:
             patch("pipeline.group_articles", return_value=_make_grouping()),
             patch("pipeline.generate_digest", return_value=_make_digest()),
             patch("pipeline.create_database") as MockDb,
-            patch("pipeline.DiscordOutput"),
+            patch("pipeline.DiscordOutput", return_value=_discord_mock()),
         ):
             MockDb.return_value.is_article_processed.return_value = False
             MockEmail.return_value.fetch.return_value = []
@@ -507,7 +515,7 @@ class TestMinifluxMarkAsRead:
     def _run(self, config, options, articles, *, summarize_side_effect, generate_digest,
              db_instance=None):
         db_instance = db_instance or _make_db()
-        discord_instance = MagicMock()
+        discord_instance = _discord_mock()
         with (
             patch("pipeline.MinifluxFetcher") as MockRss,
             patch("pipeline.EmailFetcher") as MockEmail,
@@ -596,7 +604,7 @@ def _run_with_db(config, options, articles, db_instance):
         patch("pipeline.group_articles", return_value=_make_grouping(len(articles))),
         patch("pipeline.generate_digest", return_value=_make_digest(len(articles))),
         patch("pipeline.create_database", return_value=db_instance),
-        patch("pipeline.DiscordOutput"),
+        patch("pipeline.DiscordOutput", return_value=_discord_mock()),
     ):
         rss_instance = MagicMock()
         rss_instance.fetch.return_value = [a for a in articles if a.source_type == "rss"]
@@ -955,7 +963,7 @@ class TestEmailAttemptReconciliation:
             patch("pipeline.group_articles", return_value=_make_grouping(1)),
             patch("pipeline.generate_digest", return_value=_make_digest(1)),
             patch("pipeline.create_database", return_value=db_instance),
-            patch("pipeline.DiscordOutput"),
+            patch("pipeline.DiscordOutput", return_value=_discord_mock()),
         ):
             MockEmail.return_value.fetch.return_value = articles
             run_pipeline(minimal_config, RunOptions(dry_run=False, sources=frozenset({"email"})))
@@ -1012,7 +1020,7 @@ def _run_with_email_mock(config, options, articles, db_instance, email_instance=
         patch("pipeline.group_articles", return_value=_make_grouping(len(articles))),
         patch("pipeline.generate_digest", return_value=_make_digest(len(articles))),
         patch("pipeline.create_database", return_value=db_instance),
-        patch("pipeline.DiscordOutput"),
+        patch("pipeline.DiscordOutput", return_value=_discord_mock()),
     ):
         email_instance.fetch.return_value = [
             a for a in articles if a.source_type == "email"
@@ -1238,7 +1246,7 @@ class TestRaisedStorageFailure:
     def test_post_save_exception_keeps_confirmed_saved_outcome(self, minimal_config):
         minimal_config.email = EmailConfig(host="pop.example.com", username="u", password="p")
         db = _make_db(saved_source_ids=["mail-ok"])
-        discord = MagicMock()
+        discord = _discord_mock()
         discord.post.side_effect = RuntimeError("output aborted")
         with patch("pipeline.delete_processed_emails") as delete:
             with pytest.raises(RunFailedError, match="出力"):
@@ -1276,3 +1284,77 @@ def test_fetch_contract_tracks_partial_source_success(minimal_config):
     assert fetched.succeeded_sources == {"rss"}
     assert fetched.failed_sources == {"email"}
     assert not fetched.total_failure
+
+class TestDurableDeliveryRecovery:
+    def test_next_empty_run_sends_saved_payload_without_llm(self, minimal_config, tmp_path):
+        from outputs.database import Database
+        db = Database(str(tmp_path / 'outbox.db'))
+        output = _discord_mock()
+        output.webhook_url = 'https://discord.example/hook'
+        payload = {'embeds': [{'description': 'immutable digest'}]}
+        output.payloads.return_value = [payload]
+        output.send_payload.side_effect = RuntimeError('temporary failure')
+        with pytest.raises(RunFailedError, match='出力'):
+            _run_with_patches(minimal_config, RunOptions(), [_make_article('1')],
+                              db_mock=db, discord_mock=output)
+        assert db.is_article_processed('rss', '1')
+        pending = db.pending_deliveries()
+        assert len(pending) == 1
+        db.update_delivery(pending[0]['id'], 0, 0, 1)
+        output.send_payload.side_effect = None
+        output.send_payload.reset_mock()
+        with (patch('pipeline.create_database', return_value=db),
+              patch('pipeline.DiscordOutput', return_value=output),
+              patch('pipeline.fetch_articles', return_value=FetchResult([], None, None)),
+              patch('pipeline.summarize_article') as summarize):
+            run_pipeline(minimal_config, RunOptions())
+        summarize.assert_not_called()
+        output.send_payload.assert_called_once_with(payload)
+        assert db.pending_deliveries() == []
+
+    @pytest.mark.parametrize('options', [RunOptions(dry_run=True),
+        RunOptions(dry_run=True, forced_outputs=frozenset({'db'})),
+        RunOptions(dry_run=True, forced_outputs=frozenset({'discord'}))])
+    def test_dry_runs_do_not_drain_existing_outbox(self, minimal_config, tmp_path, options):
+        from outputs.database import Database
+        from outputs.delivery import new_delivery
+        db = Database(str(tmp_path / 'dry-outbox.db'))
+        db.save_batch([(_make_article('old'), _make_summary(), None, None)],
+                      _make_digest(1), delivery=new_delivery([{'embeds': []}]))
+        before = db.pending_deliveries()
+        output = _discord_mock()
+        with (patch('pipeline.create_database', return_value=db),
+              patch('pipeline.DiscordOutput', return_value=output),
+              patch('pipeline.fetch_articles', return_value=FetchResult([], None, None))):
+            run_pipeline(minimal_config, options)
+        output.send_payload.assert_not_called()
+        assert db.pending_deliveries() == before
+
+    def test_processed_uidls_cleaned_on_empty_run(self, minimal_config):
+        email = MagicMock()
+        email.failed_uidls = set()
+        email.processed_uidls = {'previously-saved', 'previously-given-up'}
+        with (patch('pipeline.create_database', return_value=_make_db()),
+              patch('pipeline.DiscordOutput', return_value=_discord_mock()),
+              patch('pipeline.fetch_articles', return_value=FetchResult([], None, email))):
+            run_pipeline(minimal_config, RunOptions())
+        email.delete_messages.assert_called_once_with(email.processed_uidls)
+
+    def test_pending_400_does_not_prevent_fresh_persistence(self, minimal_config, tmp_path):
+        import httpx
+        from outputs.database import Database
+        from outputs.delivery import new_delivery
+        db = Database(str(tmp_path / 'invalid-outbox.db'))
+        db.save_batch([(_make_article('old'), _make_summary(), None, None)],
+                      _make_digest(1), delivery=new_delivery([{'invalid': 'old payload'}]))
+        output = _discord_mock()
+        output.webhook_url = 'https://discord.example/hook'
+        output.payloads.return_value = [{'content': 'new digest'}]
+        request = httpx.Request('POST', output.webhook_url)
+        response = httpx.Response(400, request=request)
+        output.send_payload.side_effect = httpx.HTTPStatusError('bad payload', request=request, response=response)
+        with pytest.raises(RunFailedError, match='保留中'):
+            _run_with_patches(minimal_config, RunOptions(), [_make_article('2')],
+                              db_mock=db, discord_mock=output)
+        assert db.is_article_processed('rss', '2')
+        assert len(db.pending_deliveries()) == 2

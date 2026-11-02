@@ -322,11 +322,13 @@ the Viewer renders it under two headings.
   per socket operation, not per run. Failed login closes the socket without QUIT.
   Setting `email.delete_after_processing: true` makes `delete_processed_emails()` (`pipeline.py`)
   remove messages from the mailbox after persistence, via `EmailFetcher.delete_messages()`. Only two
-  kinds are deleted: those in `SaveResult.saved`, and the ones `reconcile_email_attempts()` just gave
-  up on (it returns those UIDLs) — a message that merely failed this run stays on the server so the
+  kinds are deleted: saved messages and messages given up after the attempt limit. This includes
+  `SaveResult.saved`, newly given-up UIDLs, and `EmailFetcher.processed_uidls` collected during
+  the existing UIDL scan (no RETR), so failed deletion is retried even with no new articles — a message that merely failed this run stays on the server so the
   retry machinery above still works. POP3 message numbers are per-session, so the deletion opens a
   **second session** and rebuilds the UIDL→number map there; `DELE` is only committed by `QUIT`, so
-  any error skips `QUIT` and closes the socket instead, deleting nothing. `--dry-run` always skips
+  errors before `QUIT` skip it and close the socket instead, discarding deletion marks. A lost
+  `QUIT` response can have an ambiguous outcome; the next scan safely handles remaining UIDLs. `--dry-run` always skips
   deletion, even with `--output db`
 - **Article-level**: `filter_new_articles()` (`pipeline.py`) runs before summarization and applies
   two checks. `db.is_article_processed(source_type, source_id)` drops anything already stored, and
@@ -368,6 +370,46 @@ the Viewer renders it under two headings.
 Both backends return a `SaveResult` (`models.py`) — `batch_id`, the `(source_type, source_id)`
 pairs actually persisted, and a failure count — so mark-as-read and email bookkeeping only ever
 act on what really landed in the database.
+
+### Durable Discord delivery
+
+`outputs/delivery.py` freezes rendered JSON payloads once per generated batch, before persistence.
+SQLite writes `discord_outbox` in the article transaction. Firestore writes the **same UUID**
+`discordOutbox` document atomically in every article chunk (including its size/write overhead),
+not just in the final batch-document commit. Sending starts only after save, so these repeated
+sets cannot overwrite delivery progress. Partial saves and final batch-document failure retain
+recovery; all article chunks failing leave no outbox. The payload intentionally describes the
+entire generated batch, including unsaved articles on a partial save (the existing digest behavior).
+Those unsaved articles may appear in a later batch too.
+
+Drain pending deliveries before fetch (even when no articles arrive), and after new persistence.
+Startup delivery failures do not block fresh ingestion/persistence or POP3 cleanup; retain the
+error and report nonzero after those steps, including empty-article runs. Each drain handles at
+most 10 deliveries; there are at most two drains per pipeline run. Every
+HTTP POST uses `wait=true` to await message persistence (preserving other URL query parameters
+such as `thread_id`) and calls `raise_for_status()`. Checkpoint `next_payload` after each successful POST, retain
+failures with `next_attempt_at` (30-second exponential backoff capped at 6 hours, or a longer
+HTTP 429 `retry_after`/`Retry-After`),
+and delete completed deliveries. Failure exits nonzero; never log an unacknowledged post as sent.
+Non-429 HTTP failures skip the remaining payloads of that delivery but continue other deliveries
+within the drain bound before raising; 429 stops the drain immediately. At each drain's start,
+any future `next_attempt_at` conservatively pauses **all** sends to the current webhook, including
+newly persisted payloads (applies to non-429 backoff too). Cooldown deferral is not a new failure.
+No immediate retry loop or sleep. Pending storage is capped at 100 deliveries, payload JSON at 512 KiB;
+refuse new persistence rather than silently drop an existing delivery when full. Permanent 400s
+are retained too: inspect delivery/batch IDs and payload/progress, fix the cause, then resume.
+If deliberate discard is necessary, stop concurrent runs, back up the row/document, verify the ID,
+and delete only that outbox entry, acknowledging loss of its undelivered remainder. Do not casually
+change `next_payload` to bypass errors. Fixing renderer code does not mutate already frozen payloads.
+See `docs/operations.md` for the operator workflow.
+
+Webhook secrets are never stored; pending messages use the current configured webhook, or stay
+pending if it is unset. DB-only dry runs do not enqueue/send Discord; Discord-only forced output
+without DB remains direct and non-durable. This is **at-least-once**, not exactly-once: Discord
+acceptance followed by a timeout, or a crash before progress persistence, can duplicate a message.
+Webhook POST and DB acknowledgement cannot be one transaction. Preserve execution serialization
+(Firestore lease / Compose SQLite flock); direct SQLite CLI callers must avoid overlapping runs.
+Old pre-outbox failures are not backfilled. Completed entries are removed, not retained as an audit log.
 
 `scripts/migrate_sqlite_to_firestore.py` moves existing data across.
 

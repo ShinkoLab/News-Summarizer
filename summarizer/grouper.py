@@ -74,6 +74,12 @@ def _group_with_embeddings(
     summaries, embeddings: np.ndarray, step_cfg, stream: bool, debug: bool = False
 ) -> GroupingResult:
     """embedding + AgglomerativeClustering でグルーピングし、LLM でトピック命名する。"""
+    # sklearn requires at least two samples; a lone article needs no LLM naming.
+    if len(summaries) == 1:
+        return GroupingResult(groups=[ArticleGroup(
+            group_id=0, topic=summaries[0].title[:15], article_indices=[0]
+        )])
+
     from sklearn.metrics.pairwise import cosine_similarity as _cosine_similarity
 
     similarity_threshold = step_cfg.similarity_threshold
@@ -130,7 +136,12 @@ def _group_with_embeddings(
                 logger.debug("  クラスタ%3d (1件): %s", label, titles_str)
 
     # LLM でトピック名を一括付与
-    topic_map = _name_clusters(clusters, summaries, stream, debug)
+    try:
+        topic_map = _name_clusters(clusters, summaries, stream, debug)
+    except Exception:
+        # Naming is optional: retain the clusters and use their first titles.
+        logger.warning("トピック命名に失敗したため記事タイトルを使用します", exc_info=True)
+        topic_map = {}
 
     groups = [
         ArticleGroup(

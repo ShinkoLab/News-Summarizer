@@ -48,7 +48,8 @@ LLM の応答は Pydantic のモデルで受け取る。
 ## 保存するもの
 
 1 回の実行が1つのバッチになり、要約した記事はバッチに属する。ダイジェストのうち DB に保存するのは
-全体の概要（`overview`）だけで、カテゴリごとの本文と highlights は Discord への投稿にしか使わない。
+全体の概要（`overview`）だけ。ただし Discord 配信の復旧用 outbox には、カテゴリ本文と
+highlights を含む完成済みの投稿 payload を一時保存する。
 
 ### SQLite
 
@@ -56,6 +57,17 @@ LLM の応答は Pydantic のモデルで受け取る。
 `feed_title`）は、無ければ `ALTER TABLE` で足す。
 
 ```sql
+-- Discord の未完了配信（完了後に削除）
+CREATE TABLE discord_outbox (
+    id TEXT PRIMARY KEY,               -- 配信ごとの UUID
+    batch_id INTEGER NOT NULL,
+    payloads TEXT NOT NULL,             -- 投稿 payload の配列を JSON 化した不変の内容
+    next_payload INTEGER NOT NULL,     -- 次に投稿する配列インデックス
+    created_at REAL NOT NULL,          -- Unix 秒
+    next_attempt_at REAL NOT NULL,     -- この Unix 秒以降に再試行
+    attempts INTEGER NOT NULL          -- 投稿失敗の回数
+);
+
 -- 実行バッチ
 CREATE TABLE batches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,6 +128,7 @@ Google Cloud 構成では、同じ内容を次のコレクションに保存す�
 | `articleUrls` | `url_key` | 処理済みの URL。重複判定に使う |
 | `processedEmails` | UIDL の SHA-256 | 処理済みのメール |
 | `emailAttempts` | UIDL の SHA-256 | 保存できなかったメールの試行回数 |
+| `discordOutbox` | 配信 UUID | SQLite の `discord_outbox` と同じ項目（`id` も格納） |
 | `pipelineLocks` | `current` | 実行ロック（[運用](operations.md#二重実行の防止)） |
 
 - 記事のドキュメント ID をソースから決めているので、同じ記事を二度保存しない
@@ -129,3 +142,15 @@ Google Cloud 構成では、同じ内容を次のコレクションに保存す�
   （`findNearest`）からエラーも出ずに外れる。古いデータは `scripts/backfill_embedding_vectors.py` で変換する
 
 SQLite の履歴は `scripts/migrate_sqlite_to_firestore.py` で Firestore に移せる。
+
+### Discord outbox の整合性
+
+- `payloads` と `batch_id` は配信作成後に変えない。Webhook URL・トークンは保存しない。
+- SQLite は記事・処理済み UIDL・outbox を1トランザクションで保存する。
+- Firestore は同じ UUID の outbox を各記事チャンクの原子的コミットに含める。チャンクごとに別の
+  配信を作らない。送信開始前なので同じ内容の再書き込みは進捗を失わせない。全チャンク失敗なら
+  outbox も存在せず、一部成功や最後の `batches` 文書の失敗なら outbox は残る。
+- 投稿が成功するごとに `next_payload` を進め、すべて完了した行／文書は削除する。
+  HTTP と DB 更新は原子的ではないため、タイムアウトや進捗保存前の停止で重複投稿は起こり得る。
+- 未完了は最大100配信、1配信の JSON payload は最大512 KiB。上限超過時は新規保存を失敗させ、
+  既存の保留配信を黙って破棄しない。既存履歴から過去の未送信分を自動生成する移行処理はない。

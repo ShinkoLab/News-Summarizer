@@ -25,6 +25,7 @@ from fetchers.rss_fetcher import MinifluxFetcher
 from fetchers.email_fetcher import EmailFetcher
 from outputs.database import create_database
 from outputs.discord_output import DiscordOutput
+from outputs.delivery import new_delivery, drain_deliveries
 from summarizer.grouper import group_articles, group_summaries
 from summarizer.summarizer import summarize_article
 from summarizer.digest import generate_digest
@@ -334,6 +335,13 @@ def group_pairs(
             texts = [f"{s.title} {s.summary}" for _, s in pairs]
             embeddings = get_embeddings(texts, debug=options.debug)
 
+        except Exception as e:
+            logger.error("Embedding取得中にエラーが発生しました: %s", e, exc_info=True)
+            embeddings = None
+
+        try:
+            if embeddings is None:
+                return {}, None
             logger.info("類似記事の統合を行っています（embedding）...")
             only_summaries = [s for _, s in pairs]
             grouping_result = group_summaries(
@@ -346,7 +354,6 @@ def group_pairs(
             logger.error(
                 "Embedding グルーピング中にエラーが発生しました: %s", e, exc_info=True
             )
-            embeddings = None
             article_group_map = {}
     else:
         logger.info("類似記事の統合を行っています...")
@@ -456,9 +463,20 @@ def persist_and_publish(
     only_summaries = [s[1] for s in summaries]
     result = SaveResult(batch_id=None, saved=[])
 
+    discord_out = DiscordOutput() if options.run_discord else None
+    delivery = None
+    if options.run_db and discord_out is not None and discord_out.webhook_url:
+        try:
+            delivery = new_delivery(discord_out.payloads(digest, only_summaries))
+        except Exception as e:
+            raise RunFailedError("Discord配信データの準備に失敗しました。") from e
+
     if options.run_db:
         try:
-            result = db.save_batch(summaries, digest, embeddings)
+            if delivery is None:
+                result = db.save_batch(summaries, digest, embeddings)
+            else:
+                result = db.save_batch(summaries, digest, embeddings, delivery=delivery)
         except Exception as e:
             raise RunFailedError("データベースへの保存中にエラーが発生しました。") from e
         if result.is_partial:
@@ -481,13 +499,16 @@ def persist_and_publish(
 
     try:
         if options.run_discord:
-            discord_out = DiscordOutput()
-            discord_out.post(digest, only_summaries)
+            if options.run_db and delivery is not None:
+                completed = drain_deliveries(db, discord_out)
+                logger.info("Discord配信完了: %d件（未送信分はoutboxに保持）。", completed)
+            else:
+                sent = discord_out.post(digest, only_summaries)
             # webhook 未設定なら post() は何も送らずに戻る（警告は post() 側で出力済み）。
             # 送っていないのに「完了」とは記録しない。
-            if discord_out.webhook_url:
-                logger.info("Discordへの送信が完了しました。")
-            else:
+            if discord_out.webhook_url and delivery is None:
+                logger.info("Discordへの送信が完了しました（%sメッセージ）。", sent)
+            elif not discord_out.webhook_url:
                 logger.info("Discordへの送信はスキップしました（webhook URL 未設定）。")
         else:
             logger.info("[Dry-Run] Discordへの送信をスキップしました。")
@@ -518,6 +539,17 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
     lock = db.execution_lock() if options.run_db else nullcontext()
 
     with lock:
+        # Recovery precedes fetch/LLM and all no-new-articles returns. Dry-run
+        # with only --output db must not send or mutate pending deliveries.
+        recovery_error = None
+        if options.run_db and options.run_discord:
+            try:
+                drain_deliveries(db, DiscordOutput())
+            except Exception as e:
+                # A poison webhook payload must not prevent fresh persistence
+                # or POP3 cleanup. Report degraded delivery after useful work.
+                recovery_error = e
+                logger.error("保留中のDiscord配信に失敗しました。記事処理は継続します。", exc_info=True)
         fetched = fetch_articles(options, db, email_configured=config.email is not None)
         articles = fetched.articles
         rss_fetcher = fetched.rss_fetcher
@@ -526,6 +558,10 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
         # 早期returnより前に数えておかないと、毎回フルRETRされ続ける。
         # 打ち切った分の削除は、POP3セッションを増やさないよう後段の削除にまとめる
         # （早期returnする場合だけその場で削除する）。
+        previously_processed = (
+            set(fetched.email_fetcher.processed_uidls)
+            if fetched.email_fetcher is not None else set()
+        )
         unparsable_given_up: set[str] = set()
         if fetched.email_fetcher is not None and fetched.email_fetcher.failed_uidls:
             unparsable_given_up = reconcile_email_attempts(
@@ -537,12 +573,14 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
             )
 
         if fetched.total_failure:
-            delete_processed_emails(fetched.email_fetcher, unparsable_given_up)
+            delete_processed_emails(fetched.email_fetcher, unparsable_given_up | previously_processed)
             raise RunFailedError("要求されたすべてのソースからの記事取得に失敗しました。")
 
         if not articles:
             logger.info("新規記事はありませんでした。処理を終了します。")
-            delete_processed_emails(fetched.email_fetcher, unparsable_given_up)
+            delete_processed_emails(fetched.email_fetcher, unparsable_given_up | previously_processed)
+            if recovery_error is not None:
+                raise RunFailedError("保留中のDiscord配信に失敗しました。") from recovery_error
             return
 
         dedup = filter_new_articles(articles, db)
@@ -560,7 +598,9 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
             logger.info("同一URLの重複記事を%d件除外しました。", dedup.duplicate_urls)
         if not articles:
             logger.info("未処理の記事はありませんでした。処理を終了します。")
-            delete_processed_emails(fetched.email_fetcher, unparsable_given_up)
+            delete_processed_emails(fetched.email_fetcher, unparsable_given_up | previously_processed)
+            if recovery_error is not None:
+                raise RunFailedError("保留中のDiscord配信に失敗しました。") from recovery_error
             return
 
         max_articles = config.summarizer.max_articles_per_run
@@ -610,7 +650,7 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
             # 保存できたメールと、試行上限で打ち切ったメール（＝二度と取得しない）だけを
             # 削除する。失敗して次回に回すメールはサーバに残す。
             delete_processed_emails(
-                fetched.email_fetcher, saved_uidls | given_up_uidls | unparsable_given_up
+                fetched.email_fetcher, saved_uidls | given_up_uidls | unparsable_given_up | previously_processed
             )
 
         # 要約できなかった場合は _process() 内で送出済み。ここに来るのは保存の全件失敗。
@@ -618,6 +658,9 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
             raise RunFailedError(
                 "要約した記事を1件も保存できませんでした。"
             )
+
+        if recovery_error is not None:
+            raise RunFailedError("保留中のDiscord配信に失敗しました。", saved_result=save_result) from recovery_error
 
     logger.info("プロセス完了")
 

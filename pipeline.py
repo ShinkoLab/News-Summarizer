@@ -532,7 +532,7 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
     """Run the full fetch → summarize → group → digest → output pipeline."""
     logger.info("プロセス開始")
 
-    db = create_database()
+    db = create_database(read_only=not options.run_db)
 
     # The Firestore lock is a real write (and a 2h lease if the run is killed),
     # so a --dry-run must not take it — --dry-run is documented as skipping DB writes.

@@ -534,3 +534,14 @@ Notable optional keys (see `config.yaml.example` for full comments):
 - `llm.provider` / `project_id` / `location` — provider selection and Vertex AI target
 - `llm.embedding_model` / `embedding_base_url` / `embedding_api_key` — embedding endpoint, independent of the chat LLM
 - `llm.max_retries` / `structured_output` / `extra_body` / `session_header` — LLM behavior tuning
+
+## Read-only dry runs
+
+During `--dry-run` without an explicit DB output (`--output db` or `--output all`), SQLite reads
+a private in-memory snapshot opened from the source with `mode=ro`. Schema
+initialization and legacy migrations affect only that snapshot; a missing database
+and its parent directory are not created. The snapshot rejects writes and requires
+memory proportional to the database size. Committed WAL data is included.
+Explicit DB output retains normal initialization, migration and persistence.
+Firestore dry runs continue to skip the execution lease and all persistence;
+fetching and LLM calls still occur unless replaced by test providers.

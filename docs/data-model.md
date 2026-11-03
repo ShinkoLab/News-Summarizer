@@ -154,3 +154,14 @@ SQLite の履歴は `scripts/migrate_sqlite_to_firestore.py` で Firestore に�
   HTTP と DB 更新は原子的ではないため、タイムアウトや進捗保存前の停止で重複投稿は起こり得る。
 - 未完了は最大100配信、1配信の JSON payload は最大512 KiB。上限超過時は新規保存を失敗させ、
   既存の保留配信を黙って破棄しない。既存履歴から過去の未送信分を自動生成する移行処理はない。
+
+## Read-only dry runs
+
+During `--dry-run` without an explicit DB output (`--output db` or `--output all`), SQLite reads
+a private in-memory snapshot opened from the source with `mode=ro`. Schema
+initialization and legacy migrations affect only that snapshot; a missing database
+and its parent directory are not created. The snapshot rejects writes and requires
+memory proportional to the database size. Committed WAL data is included.
+Explicit DB output retains normal initialization, migration and persistence.
+Firestore dry runs continue to skip the execution lease and all persistence;
+fetching and LLM calls still occur unless replaced by test providers.

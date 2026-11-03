@@ -167,3 +167,14 @@ Miniflux の既読化は2か所で行う。
 
 カテゴリの定義は `categories.yaml` に分けている。git で管理してイメージにも入れるので、
 どの実行環境も同じ定義を読む。
+
+## Read-only dry runs
+
+During `--dry-run` without an explicit DB output (`--output db` or `--output all`), SQLite reads
+a private in-memory snapshot opened from the source with `mode=ro`. Schema
+initialization and legacy migrations affect only that snapshot; a missing database
+and its parent directory are not created. The snapshot rejects writes and requires
+memory proportional to the database size. Committed WAL data is included.
+Explicit DB output retains normal initialization, migration and persistence.
+Firestore dry runs continue to skip the execution lease and all persistence;
+fetching and LLM calls still occur unless replaced by test providers.

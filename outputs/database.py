@@ -16,16 +16,32 @@ if TYPE_CHECKING:
     from models import DigestResult
 
 class Database:
-    def __init__(self, db_path: str | None = None):
+    def __init__(self, db_path: str | None = None, *, read_only: bool = False):
         if db_path is None:
             db_path = config.database.path
             
         self.db_path = Path(db_path)
-        # 必要なディレクトリの作成
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.init_db()
+        self._snapshot = None
+        if read_only:
+            # Migrate only a private in-memory snapshot. This also supports old
+            # schemas without changing the source database during a dry run.
+            self._snapshot = sqlite3.connect(":memory:")
+            self._snapshot.row_factory = sqlite3.Row
+            if self.db_path.exists():
+                source = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)
+                try:
+                    source.backup(self._snapshot)
+                finally:
+                    source.close()
+            self.init_db()
+            self._snapshot.execute("PRAGMA query_only = ON")
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.init_db()
 
     def get_connection(self):
+        if self._snapshot is not None:
+            return self._snapshot
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
@@ -354,7 +370,7 @@ class Database:
         yield
 
 
-def create_database():
+def create_database(*, read_only: bool = False):
     """Create the configured persistence backend."""
     if config.database.backend == "firestore":
         from outputs.firestore_database import FirestoreDatabase
@@ -363,4 +379,4 @@ def create_database():
             project_id=config.database.project_id,
             database=config.database.firestore_database,
         )
-    return Database()
+    return Database(read_only=read_only)

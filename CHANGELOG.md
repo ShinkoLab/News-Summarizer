@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **`email.delete_after_processing: true` のときは、処理済みとして記録済みでサーバーに残っているメールがすべて削除対象になる**（あとからこの設定を有効にした場合、それ以前の処理済みメールも消える）
 - Discord の HTTP エラーを成功扱いせず異常終了し、SQLite / Firestore の永続 outbox から次回配信を再開する。投稿済みの進捗と生成時の内容を保持して再要約を避ける（応答喪失時の重複はあり得る）
 - SQLite などの保存例外でメールの再試行回数が消費され、未保存のまま処理済み・削除になる問題を修正。保存後の出力例外でも保存済みの結果を保持する
+- 記事を1件も保存できなかった実行では Discord に投稿しない（次回、保存とあわせて投稿する）
 - 全取得ソースの失敗を「新着なし」の正常終了と区別し、異常終了する。正常な0件取得と部分成功は維持し、POP3 の途中切断までに取得した記事も処理する
 - Keep SQLite dry runs read-only: do not create the source database or apply schema migrations unless DB output is explicitly requested.
 

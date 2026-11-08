@@ -1367,6 +1367,52 @@ class TestDurableDeliveryRecovery:
         output.post.assert_called_once()
         assert db.is_article_processed('rss', '1')
 
+    def test_payload_render_error_still_saves_articles(self, minimal_config, tmp_path):
+        from outputs.database import Database
+        db = Database(str(tmp_path / 'render.db'))
+        output = _discord_mock()
+        output.webhook_url = 'https://discord.example/hook'
+        output.payloads.side_effect = KeyError('broken embed')
+        output.post.side_effect = KeyError('broken embed')
+        with pytest.raises(RunFailedError, match='出力'):
+            _run_with_patches(minimal_config, RunOptions(), [_make_article('1')],
+                              db_mock=db, discord_mock=output)
+        assert db.is_article_processed('rss', '1')
+
+    def test_nothing_saved_skips_discord(self, minimal_config):
+        db = _make_db()
+        db.save_batch.return_value = SaveResult(batch_id=None, saved=[], failed=1)
+        output = _discord_mock()
+        output.webhook_url = 'https://discord.example/hook'
+        output.payloads.return_value = [{'content': 'x'}]
+        with patch('pipeline.drain_deliveries', return_value=0) as drain:
+            with pytest.raises(RunFailedError):
+                _run_with_patches(minimal_config, RunOptions(), [_make_article('1')],
+                                  db_mock=db, discord_mock=output)
+        output.post.assert_not_called()
+        assert drain.call_count == 1  # startup recovery only, not after the failed save
+
+    def test_mark_read_failure_after_outbox_drain(self, minimal_config, tmp_path):
+        from outputs.database import Database
+        db = Database(str(tmp_path / 'mark-read-outbox.db'))
+        output = _discord_mock()
+        output.webhook_url = 'https://discord.example/hook'
+        output.payloads.return_value = [{'content': 'digest'}]
+        rss = MagicMock()
+        rss.mark_as_read.side_effect = RuntimeError('miniflux down')
+        with (patch('pipeline.create_database', return_value=db),
+              patch('pipeline.DiscordOutput', return_value=output),
+              patch('pipeline.fetch_articles',
+                    return_value=FetchResult([_make_article('1')], rss, None)),
+              patch('pipeline.summarize_article', return_value=_make_summary()),
+              patch('pipeline.group_articles', return_value=_make_grouping()),
+              patch('pipeline.generate_digest', return_value=_make_digest(1))):
+            with pytest.raises(RunFailedError, match='既読化') as caught:
+                run_pipeline(minimal_config, RunOptions())
+        output.send_payload.assert_called_once_with({'content': 'digest'})
+        assert db.pending_deliveries() == []
+        assert caught.value.saved_result is not None and caught.value.saved_result.saved
+
     def test_full_outbox_stops_before_llm_calls(self, minimal_config, tmp_path):
         from outputs.database import Database
         from outputs.delivery import MAX_PENDING

@@ -310,4 +310,4 @@ def test_describe_failure_keeps_db_messages_but_redacts_http_errors():
         except httpx.ConnectError as inner:
             raise RuntimeError(f"wrapped {inner}") from inner
     except RuntimeError as wrapped:
-        assert describe_failure(wrapped) == "ConnectError"
+        assert describe_failure(wrapped) == "RuntimeError <- ConnectError"

@@ -43,7 +43,8 @@ def describe_failure(error: BaseException) -> str:
     while seen is not None and id(seen) not in visited:
         visited.add(id(seen))
         if type(seen).__module__.split('.')[0] in ('httpx', 'httpcore'):
-            return describe_delivery_error(seen) if isinstance(seen, Exception) else type(seen).__name__
+            inner = describe_delivery_error(seen) if isinstance(seen, Exception) else type(seen).__name__
+            return inner if seen is error else f"{type(error).__name__} <- {inner}"
         seen = seen.__cause__ or seen.__context__
     return f"{type(error).__name__}: {error}"
 

@@ -471,12 +471,15 @@ def persist_and_publish(
     if options.run_db and discord_out is not None and discord_out.webhook_url:
         try:
             delivery = new_delivery(discord_out.payloads(digest, only_summaries))
-        except DeliveryTooLarge as e:
-            # 通知の都合（512 KiB 超）で記事の保存まで止めない。LLM の結果を捨てると
-            # 次回も同じ記事を要約し直して同じ理由で失敗し続ける。outbox を使わず直接投稿する。
+        except Exception as e:
+            # 通知の都合（512 KiB 超、embed の組み立て失敗など）で記事の保存まで止めない。
+            # LLM の結果を捨てると、次回も同じ記事を要約し直して同じ理由で失敗し続ける。
+            # outbox を使わず直接投稿する（組み立て自体が壊れていれば投稿も失敗し、保存後に異常終了する）。
+            # payload の組み立ては HTTP を使わないので、例外本文に webhook URL は入らない。
             logger.error(
                 "Discord配信データをoutboxに保存できません (%s)。今回は再送なしで直接投稿します。",
-                type(e).__name__,
+                describe_failure(e),
+                exc_info=not isinstance(e, DeliveryTooLarge),
             )
             delivery = None
 
@@ -505,7 +508,8 @@ def persist_and_publish(
             except Exception as e:
                 # Discord の手順より先に落とすと、outbox を使わない直接投稿が二度と送られない。
                 # 保存済みの記事は次回の重複排除で既読化されるので、報告は投稿の後に回す。
-                logger.error("保存後のRSS既読化に失敗しました (%s)。", describe_failure(e))
+                # Miniflux の API キーはヘッダーで送り URL に入らないので traceback も残す。
+                logger.error("保存後のRSS既読化に失敗しました (%s)。", describe_failure(e), exc_info=True)
                 mark_read_error = e
     else:
         logger.info("[Dry-Run] データベースへの保存をスキップしました。")

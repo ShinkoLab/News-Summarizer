@@ -1330,6 +1330,38 @@ class TestDurableDeliveryRecovery:
         output.send_payload.assert_not_called()
         assert db.pending_deliveries() == before
 
+    def test_oversized_delivery_still_saves_and_posts_directly(self, minimal_config, tmp_path):
+        from outputs.database import Database
+        db = Database(str(tmp_path / 'oversized.db'))
+        output = _discord_mock()
+        output.webhook_url = 'https://discord.example/hook'
+        output.payloads.return_value = [{'content': 'x'}]
+        output.post.return_value = 1
+        with patch('pipeline.new_delivery', side_effect=ValueError('Discord delivery exceeds 512 KiB')):
+            _run_with_patches(minimal_config, RunOptions(), [_make_article('1')],
+                              db_mock=db, discord_mock=output)
+        assert db.is_article_processed('rss', '1')
+        assert db.pending_deliveries() == []
+        output.post.assert_called_once()
+
+    def test_full_outbox_stops_before_llm_calls(self, minimal_config, tmp_path):
+        from outputs.database import Database
+        from outputs.delivery import MAX_PENDING
+        db = Database(str(tmp_path / 'full.db'))
+        output = _discord_mock()
+        output.webhook_url = 'https://discord.example/hook'
+        with (patch('pipeline.create_database', return_value=db),
+              patch('pipeline.DiscordOutput', return_value=output),
+              patch('pipeline.drain_deliveries', return_value=0),
+              patch.object(db, 'pending_deliveries', return_value=[{}] * MAX_PENDING),
+              patch('pipeline.fetch_articles',
+                    return_value=FetchResult([_make_article('1')], None, None)),
+              patch('pipeline.summarize_article') as summarize):
+            with pytest.raises(RunFailedError, match='上限'):
+                run_pipeline(minimal_config, RunOptions())
+        summarize.assert_not_called()
+        assert not db.is_article_processed('rss', '1')
+
     def test_processed_uidls_cleaned_on_empty_run(self, minimal_config):
         email = MagicMock()
         email.failed_uidls = set()
@@ -1404,8 +1436,10 @@ class TestDurableDeliveryRecovery:
                 logging_module.setup_logging()
                 with pytest.raises(RunFailedError) as caught:
                     run_pipeline(minimal_config, RunOptions())
-                # main.py reports only the generic wrapper, not its secret-bearing cause.
-                logging.getLogger('main').error('%s', caught.value)
+                # main.py reports the wrapper plus a redacted description of its cause.
+                from outputs.delivery import describe_failure
+                logging.getLogger('main').error('%s (原因: %s)', caught.value,
+                                                describe_failure(caught.value.__cause__))
             assert expected in caplog.text
             assert secret not in caplog.text
             assert url not in caplog.text

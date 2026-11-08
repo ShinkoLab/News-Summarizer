@@ -25,7 +25,9 @@ from fetchers.rss_fetcher import MinifluxFetcher
 from fetchers.email_fetcher import EmailFetcher
 from outputs.database import create_database
 from outputs.discord_output import DiscordOutput
-from outputs.delivery import new_delivery, drain_deliveries, describe_delivery_error
+from outputs.delivery import (
+    MAX_PENDING, describe_delivery_error, describe_failure, drain_deliveries, new_delivery,
+)
 from summarizer.grouper import group_articles, group_summaries
 from summarizer.summarizer import summarize_article
 from summarizer.digest import generate_digest
@@ -469,7 +471,13 @@ def persist_and_publish(
         try:
             delivery = new_delivery(discord_out.payloads(digest, only_summaries))
         except Exception as e:
-            raise RunFailedError("Discord配信データの準備に失敗しました。") from e
+            # 通知の都合（512 KiB 超など）で記事の保存まで止めない。LLM の結果を捨てると
+            # 次回も同じ記事を要約し直して同じ理由で失敗し続ける。outbox を使わず直接投稿する。
+            logger.error(
+                "Discord配信データをoutboxに保存できません (%s)。今回は再送なしで直接投稿します。",
+                type(e).__name__,
+            )
+            delivery = None
 
     if options.run_db:
         try:
@@ -478,6 +486,7 @@ def persist_and_publish(
             else:
                 result = db.save_batch(summaries, digest, embeddings, delivery=delivery)
         except Exception as e:
+            logger.error("データベースへの保存に失敗しました: %s", describe_failure(e))
             raise RunFailedError("データベースへの保存中にエラーが発生しました。") from e
         if result.is_partial:
             logger.warning(
@@ -501,7 +510,12 @@ def persist_and_publish(
         if options.run_discord:
             if options.run_db and delivery is not None:
                 completed = drain_deliveries(db, discord_out)
-                logger.info("Discord配信完了: %d件（未送信分はoutboxに保持）。", completed)
+                if completed:
+                    logger.info("Discord配信完了: %d件。", completed)
+                else:
+                    logger.warning(
+                        "Discordへの配信を保留しました（再試行待ちの配信があるため）。outboxに保持し次回送ります。"
+                    )
             else:
                 sent = discord_out.post(digest, only_summaries)
             # webhook 未設定なら post() は何も送らずに戻る（警告は post() 側で出力済み）。
@@ -519,6 +533,7 @@ def persist_and_publish(
                 for highlight in c.highlights:
                     print(f"  • {highlight}")
     except Exception as e:
+        logger.error("保存後の出力に失敗しました (%s)。", describe_delivery_error(e))
         raise RunFailedError("保存後の出力に失敗しました。", saved_result=result) from e
 
     return result
@@ -603,6 +618,16 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
             if recovery_error is not None:
                 raise RunFailedError("保留中のDiscord配信に失敗しました。") from recovery_error
             return
+
+        # outbox が満杯なら save_batch() は保存を拒む。LLM を呼んでから失敗すると毎回
+        # 費用だけかかるので、要約の前に止める（保留中の配信の復旧が先）。
+        if options.run_db and options.run_discord and DiscordOutput().webhook_url:
+            if len(db.pending_deliveries(MAX_PENDING)) >= MAX_PENDING:
+                delete_processed_emails(fetched.email_fetcher, unparsable_given_up | previously_processed)
+                raise RunFailedError(
+                    f"Discordの未配信outboxが上限({MAX_PENDING}件)に達しています。"
+                    "docs/operations.md の手順で保留中の配信を復旧してください。"
+                ) from recovery_error
 
         max_articles = config.summarizer.max_articles_per_run
         if len(articles) > max_articles:

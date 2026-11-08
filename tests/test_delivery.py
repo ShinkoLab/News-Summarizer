@@ -294,3 +294,20 @@ def test_retry_backoff_grows_but_is_bounded(attempts, expected):
 def test_429_respects_long_server_delay_even_above_backoff_cap():
     assert retry_delay(_http_error(payload={"retry_after": 86400}), 100) == 86400
     assert retry_delay(_http_error(payload={"retry_after": 1}), 2) == 120
+
+
+def test_describe_failure_keeps_db_messages_but_redacts_http_errors():
+    from outputs.delivery import describe_failure
+    assert describe_failure(RuntimeError("Discord outbox is full")) == "RuntimeError: Discord outbox is full"
+    secret_url = "https://discord.com/api/webhooks/1/secret-token"
+    assert "secret-token" not in describe_failure(_http_error(404))
+    assert describe_failure(_http_error(404)) == "HTTPStatusError (HTTP 404)"
+    connect = httpx.ConnectError(f"cannot connect to {secret_url}")
+    assert describe_failure(connect) == "ConnectError"
+    try:
+        try:
+            raise connect
+        except httpx.ConnectError as inner:
+            raise RuntimeError(f"wrapped {inner}") from inner
+    except RuntimeError as wrapped:
+        assert "secret-token" not in describe_failure(wrapped)

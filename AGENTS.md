@@ -397,8 +397,12 @@ Non-429 HTTP failures skip the remaining payloads of that delivery but continue 
 within the drain bound before raising; 429 stops the drain immediately. At each drain's start,
 any future `next_attempt_at` conservatively pauses **all** sends to the current webhook, including
 newly persisted payloads (applies to non-429 backoff too). Cooldown deferral is not a new failure.
-No immediate retry loop or sleep. Pending storage is capped at 100 deliveries, payload JSON at 512 KiB;
-refuse new persistence rather than silently drop an existing delivery when full. Permanent 400s
+No immediate retry loop or sleep. Pending storage is capped at 100 deliveries, payload JSON at 512 KiB.
+When the outbox is full, `run_pipeline()` raises `RunFailedError` **before summarization** (no LLM
+spend) rather than silently drop an existing delivery; `save_batch()` keeps the same guard. A payload
+over 512 KiB is not queued: it is logged, the articles are still saved, and Discord falls back to a
+direct non-durable post. `main.py` appends `describe_failure()` of the cause (class/HTTP status only
+for httpx/httpcore-derived errors, message otherwise) so the exit log says why. Permanent 400s
 are retained too: inspect delivery/batch IDs and payload/progress, fix the cause, then resume.
 If deliberate discard is necessary, stop concurrent runs, back up the row/document, verify the ID,
 and delete only that outbox entry, acknowledging loss of its undelivered remainder. Do not casually

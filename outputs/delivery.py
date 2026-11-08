@@ -28,6 +28,21 @@ def describe_delivery_error(error: Exception) -> str:
     return type(error).__name__
 
 
+def describe_failure(error: BaseException) -> str:
+    """Diagnostics for a run-level failure without leaking webhook URLs.
+
+    HTTP client exceptions (httpx / httpcore) and anything chained from them may
+    embed the request URL, so only their class/status is shown. Other errors
+    (DB, Firestore, outbox-full) keep their message, which is needed to act.
+    """
+    seen = error
+    while seen is not None:
+        if type(seen).__module__.split('.')[0] in ('httpx', 'httpcore'):
+            return describe_delivery_error(error) if isinstance(error, Exception) else type(error).__name__
+        seen = seen.__cause__ or seen.__context__
+    return f"{type(error).__name__}: {error}"
+
+
 def retry_delay(error: Exception, attempts: int = 0) -> float:
     backoff = min(6 * 60 * 60, 30.0 * 2 ** min(max(attempts, 0), 10))
     if isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 429:

@@ -4,6 +4,7 @@ import sys
 import config as config_module
 from config import reload_config
 from logger import get_logger, setup_logging
+from outputs.delivery import describe_failure
 from pipeline import RunFailedError, RunOptions, run_pipeline
 
 
@@ -64,7 +65,8 @@ def main():
     except RunFailedError as e:
         # 記事ごとのエラーは握りつぶされるため、全件失敗でもここまで正常に戻ってくる。
         # 終了コードを非0にして Cloud Run Job を「失敗」として記録させる。
-        get_logger(__name__).error("%s 処理を異常終了します。", e)
+        cause = f" (原因: {describe_failure(e.__cause__)})" if e.__cause__ is not None else ""
+        get_logger(__name__).error("%s%s 処理を異常終了します。", e, cause)
         sys.exit(1)
 
 

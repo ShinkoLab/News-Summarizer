@@ -1381,7 +1381,7 @@ class TestDurableDeliveryRecovery:
 
     def test_nothing_saved_skips_discord(self, minimal_config):
         db = _make_db()
-        db.save_batch.return_value = SaveResult(batch_id=None, saved=[], failed=1)
+        db.save_batch = MagicMock(return_value=SaveResult(batch_id=None, saved=[], failed=1))
         output = _discord_mock()
         output.webhook_url = 'https://discord.example/hook'
         output.payloads.return_value = [{'content': 'x'}]
@@ -1389,6 +1389,7 @@ class TestDurableDeliveryRecovery:
             with pytest.raises(RunFailedError, match='1件も保存できませんでした'):
                 _run_with_patches(minimal_config, RunOptions(), [_make_article('1')],
                                   db_mock=db, discord_mock=output)
+        db.save_batch.assert_called_once()
         output.post.assert_not_called()
         output.send_payload.assert_not_called()
         assert drain.call_count == 1  # startup recovery only, not after the failed save

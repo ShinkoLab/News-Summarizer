@@ -5,6 +5,10 @@ Cloud Scheduler、Secret Manager、直接IAPをTerraformで管理します。Vie
 `*.run.app` URLに加え、自分のドメインでもIAP認証を保ったままアクセスできます
 （`viewer_domain`、詳細は `DEPLOYMENT.md` の「カスタムドメインでViewerに
 アクセスできるようにする」参照）。
+AIエージェント（Meta Muse などのリモートMCPクライアント）向けには、同じViewerイメージを
+IAPなしのエージェント専用サービス `news-agent` としても動かし、`/mcp` と `/api/v1` だけを
+固定キー（`news-api-key`）で守って公開します（`agent_domain` で独自ドメインも付けられます。
+`DEPLOYMENT.md` の「エージェント専用サービス（news-agent）」参照）。
 LLMは既定でOpenAI互換エンドポイント（`llm_base_url`/`llm_model`で指定、APIキーは
 Secret Manager経由）を利用します。Vertex AI経路もコード側（`summarizer/llm_client.py`）は
 実装済みで、`LLM_PROVIDER=vertex`と`llm.project_id`/`llm.location`相当の環境変数で
@@ -31,12 +35,15 @@ terraform apply \
   -target=google_secret_manager_secret.email_password \
   -target=google_secret_manager_secret.discord_webhook_url \
   -target=google_secret_manager_secret.llm_api_key \
-  -target=google_secret_manager_secret.embedding_api_key
+  -target=google_secret_manager_secret.embedding_api_key \
+  -target=google_secret_manager_secret.news_api_key
 ```
 
 値をコマンドライン引数に含めず、標準入力から各シークレットの初回バージョンを
-追加します。Cloud Run Jobは5つすべてを`latest`で参照するため、バージョンが
+追加します。Cloud Run Jobと各サービスは6つすべてを`latest`で参照するため、バージョンが
 0件のシークレットが1つでもあると手順3の`terraform apply`が失敗します。
+`news-api-key`は`news-agent`の固定キーで、32文字以上のランダムな値にします
+（`openssl rand -hex 32`の出力など。改行を含めないこと）。
 
 ```bash
 gcloud secrets versions add news-miniflux-api-key --data-file=-
@@ -44,6 +51,7 @@ gcloud secrets versions add news-email-password --data-file=-
 gcloud secrets versions add news-discord-webhook-url --data-file=-
 gcloud secrets versions add news-llm-api-key --data-file=-
 gcloud secrets versions add news-embedding-api-key --data-file=-
+printf '%s' "$(openssl rand -hex 32)" | gcloud secrets versions add news-api-key --data-file=-
 ```
 
 ## 2. コンテナをビルドする
@@ -91,7 +99,8 @@ gcloud run jobs execute news-summarizer \
 
 ## コストガード
 
-- Viewerは最小0・最大1インスタンス
+- Viewerと`news-agent`はそれぞれ最小0・最大1インスタンス。`news-agent`の検索は検索語ごとに
+  embeddingの従量課金が発生する
 - Jobは1タスク、失敗時の自動再試行なし
 - Schedulerは既定で1日1回（`schedule`で変更可）
 - Artifact Registryは最新3世代を保持し、14日超を削除

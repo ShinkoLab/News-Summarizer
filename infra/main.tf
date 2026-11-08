@@ -13,6 +13,16 @@ locals {
   # Viewer 側を素直にキーワード一致へ縮退させる（readConfig() が対応済み）。
   viewer_search_enabled = var.llm_provider != "vertex"
 
+  # news-viewer と news-agent は同じ Viewer イメージで、同じ順位表・同じ embedding
+  # 設定を読む。片方だけ直すと検索結果やカテゴリ順が静かに食い違うので、値はここに
+  # 1つだけ置いて両サービスから参照する。
+  category_order_env = join(",", local.category_order)
+  viewer_embedding_env = local.viewer_search_enabled ? {
+    EMBEDDING_BASE_URL  = var.embedding_base_url
+    LLM_EMBEDDING_MODEL = var.embedding_model
+    EMBEDDING_DIMENSION = tostring(var.embedding_dimension)
+  } : {}
+
   required_services = toset([
     "artifactregistry.googleapis.com",
     "billingbudgets.googleapis.com",
@@ -203,6 +213,11 @@ resource "google_service_account" "viewer" {
   display_name = "News Viewer Cloud Run Service"
 }
 
+resource "google_service_account" "agent" {
+  account_id   = "news-agent-service"
+  display_name = "News Viewer agent-only Cloud Run Service"
+}
+
 resource "google_service_account" "scheduler" {
   account_id   = "news-summarizer-scheduler"
   display_name = "News Summarizer Scheduler Invoker"
@@ -218,6 +233,12 @@ resource "google_project_iam_member" "viewer_datastore" {
   project = var.project_id
   role    = "roles/datastore.viewer"
   member  = "serviceAccount:${google_service_account.viewer.email}"
+}
+
+resource "google_project_iam_member" "agent_datastore" {
+  project = var.project_id
+  role    = "roles/datastore.viewer"
+  member  = "serviceAccount:${google_service_account.agent.email}"
 }
 
 resource "google_secret_manager_secret" "miniflux_api_key" {
@@ -260,6 +281,17 @@ resource "google_secret_manager_secret" "embedding_api_key" {
   depends_on = [google_project_service.required]
 }
 
+// news-agent の `/mcp` と `/api/v1` を守る固定キー（Bearer / X-News-Api-Key）。
+// 値は Terraform に書かない（state に平文で残るため）。DEPLOYMENT.md の手順で
+// `gcloud secrets versions add news-api-key` から入れる。
+resource "google_secret_manager_secret" "news_api_key" {
+  secret_id = "news-api-key"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.required]
+}
+
 resource "google_secret_manager_secret_iam_member" "summarizer_secrets" {
   for_each = {
     miniflux  = google_secret_manager_secret.miniflux_api_key.id
@@ -280,6 +312,18 @@ resource "google_secret_manager_secret_iam_member" "viewer_embedding_secret" {
   secret_id = google_secret_manager_secret.embedding_api_key.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.viewer.email}"
+}
+
+// news-agent は API キーを照合し、検索語の embedding も作る。
+resource "google_secret_manager_secret_iam_member" "agent_secrets" {
+  for_each = {
+    api       = google_secret_manager_secret.news_api_key.id
+    embedding = google_secret_manager_secret.embedding_api_key.id
+  }
+  project   = var.project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.agent.email}"
 }
 
 resource "google_cloud_run_v2_job" "summarizer" {
@@ -528,7 +572,7 @@ resource "google_cloud_run_v2_service" "viewer" {
       # 未設定時は名前順に縮退する（＝カテゴリ名を Viewer 側に持たせない）。
       env {
         name  = "CATEGORY_ORDER"
-        value = join(",", local.category_order)
+        value = local.category_order_env
       }
 
       # セマンティック検索。Viewer は検索語をここで embedding し、
@@ -544,11 +588,7 @@ resource "google_cloud_run_v2_service" "viewer" {
       # local.viewer_search_enabled が false（llm_provider = "vertex"）のときは
       # 何も渡さない。Viewer は EMBEDDING_* が無ければキーワード一致へ縮退する。
       dynamic "env" {
-        for_each = local.viewer_search_enabled ? {
-          EMBEDDING_BASE_URL  = var.embedding_base_url
-          LLM_EMBEDDING_MODEL = var.embedding_model
-          EMBEDDING_DIMENSION = tostring(var.embedding_dimension)
-        } : {}
+        for_each = local.viewer_embedding_env
         content {
           name  = env.key
           value = env.value
@@ -610,6 +650,116 @@ resource "google_cloud_run_domain_mapping" "viewer" {
     google_cloud_run_v2_service.viewer,
     google_iap_web_cloud_run_service_iam_binding.family,
   ]
+}
+
+// エージェント専用の Viewer。Meta Muse などのリモート MCP クライアントは IAP の
+// Google ログインを通れないため、同じ Viewer イメージを IAP なしの別サービスとして
+// 立て、NEWS_AGENT_ONLY=true で `/mcp` と `/api/v1` 以外を 404 にする。
+// 認可はアプリ側の固定キー（NEWS_API_KEY）だけが担う。Cloud Run の invoker IAM は
+// 外すので、キーが漏れたら DEPLOYMENT.md の手順ですぐ差し替えること。
+//
+// 画面・旧 /api/batches はこのサービスからは見えない。家族向けの画面は従来どおり
+// IAP の内側の news-viewer だけが出す。
+resource "google_cloud_run_v2_service" "news_agent" {
+  name                 = "news-agent"
+  location             = var.region
+  ingress              = "INGRESS_TRAFFIC_ALL"
+  iap_enabled          = false
+  invoker_iam_disabled = true
+  deletion_protection  = false
+
+  template {
+    service_account = google_service_account.agent.email
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 1
+    }
+    containers {
+      image = var.viewer_image
+      ports {
+        container_port = 3000
+      }
+      resources {
+        limits = {
+          cpu    = "1"
+          memory = "512Mi"
+        }
+        cpu_idle = true
+      }
+      env {
+        name  = "NEWS_AGENT_ONLY"
+        value = "true"
+      }
+      # Firestore での検索は検索語を EMBEDDING_BASE_URL へ送り、従量課金が発生する。
+      # Viewer はこれが true でないと /api/v1/search を拒否する。
+      env {
+        name  = "NEWS_API_ALLOW_FIRESTORE_SEARCH"
+        value = "true"
+      }
+      env {
+        name  = "GOOGLE_CLOUD_PROJECT"
+        value = var.project_id
+      }
+      env {
+        name  = "FIRESTORE_DATABASE"
+        value = "(default)"
+      }
+      env {
+        name  = "CATEGORY_ORDER"
+        value = local.category_order_env
+      }
+      # news-viewer と同じ embedding 設定（理由は news-viewer 側のコメント参照）。
+      dynamic "env" {
+        for_each = local.viewer_embedding_env
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+      dynamic "env" {
+        for_each = local.viewer_search_enabled ? [1] : []
+        content {
+          name = "EMBEDDING_API_KEY"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.embedding_api_key.secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
+      env {
+        name = "NEWS_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.news_api_key.secret_id
+            version = "latest"
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    google_firestore_database.default,
+    google_secret_manager_secret_iam_member.agent_secrets,
+  ]
+}
+
+resource "google_cloud_run_domain_mapping" "agent" {
+  count    = var.agent_domain != "" ? 1 : 0
+  location = google_cloud_run_v2_service.news_agent.location
+  name     = var.agent_domain
+
+  metadata {
+    namespace = var.project_id
+  }
+
+  spec {
+    route_name = google_cloud_run_v2_service.news_agent.name
+  }
+
+  depends_on = [google_cloud_run_v2_service.news_agent]
 }
 
 resource "google_cloud_run_v2_job_iam_member" "scheduler_invoker" {

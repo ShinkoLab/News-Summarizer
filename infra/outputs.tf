@@ -11,6 +11,16 @@ output "viewer_domain_mapping_records" {
   value       = try(google_cloud_run_domain_mapping.viewer[0].status, null)
 }
 
+output "agent_url" {
+  description = "news-agent (agent-only Viewer: /mcp and /api/v1, no IAP) default URL"
+  value       = google_cloud_run_v2_service.news_agent.uri
+}
+
+output "agent_domain_mapping_records" {
+  description = "DNS records for agent_domain (populated after apply + Google-side validation); null when agent_domain is unset"
+  value       = try(google_cloud_run_domain_mapping.agent[0].status, null)
+}
+
 output "summarizer_job" {
   value = google_cloud_run_v2_job.summarizer.name
 }

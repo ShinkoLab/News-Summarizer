@@ -198,6 +198,12 @@ variable "viewer_domain" {
   default     = ""
 }
 
+variable "agent_domain" {
+  description = "Custom domain (e.g. news-agent.example.com) to map to the agent-only service (news-agent: /mcp and /api/v1, no IAP) via Cloud Run Domain Mapping. Empty string (default) skips domain mapping entirely"
+  type        = string
+  default     = ""
+}
+
 variable "schedule" {
   description = "Cloud Scheduler cron expression"
   type        = string

@@ -19,6 +19,8 @@ GCPプロジェクト `<PROJECT_ID>` に実際にデプロイし、動作確認�
 - RSSソース: Miniflux SaaS版（`https://reader.miniflux.app`）
 - メール取得: 未使用（ダミー値で運用、失敗してもソース単位のエラー分離で無視される）
 - Viewerアクセス制御: IAP（Identity-Aware Proxy）、許可ユーザーは `viewer_users` で管理
+- エージェント（MCPクライアント）向け: IAPなしの別サービス `news-agent`。`/mcp` と `/api/v1`
+  だけを公開し、固定キー（`news-api-key` シークレット）で守る（「エージェント専用サービス（news-agent）」参照）
 
 ## 初回構築手順
 
@@ -95,6 +97,7 @@ terraform plan \
   -target=google_secret_manager_secret.discord_webhook_url \
   -target=google_secret_manager_secret.llm_api_key \
   -target=google_secret_manager_secret.embedding_api_key \
+  -target=google_secret_manager_secret.news_api_key \
   -out=plan_stage1.tfplan
 terraform apply plan_stage1.tfplan
 ```
@@ -107,7 +110,14 @@ printf '%s' "実際の値" | gcloud secrets versions add news-llm-api-key --proj
 printf '%s' "実際の値" | gcloud secrets versions add news-embedding-api-key --project=<PROJECT_ID> --data-file=-
 printf '%s' "実際の値" | gcloud secrets versions add news-discord-webhook-url --project=<PROJECT_ID> --data-file=-
 printf '%s' "unused-placeholder" | gcloud secrets versions add news-email-password --project=<PROJECT_ID> --data-file=-
+printf '%s' "$(openssl rand -hex 32)" | gcloud secrets versions add news-api-key --project=<PROJECT_ID> --data-file=-
 ```
+
+`news-api-key` は `news-agent` の `/mcp` と `/api/v1` を守る固定キー。32文字以上が必要で
+（Viewer は短いキーを無効として扱い `503` を返す）、`openssl rand -hex 32` は64文字になる。
+値はあとで `gcloud secrets versions access latest --secret=news-api-key --project=<PROJECT_ID>`
+で読み出してエージェント側に登録する。Cloud Run は6つのシークレットすべてを `latest` で参照するので、
+どれか1つでもバージョンが0件だと次の手順の `terraform apply` が失敗する。
 
 **注意**: `python3 -c "print(key)" | gcloud secrets versions add ...` のように
 `print()` を使うと末尾に改行が付与され、HTTPヘッダーに使われた際に
@@ -711,6 +721,118 @@ IAP自身の固定エンドポイントでホスト名に依存しないため�
    IAPログイン画面が表示され、`viewer_users` に登録したアカウントのみアクセス
    できることを確認する。既存の `*.run.app` URL（`terraform output viewer_url`）も
    引き続き使える。
+
+### エージェント専用サービス（news-agent）
+
+Meta Muse などのリモートMCPクライアント（Streamable HTTP、公開HTTPS、固定の
+`Authorization: Bearer <キー>`）は IAP の Google ログインを通れない。そこで同じ Viewer
+イメージ（`viewer_image`）を IAP なしの別の Cloud Run サービス `news-agent` として動かし、
+`NEWS_AGENT_ONLY=true` で `/mcp` と `/api/v1` 以外を404にしている。家族向けの画面は従来どおり
+IAP の内側の `news-viewer` だけが出す。
+
+- 認可はアプリの固定キー（`NEWS_API_KEY` ← `news-api-key` シークレット）だけ。Cloud Run の
+  invoker IAM は外している（`invoker_iam_disabled = true`）ので、URL を知っていれば誰でも
+  リクエストは届く。キーが漏れたら下の「キーを差し替える」をすぐ行う
+- サービスアカウント `news-agent-service` は Firestore の閲覧（`roles/datastore.viewer`）と、
+  `news-api-key` / `news-embedding-api-key` の読み取りだけを持つ
+- 意味検索のため `EMBEDDING_*` を `news-viewer` と同じ値で渡し、`NEWS_API_ALLOW_FIRESTORE_SEARCH=true`
+  にしている。**検索のたびに検索語が embedding エンドポイントへ送られ、従量課金が発生する**。
+  `llm_provider = "vertex"` のときは `news-viewer` と同じく `EMBEDDING_*` を渡さず、キーワード一致に縮退する
+- 最大1インスタンス・最小0。キーなしのリクエストは `401` で返るだけで DB にも embedding にも触れない
+
+#### 既存環境に追加する
+
+`news-agent` は `news-api-key` の `latest` を参照するので、先にシークレットとその値を作ってから
+全体を反映する（いきなり `terraform apply` すると、バージョン0件のシークレットを参照して失敗する）。
+`viewer_image` は `/mcp` を含む News-Viewer（v1.8.0 以降）にしておく。
+
+```bash
+cd infra
+terraform apply -target=google_secret_manager_secret.news_api_key
+printf '%s' "$(openssl rand -hex 32)" | gcloud secrets versions add news-api-key --project=<PROJECT_ID> --data-file=-
+terraform plan    # news-viewer に差分が出ないこと（env の値は変えていない）を確認する
+terraform apply
+terraform output agent_url
+```
+
+#### 独自ドメインを付ける
+
+`news-viewer` の「カスタムドメインでViewerにアクセスできるようにする」と同じ仕組み
+（Cloud Run Domain Mapping）で、IAP が無いぶん手順は短い。
+
+1. ベースドメインの所有権を確認済みでなければ `gcloud domains verify <ベースドメイン>`。
+2. `infra/terraform.tfvars` に `agent_domain = "news-agent.your-domain.example.com"` を追加して
+   `terraform apply`（空文字のままなら Domain Mapping は作らない）。
+3. `terraform output agent_domain_mapping_records` で必要なレコードを確認し、DNS に
+   CNAME（`news-agent` → `ghs.googlehosted.com.`）を追加する。
+4. SSL 証明書の発行を待つ（通常15分、最大24時間。その間の404/TLSエラーは異常ではない）。
+
+#### 疎通を確かめる
+
+`AGENT` は `https://<agent_domain>` か `terraform output -raw agent_url`。キーはシェル変数に
+読み込み、コマンドラインやファイルに直書きしない。
+
+```bash
+AGENT="$(terraform output -raw agent_url)"
+NEWS_API_KEY="$(gcloud secrets versions access latest --secret=news-api-key --project=<PROJECT_ID>)"
+
+# 画面は出さない（404）
+curl -s -o /dev/null -w '%{http_code}\n' "$AGENT/"
+
+# キーなしの MCP 呼び出しは 401
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$AGENT/mcp" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_news","arguments":{"query":"AI"}}}'
+
+# 正しいキーならツール一覧と search_news の結果が返る
+curl -s -X POST "$AGENT/mcp" -H "Authorization: Bearer $NEWS_API_KEY" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+curl -s -X POST "$AGENT/mcp" -H "Authorization: Bearer $NEWS_API_KEY" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_news","arguments":{"query":"AI"}}}'
+
+# REST（/api/v1）も同じキーで読める
+curl -s -H "X-News-Api-Key: $NEWS_API_KEY" "$AGENT/api/v1/batches?limit=1"
+```
+
+`search_news` の引数名は `tools/list` が返す `inputSchema` に合わせる。`/api/v1` の
+エンドポイントと受け付けるヘッダーは News-Viewer の README を参照。
+
+#### Meta Muse に登録する
+
+リモートMCPサーバーとして次を登録する。
+
+- URL: `https://<agent_domain>/mcp`（ドメイン未設定なら `agent_url` の `/mcp`）
+- ヘッダー: `Authorization` に `Bearer <キー>`（`<キー>` は上で読み出した値。`Bearer ` と半角スペースを含める）
+
+#### キーを差し替える
+
+キーは1つしか持てないので、差し替えの間は数分だけエージェントからの呼び出しが `401` になる。
+
+```bash
+printf '%s' "$(openssl rand -hex 32)" | gcloud secrets versions add news-api-key --project=<PROJECT_ID> --data-file=-
+# latest はインスタンスの起動時に解決されるので、新しいリビジョンを出して確実に読み直させる
+gcloud run services update news-agent --project=<PROJECT_ID> --region=asia-northeast1 \
+  --update-labels=api-key-rotated-at="$(date +%Y%m%d%H%M)"
+```
+
+新しいキーを Muse 側の `Authorization` に登録し直し、疎通を確かめてから古いバージョンを無効にする
+（`gcloud secrets versions list news-api-key` で番号を確認し、`gcloud secrets versions disable <番号> --secret=news-api-key`）。
+`--update-labels` で付いたラベルは Terraform の管理外なので、次の `terraform apply` で差分として
+外れることがあるが、動作には影響しない。
+
+#### 止める
+
+すぐに外から届かなくしたいときは ingress を内部限定にする（Terraform の `ingress` と食い違うので、
+次の `terraform apply` で元の `INGRESS_TRAFFIC_ALL` に戻る）。
+
+```bash
+gcloud run services update news-agent --project=<PROJECT_ID> --region=asia-northeast1 --ingress=internal
+```
+
+恒久的に外すなら `google_cloud_run_v2_service.news_agent` と関連リソース（Domain Mapping、
+`news-agent-service`、その IAM、`news-api-key`）を `main.tf` から消して `terraform apply`。
 
 ## 日常運用・トラブルシュート
 

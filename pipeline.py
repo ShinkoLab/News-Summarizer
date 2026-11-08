@@ -26,7 +26,7 @@ from fetchers.email_fetcher import EmailFetcher
 from outputs.database import create_database
 from outputs.discord_output import DiscordOutput
 from outputs.delivery import (
-    MAX_PENDING, describe_delivery_error, describe_failure, drain_deliveries, new_delivery,
+    MAX_PENDING, DeliveryTooLarge, describe_delivery_error, describe_failure, drain_deliveries, new_delivery,
 )
 from summarizer.grouper import group_articles, group_summaries
 from summarizer.summarizer import summarize_article
@@ -464,14 +464,15 @@ def persist_and_publish(
     logger.info("結果を保存・出力しています...")
     only_summaries = [s[1] for s in summaries]
     result = SaveResult(batch_id=None, saved=[])
+    mark_read_error: Exception | None = None
 
     discord_out = DiscordOutput() if options.run_discord else None
     delivery = None
     if options.run_db and discord_out is not None and discord_out.webhook_url:
         try:
             delivery = new_delivery(discord_out.payloads(digest, only_summaries))
-        except Exception as e:
-            # 通知の都合（512 KiB 超など）で記事の保存まで止めない。LLM の結果を捨てると
+        except DeliveryTooLarge as e:
+            # 通知の都合（512 KiB 超）で記事の保存まで止めない。LLM の結果を捨てると
             # 次回も同じ記事を要約し直して同じ理由で失敗し続ける。outbox を使わず直接投稿する。
             logger.error(
                 "Discord配信データをoutboxに保存できません (%s)。今回は再送なしで直接投稿します。",
@@ -502,12 +503,18 @@ def persist_and_publish(
             try:
                 rss_fetcher.mark_as_read(rss_entry_ids)
             except Exception as e:
-                raise RunFailedError("保存後のRSS既読化に失敗しました。", saved_result=result) from e
+                # Discord の手順より先に落とすと、outbox を使わない直接投稿が二度と送られない。
+                # 保存済みの記事は次回の重複排除で既読化されるので、報告は投稿の後に回す。
+                logger.error("保存後のRSS既読化に失敗しました (%s)。", describe_failure(e))
+                mark_read_error = e
     else:
         logger.info("[Dry-Run] データベースへの保存をスキップしました。")
 
     try:
-        if options.run_discord:
+        if options.run_discord and options.run_db and not result.saved:
+            # 1件も保存できていなければ outbox も無い。後段で実行全体が失敗扱いになる。
+            logger.warning("保存できた記事が無いため、Discordへの送信はスキップしました。")
+        elif options.run_discord:
             if options.run_db and delivery is not None:
                 completed = drain_deliveries(db, discord_out)
                 if completed:
@@ -535,6 +542,9 @@ def persist_and_publish(
     except Exception as e:
         logger.error("保存後の出力に失敗しました (%s)。", describe_delivery_error(e))
         raise RunFailedError("保存後の出力に失敗しました。", saved_result=result) from e
+
+    if mark_read_error is not None:
+        raise RunFailedError("保存後のRSS既読化に失敗しました。", saved_result=result) from mark_read_error
 
     return result
 

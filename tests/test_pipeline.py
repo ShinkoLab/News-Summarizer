@@ -1332,17 +1332,40 @@ class TestDurableDeliveryRecovery:
 
     def test_oversized_delivery_still_saves_and_posts_directly(self, minimal_config, tmp_path):
         from outputs.database import Database
+        from outputs.delivery import DeliveryTooLarge
         db = Database(str(tmp_path / 'oversized.db'))
         output = _discord_mock()
         output.webhook_url = 'https://discord.example/hook'
         output.payloads.return_value = [{'content': 'x'}]
         output.post.return_value = 1
-        with patch('pipeline.new_delivery', side_effect=ValueError('Discord delivery exceeds 512 KiB')):
+        with patch('pipeline.new_delivery', side_effect=DeliveryTooLarge('Discord delivery exceeds 512 KiB')):
             _run_with_patches(minimal_config, RunOptions(), [_make_article('1')],
                               db_mock=db, discord_mock=output)
         assert db.is_article_processed('rss', '1')
         assert db.pending_deliveries() == []
         output.post.assert_called_once()
+
+    def test_mark_read_failure_is_reported_after_direct_post(self, minimal_config, tmp_path):
+        from outputs.database import Database
+        from outputs.delivery import DeliveryTooLarge
+        db = Database(str(tmp_path / 'mark-read.db'))
+        output = _discord_mock()
+        output.webhook_url = 'https://discord.example/hook'
+        output.post.return_value = 1
+        rss = MagicMock()
+        rss.mark_as_read.side_effect = RuntimeError('miniflux down')
+        with (patch('pipeline.new_delivery', side_effect=DeliveryTooLarge('too big')),
+              patch('pipeline.create_database', return_value=db),
+              patch('pipeline.DiscordOutput', return_value=output),
+              patch('pipeline.fetch_articles',
+                    return_value=FetchResult([_make_article('1')], rss, None)),
+              patch('pipeline.summarize_article', return_value=_make_summary()),
+              patch('pipeline.group_articles', return_value=_make_grouping()),
+              patch('pipeline.generate_digest', return_value=_make_digest(1))):
+            with pytest.raises(RunFailedError, match='既読化'):
+                run_pipeline(minimal_config, RunOptions())
+        output.post.assert_called_once()
+        assert db.is_article_processed('rss', '1')
 
     def test_full_outbox_stops_before_llm_calls(self, minimal_config, tmp_path):
         from outputs.database import Database

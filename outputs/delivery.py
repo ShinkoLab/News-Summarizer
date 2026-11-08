@@ -11,12 +11,16 @@ MAX_DELIVERIES_PER_RUN = 10
 MAX_PAYLOAD_BYTES = 512 * 1024
 
 
+class DeliveryTooLarge(ValueError):
+    """The frozen payloads exceed MAX_PAYLOAD_BYTES and cannot be queued."""
+
+
 def new_delivery(payloads: list[dict]) -> dict | None:
     if not payloads:
         return None
     encoded = json.dumps(payloads, ensure_ascii=False)
     if len(encoded.encode('utf-8')) > MAX_PAYLOAD_BYTES:
-        raise ValueError('Discord delivery exceeds 512 KiB')
+        raise DeliveryTooLarge('Discord delivery exceeds 512 KiB')
     return dict(id=uuid.uuid4().hex, payloads=encoded, next_payload=0,
                 created_at=time.time(), next_attempt_at=0.0, attempts=0)
 
@@ -35,10 +39,11 @@ def describe_failure(error: BaseException) -> str:
     embed the request URL, so only their class/status is shown. Other errors
     (DB, Firestore, outbox-full) keep their message, which is needed to act.
     """
-    seen = error
-    while seen is not None:
+    seen, visited = error, set()
+    while seen is not None and id(seen) not in visited:
+        visited.add(id(seen))
         if type(seen).__module__.split('.')[0] in ('httpx', 'httpcore'):
-            return describe_delivery_error(error) if isinstance(error, Exception) else type(error).__name__
+            return describe_delivery_error(seen) if isinstance(seen, Exception) else type(seen).__name__
         seen = seen.__cause__ or seen.__context__
     return f"{type(error).__name__}: {error}"
 

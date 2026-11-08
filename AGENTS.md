@@ -18,7 +18,7 @@ This file provides guidance to coding agents (Claude Code, Codex, etc.) when wor
   最新の `main` から切って `main` へ PR を出す。
 - 新しい作業を始める前に必ずブランチを切る。`main` に直接コミット・push しない。必ず PR を通す。
   GitHub のブランチ保護（ルールセット）で `main` への直接 push を禁止する
-  （**現状は未設定**。CI は `.github/workflows/publish-image.yml` の PR 検証（スキャンまで）のみ導入済みなので、保護を入れるときはその成功をマージ条件にする）。
+  （**現状は未設定**。CI は `.github/workflows/publish-image.yml` の PR 検証（`uv run pytest` → スキャン）と、`main` 以外を base にした積み PR 用の `stacked-tests.yml`（pytest のみ）を導入済みなので、保護を入れるときはその成功をマージ条件にする）。
 - ブランチ名は英小文字のケバブケースにする（例: `feature/strip-html-content`、
   `fix/opencode-session-header`）。
 

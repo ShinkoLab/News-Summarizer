@@ -83,11 +83,11 @@ services:
   web:
     # 既定では GHCR の公開イメージを pull する。`--build` を付けたときだけ下の context から
     # ビルドする（image と context の版は揃えておく）。
-    image: ${NEWS_VIEWER_IMAGE:-ghcr.io/shinkolab/news-viewer:1.5.3}
+    image: ${NEWS_VIEWER_IMAGE:-ghcr.io/shinkolab/news-viewer:1.6.0}
     build:
       # News-Viewer は別リポジトリ。Compose が URL から直接ビルドするので clone は不要。
       # Viewer 側を手元で開発しているときは NEWS_VIEWER_CONTEXT=../News-Viewer で差し替える。
-      context: ${NEWS_VIEWER_CONTEXT:-https://github.com/ShinkoLab/News-Viewer.git#v1.5.3}
+      context: ${NEWS_VIEWER_CONTEXT:-https://github.com/ShinkoLab/News-Viewer.git#v1.6.0}
     depends_on:
       - summarizer
     ports:

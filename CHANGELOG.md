@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Docker Compose の `web` を News-Viewer v1.6.0 に更新した（同じタイムスタンプのバッチがページ送りで抜ける問題の修正、iOS PWA の上端のぼかし対策、Next.js などの脆弱性の修正）
+
 ## [2.8.0] - 2026-11-08
 
 ### Security

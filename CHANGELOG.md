@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-11-08
+
 ### Security
 - POP3 SSL の証明書・ホスト名を検証するようにした（以前は検証していなかった）。**自己署名証明書や
   IP アドレス指定などで証明書が合わないメールサーバーは、この版から取得に失敗する**。信頼ストアに

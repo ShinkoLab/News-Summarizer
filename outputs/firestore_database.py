@@ -11,6 +11,7 @@ from google.cloud.firestore_v1.vector import Vector
 from logger import get_logger
 from models import Article, ArticleSummary, DigestResult, SaveResult
 from urls import normalize_url, url_key
+from outputs.delivery import MAX_PENDING
 
 logger = get_logger(__name__)
 
@@ -188,6 +189,7 @@ class FirestoreDatabase:
         summaries: list[tuple[Article, ArticleSummary, int | None, str | None]],
         digest: DigestResult,
         embeddings=None,
+        *, delivery: dict | None = None,
     ) -> SaveResult:
         """記事サマリを複数コミットに分割して保存する。
 
@@ -202,6 +204,17 @@ class FirestoreDatabase:
         """
         now = datetime.now(UTC)
         batch_id = int(now.timestamp() * 1000)
+
+        delivery_ref = None
+        delivery_data = None
+        if delivery is not None:
+            # Called under the pipeline execution lease. Bounded single-field
+            # query uses automatic indexes, not a new composite index.
+            if len(self.pending_deliveries(MAX_PENDING)) >= MAX_PENDING:
+                raise RuntimeError("Discord outbox is full; restore delivery before saving more articles")
+            delivery_ref = self.client.collection("discordOutbox").document(delivery['id'])
+            delivery_data = {**delivery, "batch_id": batch_id}
+        delivery_bytes = estimate_document_size(delivery_data) if delivery_data else 0
 
         saved: list[tuple[str, str]] = []
         failed = 0
@@ -222,6 +235,11 @@ class FirestoreDatabase:
                     write_batch.set(ref, data)
                 else:
                     write_batch.delete(ref)
+            if delivery_ref is not None:
+                # Identical immutable intent in every article commit closes the
+                # crash window, including final batch-document failure. One ID,
+                # not one delivery per chunk; sending starts only after save.
+                write_batch.set(delivery_ref, delivery_data)
             try:
                 write_batch.commit()
             except Exception as e:
@@ -248,8 +266,8 @@ class FirestoreDatabase:
             # 1記事ぶんの書き込み（サマリ＋email関連）は分割せず同じコミットに収める。
             # チャンクが空なら、単体で上限を超える記事でもそのまま送るしかない。
             if chunk and (
-                len(chunk) + len(writes) > _MAX_BATCH_WRITES
-                or chunk_bytes + size > _MAX_CHUNK_BYTES
+                len(chunk) + len(writes) + (delivery_ref is not None) > _MAX_BATCH_WRITES
+                or chunk_bytes + size + delivery_bytes > _MAX_CHUNK_BYTES
             ):
                 flush()
 
@@ -307,6 +325,20 @@ class FirestoreDatabase:
                 len(saved),
             )
         return SaveResult(batch_id=batch_id, saved=saved, failed=failed)
+
+    def pending_deliveries(self, limit=MAX_PENDING):
+        snapshots = (self.client.collection("discordOutbox")
+                     .order_by("created_at").limit(limit).stream())
+        return [snapshot.to_dict() for snapshot in snapshots]
+
+    def update_delivery(self, delivery_id, next_payload, next_attempt_at, attempts):
+        self.client.collection("discordOutbox").document(delivery_id).update({
+            "next_payload": next_payload, "next_attempt_at": next_attempt_at,
+            "attempts": attempts,
+        })
+
+    def delete_delivery(self, delivery_id):
+        self.client.collection("discordOutbox").document(delivery_id).delete()
 
     @contextmanager
     def execution_lock(self, ttl: timedelta = timedelta(hours=2)):

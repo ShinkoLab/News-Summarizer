@@ -1,6 +1,6 @@
 # 処理の流れと設計
 
-1 回の実行（バッチ）は取得 → 重複排除 → 個別要約 → グルーピング → ダイジェスト → 出力 の順に進む。
+1 回の実行（バッチ）は保留中の Discord 配信を再開してから、取得 → 重複排除 → 個別要約 → グルーピング → ダイジェスト → 出力 の順に進む。
 入口は `main.py` で、本体は `pipeline.py` の `run_pipeline()`。
 
 ```
@@ -36,13 +36,20 @@ Miniflux（RSS） + POP3（メール）
 ## 取得
 
 ソースごとにエラーを切り離している。片方の取得に失敗しても、もう片方の記事で実行を続ける。
+フェッチャは正常時には記事リスト（0件も正常）、ソース障害時には部分取得の記事を保持した
+`FetchError` を送出する。`fetch_articles()` は成功・失敗ソースを `FetchResult` に
+記録し、部分取得の記事も後段へ渡す。すべての有効ソースが失敗し、部分取得の記事も無い場合だけ
+取得全体を失敗とする。`all` でメール未設定なら取得対象から除外し、明示した `email` の未設定は
+失敗として扱う。保存例外は `RunFailedError` に変換し、保存後の出力例外にも確認済みの
+`SaveResult` を添えてメール削除と試行回数の判定に渡す。
 日時はどちらのソースも UTC のタイムゾーン付きにそろえる（`fetchers/base.py` の `to_utc()`）。
 
 - Miniflux: 未読の記事を公開日時の古い順に、`miniflux.fetch_limit` 件まで取る。本文の HTML は
   既定でテキストにしてから LLM に渡す（`miniflux.strip_html`）。HTML のままだと入力トークンが
   約 5 倍になる。既読化は取得した時点ではしない（[重複排除](#重複排除)を参照）
 - POP3: `UIDL` で処理済みのメールを飛ばす。解析に失敗したメールはそのメールだけを除いて、
-  残りの取得を続ける。メールはサーバーから既定では削除しない
+  残りの取得を続ける。処理済み UIDL は本文を再取得せずに収集し、削除が有効なら後段で
+  削除を再試行する（新着0件でも行う）。メールはサーバーから既定では削除しない
 
 ## 重複排除
 
@@ -117,7 +124,17 @@ Miniflux の既読化は2か所で行う。
   保存先ごとの違いは[データモデル](data-model.md)を参照
 - Discord: ダイジェストを Embed 1つで投稿する（本文は Discord の上限の 4096 文字で切る）。
   Webhook の URL が無ければ何もしない。`discord.post_individual_articles: true` なら、記事ごとの
-  要約も 10 件ずつ投稿する。投稿の失敗はログに出すだけで、DB への保存には影響しない
+  要約も 10 件ずつ投稿する。すべての投稿で HTTP ステータスを検査し、失敗は異常終了する。
+  DB と Discord を両方出力するときは、生成時の投稿 payload を固定して outbox に保存する。
+  SQLite では記事と同一トランザクション、Firestore では同じ配信 ID の outbox を各記事チャンクと
+  同時に書き、記事だけが保存されて配信情報が失われる隙間を防ぐ。Firestore の最後のバッチ文書の
+  作成が失敗しても配信を復旧できる。送信は保存後に開始し、次回は取得前に未完了の投稿から再開する。
+  新着0件でも再開でき、要約・ダイジェストを再生成しない。起動時の復旧失敗は記録して新規取得・
+  保存と POP3 の後片付けを続け、最後に異常終了する。未来の再試行時刻があるときは、共有 Webhook の
+  クールダウンとして新規分を含む配信を保留する。
+- 配信は「生成したバッチ」単位で固定する。Firestore の部分保存時も、従来どおりダイジェストは
+  保存成功分だけではなく生成した記事全体を含む。未保存記事が後日のバッチに再登場することはある。
+  配信の件数制限、再試行、重複の可能性は[運用](operations.md#discord-配信の復旧)を参照
 
 ## LLM
 
@@ -150,3 +167,14 @@ Miniflux の既読化は2か所で行う。
 
 カテゴリの定義は `categories.yaml` に分けている。git で管理してイメージにも入れるので、
 どの実行環境も同じ定義を読む。
+
+## Read-only dry runs
+
+During `--dry-run` without an explicit DB output (`--output db` or `--output all`), SQLite reads
+a private in-memory snapshot opened from the source with `mode=ro`. Schema
+initialization and legacy migrations affect only that snapshot; a missing database
+and its parent directory are not created. The snapshot rejects writes and requires
+memory proportional to the database size. Committed WAL data is included.
+Explicit DB output retains normal initialization, migration and persistence.
+Firestore dry runs continue to skip the execution lease and all persistence;
+fetching and LLM calls still occur unless replaced by test providers.

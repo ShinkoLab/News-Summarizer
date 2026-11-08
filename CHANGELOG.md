@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-11-08
+
+### Security
+- POP3 SSL の証明書・ホスト名を検証するようにした（以前は検証していなかった）。**自己署名証明書や
+  IP アドレス指定などで証明書が合わないメールサーバーは、この版から取得に失敗する**。信頼ストアに
+  CA を入れるか、証明書と一致するホスト名を `EMAIL_HOST` に指定する。あわせて SSL / 非SSL とも
+  接続・ソケット操作に30秒のタイムアウトを設定し、認証失敗時のソケットも閉じる
+
+### Fixed
+- POP3 の削除失敗で残った処理済みメールを、本文を再取得せず次回以降に削除再試行する（新着0件でも実行、dry-run は削除しない）。
+  **`email.delete_after_processing: true` のときは、処理済みとして記録済みでサーバーに残っているメールがすべて削除対象になる**（あとからこの設定を有効にした場合、それ以前の処理済みメールも消える）
+- Discord の HTTP エラーを成功扱いせず異常終了し、SQLite / Firestore の永続 outbox から次回配信を再開する。投稿済みの進捗と生成時の内容を保持して再要約を避ける（応答喪失時の重複はあり得る）
+- SQLite などの保存例外でメールの再試行回数が消費され、未保存のまま処理済み・削除になる問題を修正。保存後の出力例外でも保存済みの結果を保持する
+- 記事を1件も保存できなかった実行では Discord に投稿しない（次回、保存とあわせて投稿する）
+- Discord の投稿データを outbox 用に準備できないとき（512 KiB 超や embed の組み立て失敗）も記事は保存し、再送なしの直接投稿を試みる
+- 異常終了のログに原因を添える（HTTP クライアント由来の例外は種類と HTTP ステータスだけ）
+- 全取得ソースの失敗を「新着なし」の正常終了と区別し、異常終了する。正常な0件取得と部分成功は維持し、POP3 の途中切断までに取得した記事も処理する
+- Keep SQLite dry runs read-only: do not create the source database or apply schema migrations unless DB output is explicitly requested.
+
 ## [2.7.1] - 2026-11-08
 
 ### Changed

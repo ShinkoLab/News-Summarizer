@@ -2,7 +2,7 @@ import httpx
 from datetime import UTC, datetime
 from typing import List
 from models import Article
-from fetchers.base import BaseFetcher, to_utc
+from fetchers.base import BaseFetcher, FetchError, to_utc
 from fetchers.html_text import html_to_text
 from config import config
 from logger import get_logger
@@ -25,6 +25,13 @@ class MinifluxFetcher(BaseFetcher):
         }
 
     def fetch(self) -> List[Article]:
+        articles: list[Article] = []
+        try:
+            return self._fetch(articles)
+        except Exception as e:
+            raise FetchError("Minifluxからの取得に失敗しました。", articles) from e
+
+    def _fetch(self, articles: list[Article]) -> List[Article]:
         url = f"{self.base_url}/v1/entries"
         params = {
             "status": "unread",
@@ -36,14 +43,10 @@ class MinifluxFetcher(BaseFetcher):
             "direction": "asc",
         }
 
-        try:
-            # 本文フルHTMLを含むレスポンスなので、件数に比例して重くなる。
-            # 100件で実測3秒程度。fetch_limit を上げても頭打ちしないよう長めに取る。
-            response = httpx.get(url, params=params, headers=self.headers, timeout=60.0)
-            response.raise_for_status()
-        except httpx.RequestError as e:
-            logger.error("Failed to fetch from Miniflux: %s", e, exc_info=True)
-            return []
+        # 本文フルHTMLを含むレスポンスなので、件数に比例して重くなる。
+        # 100件で実測3秒程度。fetch_limit を上げても頭打ちしないよう長めに取る。
+        response = httpx.get(url, params=params, headers=self.headers, timeout=60.0)
+        response.raise_for_status()
 
         data = response.json()
         entries = data.get("entries", [])
@@ -59,7 +62,6 @@ class MinifluxFetcher(BaseFetcher):
                 self.fetch_limit,
             )
 
-        articles = []
         empty_entry_ids = []
         # HTML テキスト化の効果測定用（件数・変換前後の文字数）
         stripped_count = 0

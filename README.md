@@ -84,14 +84,14 @@ API key は自動発行しないので、`MINIFLUX_API_KEY` は必須。スタ�
 
 ### イメージ
 
-- `summarizer` / `web` は既定で GHCR の公開イメージ（`ghcr.io/shinkolab/news-summarizer:2.7.1` /
+- `summarizer` / `web` は既定で GHCR の公開イメージ（`ghcr.io/shinkolab/news-summarizer:2.8.0` /
   `ghcr.io/shinkolab/news-viewer:1.5.3`）を pull する
 - 手元のコードで動かすときは `docker compose up -d --build`。Summarizer はこのリポジトリから、
   Viewer は [News-Viewer](https://github.com/ShinkoLab/News-Viewer) のリリースタグ（`v1.5.3`）を
   Compose が URL から直接ビルドする。手元の News-Viewer を開発しているときは
   `.env` に `NEWS_VIEWER_CONTEXT=../News-Viewer` を設定して差し替える。別のバージョンを pull したいときは
   `NEWS_SUMMARIZER_IMAGE` / `NEWS_VIEWER_IMAGE` で指定する
-- `--build` したイメージは公開イメージと同じ名前（例: `news-summarizer:2.7.1`）で手元に残り、以後の
+- `--build` したイメージは公開イメージと同じ名前（例: `news-summarizer:2.8.0`）で手元に残り、以後の
   `docker compose up -d` もそれを使い続ける。公開イメージに戻すときは `docker compose pull` する
 - pull に失敗した（オフライン・GHCR の障害など）ときは、Compose がソースからのビルドに切り替える
   （数分かかる）
@@ -262,3 +262,14 @@ Issueへの対応は気まぐれです。
 ## AI利用
 
 本プロジェクトにはClaude Code及びGemini CLIを使用しています。
+
+## Read-only dry runs
+
+During `--dry-run` without an explicit DB output (`--output db` or `--output all`), SQLite reads
+a private in-memory snapshot opened from the source with `mode=ro`. Schema
+initialization and legacy migrations affect only that snapshot; a missing database
+and its parent directory are not created. The snapshot rejects writes and requires
+memory proportional to the database size. Committed WAL data is included.
+Explicit DB output retains normal initialization, migration and persistence.
+Firestore dry runs continue to skip the execution lease and all persistence;
+fetching and LLM calls still occur unless replaced by test providers.

@@ -7,6 +7,7 @@ from typing import Optional, TYPE_CHECKING
 from config import config
 from models import Article, ArticleSummary, SaveResult
 from urls import url_key
+from outputs.delivery import MAX_PENDING
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -15,22 +16,44 @@ if TYPE_CHECKING:
     from models import DigestResult
 
 class Database:
-    def __init__(self, db_path: str | None = None):
+    def __init__(self, db_path: str | None = None, *, read_only: bool = False):
         if db_path is None:
             db_path = config.database.path
             
         self.db_path = Path(db_path)
-        # 必要なディレクトリの作成
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.init_db()
+        self._snapshot = None
+        if read_only:
+            # Migrate only a private in-memory snapshot. This also supports old
+            # schemas without changing the source database during a dry run.
+            self._snapshot = sqlite3.connect(":memory:")
+            self._snapshot.row_factory = sqlite3.Row
+            if self.db_path.exists():
+                source = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)
+                try:
+                    source.backup(self._snapshot)
+                finally:
+                    source.close()
+            self.init_db()
+            self._snapshot.execute("PRAGMA query_only = ON")
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.init_db()
 
     def get_connection(self):
+        if self._snapshot is not None:
+            return self._snapshot
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
     def init_db(self):
         schema = """
+        CREATE TABLE IF NOT EXISTS discord_outbox (
+            id TEXT PRIMARY KEY, batch_id INTEGER NOT NULL,
+            payloads TEXT NOT NULL, next_payload INTEGER NOT NULL,
+            created_at REAL NOT NULL, next_attempt_at REAL NOT NULL,
+            attempts INTEGER NOT NULL
+        );
         -- 実行バッチの管理
         CREATE TABLE IF NOT EXISTS batches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -249,6 +272,7 @@ class Database:
         summaries: list[tuple[Article, ArticleSummary, int | None, str | None]],
         digest: "DigestResult",
         embeddings=None,
+        *, delivery: dict | None = None,
     ) -> SaveResult:
         """Persist a completed pipeline result in a single SQLite transaction.
 
@@ -308,6 +332,14 @@ class Database:
                         (article.source_id,),
                     )
 
+            if delivery is not None:
+                if conn.execute("SELECT COUNT(*) FROM discord_outbox").fetchone()[0] >= MAX_PENDING:
+                    raise RuntimeError("Discord outbox is full; restore delivery before saving more articles")
+                conn.execute(
+                    "INSERT INTO discord_outbox VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (delivery['id'], batch_id, delivery['payloads'], delivery['next_payload'],
+                     delivery['created_at'], delivery['next_attempt_at'], delivery['attempts']),
+                )
             conn.commit()
             logger.debug("バッチを一括保存しました (batch_id: %d)", batch_id)
             return SaveResult(
@@ -315,13 +347,30 @@ class Database:
                 saved=[(article.source_type, article.source_id) for article, *_ in summaries],
             )
 
+    def pending_deliveries(self, limit=MAX_PENDING):
+        with self.get_connection() as conn:
+            return [dict(row) for row in conn.execute(
+                "SELECT * FROM discord_outbox ORDER BY created_at, id LIMIT ?", (limit,)
+            )]
+
+    def update_delivery(self, delivery_id, next_payload, next_attempt_at, attempts):
+        with self.get_connection() as conn:
+            conn.execute(
+                "UPDATE discord_outbox SET next_payload=?, next_attempt_at=?, attempts=? WHERE id=?",
+                (next_payload, next_attempt_at, attempts, delivery_id),
+            )
+
+    def delete_delivery(self, delivery_id):
+        with self.get_connection() as conn:
+            conn.execute("DELETE FROM discord_outbox WHERE id=?", (delivery_id,))
+
     @contextmanager
     def execution_lock(self):
         """SQLite runs remain single-process; keep a common backend interface."""
         yield
 
 
-def create_database():
+def create_database(*, read_only: bool = False):
     """Create the configured persistence backend."""
     if config.database.backend == "firestore":
         from outputs.firestore_database import FirestoreDatabase
@@ -330,4 +379,4 @@ def create_database():
             project_id=config.database.project_id,
             database=config.database.firestore_database,
         )
-    return Database()
+    return Database(read_only=read_only)

@@ -1386,10 +1386,11 @@ class TestDurableDeliveryRecovery:
         output.webhook_url = 'https://discord.example/hook'
         output.payloads.return_value = [{'content': 'x'}]
         with patch('pipeline.drain_deliveries', return_value=0) as drain:
-            with pytest.raises(RunFailedError):
+            with pytest.raises(RunFailedError, match='1件も保存できませんでした'):
                 _run_with_patches(minimal_config, RunOptions(), [_make_article('1')],
                                   db_mock=db, discord_mock=output)
         output.post.assert_not_called()
+        output.send_payload.assert_not_called()
         assert drain.call_count == 1  # startup recovery only, not after the failed save
 
     def test_mark_read_failure_after_outbox_drain(self, minimal_config, tmp_path):

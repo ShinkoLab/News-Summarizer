@@ -477,7 +477,7 @@ def persist_and_publish(
             # outbox を使わず直接投稿する（組み立て自体が壊れていれば投稿も失敗し、保存後に異常終了する）。
             # payload の組み立ては HTTP を使わないので、例外本文に webhook URL は入らない。
             logger.error(
-                "Discord配信データをoutboxに保存できません (%s)。今回は再送なしで直接投稿します。",
+                "Discord配信データを準備できませんでした (%s)。outboxを使わず直接投稿を試みます。",
                 describe_failure(e),
                 exc_info=not isinstance(e, DeliveryTooLarge),
             )
@@ -508,14 +508,14 @@ def persist_and_publish(
             except Exception as e:
                 # Discord の手順より先に落とすと、outbox を使わない直接投稿が二度と送られない。
                 # 保存済みの記事は次回の重複排除で既読化されるので、報告は投稿の後に回す。
-                # Miniflux の API キーはヘッダーで送り URL に入らないので traceback も残す。
-                logger.error("保存後のRSS既読化に失敗しました (%s)。", describe_failure(e), exc_info=True)
+                # httpx のエラーは MinifluxFetcher 側で traceback 付きで記録済み。
+                logger.error("保存後のRSS既読化に失敗しました (%s)。", describe_failure(e))
                 mark_read_error = e
     else:
         logger.info("[Dry-Run] データベースへの保存をスキップしました。")
 
     try:
-        if options.run_discord and options.run_db and not result.saved:
+        if options.run_discord and options.run_db and discord_out.webhook_url and not result.saved:
             # 1件も保存できていなければ outbox も無い。後段で実行全体が失敗扱いになる。
             logger.warning("保存できた記事が無いため、Discordへの送信はスキップしました。")
         elif options.run_discord:

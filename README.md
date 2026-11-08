@@ -85,9 +85,9 @@ API key は自動発行しないので、`MINIFLUX_API_KEY` は必須。スタ�
 ### イメージ
 
 - `summarizer` / `web` は既定で GHCR の公開イメージ（`ghcr.io/shinkolab/news-summarizer:2.8.0` /
-  `ghcr.io/shinkolab/news-viewer:1.6.0`）を pull する
+  `ghcr.io/shinkolab/news-viewer:1.7.0`）を pull する
 - 手元のコードで動かすときは `docker compose up -d --build`。Summarizer はこのリポジトリから、
-  Viewer は [News-Viewer](https://github.com/ShinkoLab/News-Viewer) のリリースタグ（`v1.6.0`）を
+  Viewer は [News-Viewer](https://github.com/ShinkoLab/News-Viewer) のリリースタグ（`v1.7.0`）を
   Compose が URL から直接ビルドする。手元の News-Viewer を開発しているときは
   `.env` に `NEWS_VIEWER_CONTEXT=../News-Viewer` を設定して差し替える。別のバージョンを pull したいときは
   `NEWS_SUMMARIZER_IMAGE` / `NEWS_VIEWER_IMAGE` で指定する
@@ -130,6 +130,23 @@ docker compose run --rm summarizer-once --source email
   お試し向けの既定は 20 / 25）で調整する。超えた分は次回に繰り越す。HTML 本文のテキスト化
   （LLM の入力トークンを約 8 割減らす）は `MINIFLUX_STRIP_HTML` で切り替えられる（既定は有効）
 - 全記事の要約が1件も成功しなかったときも、定期実行の `summarizer` は止まらず次の間隔で再試行する
+
+### エージェント向けの読み取り API
+
+Viewer には AI エージェントなどから記事を読むための読み取り専用 API（`/api/v1`）がある。
+`.env` の `NEWS_API_KEY` に 32 文字以上のランダムな値（`openssl rand -hex 32` の出力など）を
+設定すると有効になり、未設定（または 32 文字未満）なら無効（`503`）のまま。リクエストの
+`X-News-Api-Key` ヘッダーに同じ値を渡す。
+
+```bash
+curl -H "X-News-Api-Key: $NEWS_API_KEY" 'http://127.0.0.1:3080/api/v1/batches?limit=3'
+```
+
+キーで守られるのは `/api/v1` だけで、画面には認証が付かない。ポートは既定どおりループバック
+（`127.0.0.1`）に置いたまま使う。エンドポイントの一覧は
+[News-Viewer の README](https://github.com/ShinkoLab/News-Viewer) を参照。Google Cloud 構成で
+インターネット越しのエージェント（MCP クライアント）からつなぐ方法は `infra/DEPLOYMENT.md` の
+「エージェント専用サービス（news-agent）」にある。
 
 ### 外部に公開するとき
 

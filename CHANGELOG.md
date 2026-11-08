@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Google Cloud 構成に、AI エージェント専用の Cloud Run サービス `news-agent` を追加した。Viewer と同じイメージを
+  IAP なしで動かし、`/mcp` と `/api/v1` だけを固定キー（Secret Manager の `news-api-key`）で守って公開する。
+  Meta Muse などのリモート MCP クライアントから `Authorization: Bearer <キー>` で記事を検索できる（意味検索は
+  検索語ごとに embedding の従量課金が発生する）。`agent_domain` で独自ドメインも付けられる。
+  **既存環境に反映するときは、先に `news-api-key` を作って値を入れてから `terraform apply` する**
+  （手順は `infra/DEPLOYMENT.md` の「エージェント専用サービス（news-agent）」）
+- Docker Compose の `web` に `NEWS_API_KEY` を渡すようにした。`.env` に32文字以上のキーを設定すると
+  Viewer の読み取り API（`/api/v1`）が有効になる（未設定なら従来どおり無効）
+
 ### Changed
 - Docker Compose の `web` を News-Viewer v1.6.0 に更新した（同じタイムスタンプのバッチがページ送りで抜ける問題の修正、iOS PWA の上端のぼかし対策、Next.js などの脆弱性の修正）
+- Docker Compose の `web` を News-Viewer v1.7.0 に更新した（読み取り API `/api/v1` を含む）
 
 ## [2.8.0] - 2026-11-08
 

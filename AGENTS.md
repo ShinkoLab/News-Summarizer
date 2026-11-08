@@ -219,7 +219,9 @@ Keep this file and `docs/` in sync — see 「ドキュメントの更新」 abo
   A partial failure (at least one summary saved) still exits 0
 - **`config.py`** / **`config.yaml`** — Pydantic config layer; `config.yaml` is gitignored, use `config.yaml.example` as template. Most keys can also be supplied via environment variables (see **Configuration**)
 - **`models.py`** — All data structures: `Article` (common fetch format, dataclass), `SaveResult` (what `save_batch()` actually persisted), plus Pydantic models for LLM structured outputs (`ArticleGroup`, `GroupingResult`, `ArticleSummary`, `CategoryDigest`, `TopicLabel`, `TopicNamingResult`, `DigestResult`)
-- **`logger.py`** — Logging setup (`setup_logging()` / `get_logger()`); outputs to stderr only, level controlled by `logging.level` in config
+- **`logger.py`** — Logging setup (`setup_logging()` / `get_logger()`); outputs to stderr only, level controlled by `logging.level` in config; `httpx` / `httpcore` are always held at WARNING or above because they log every request URL at INFO,
+  and a Discord webhook URL is itself the credential. For the same reason `DiscordOutput` logs only the
+  HTTP status / exception type on failure — never `str(e)` or `exc_info` from httpx, which embed the URL
 - **`urls.py`** — URL normalization for cross-feed dedup (`normalize_url()` / `url_key()`; see **Deduplication**)
 - **`fetchers/`** — `MinifluxFetcher` (REST API) and `EmailFetcher` (POP3), both subclasses of `BaseFetcher` (`base.py`); both normalize to `Article` with timezone-aware **UTC** datetimes (`to_utc()` in `base.py`) — mixing naive and aware values makes any later comparison raise `TypeError`
   - `html_text.py` — stdlib `html.parser`-based HTML→text conversion (`html_to_text()`); used by `MinifluxFetcher` when `miniflux.strip_html` is on

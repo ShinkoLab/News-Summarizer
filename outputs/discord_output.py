@@ -37,7 +37,7 @@ class DiscordOutput:
                 response = httpx.post(self.webhook_url, json=payload, timeout=10.0)
                 response.raise_for_status()
             except httpx.HTTPError as e:
-                logger.error("Discordへのダイジェスト送信に失敗しました: %s", e, exc_info=True)
+                logger.error("Discordへのダイジェスト送信に失敗しました: %s", self._describe_error(e))
         else:
             logger.warning("ダイジェストが空のため、ダイジェスト投稿をスキップします。")
 
@@ -49,7 +49,19 @@ class DiscordOutput:
                 try:
                     httpx.post(self.webhook_url, json={"embeds": chunk}, timeout=10.0)
                 except httpx.RequestError as e:
-                    logger.error("Discordへの記事要約送信に失敗しました: %s", e, exc_info=True)
+                    logger.error("Discordへの記事要約送信に失敗しました: %s", self._describe_error(e))
+
+    def _describe_error(self, error: httpx.HTTPError) -> str:
+        """webhook の URL を含めずにエラーを説明する。
+
+        webhook の URL はそれ自体が投稿の認証情報なので、ログに残せない。httpx の例外は
+        メッセージに URL を含む（HTTPStatusError は必ず）ため、str(e) も exc_info の
+        トレースバックも使わず、URL を伏せた文字列だけを返す。
+        """
+        if isinstance(error, httpx.HTTPStatusError):
+            return f"HTTP {error.response.status_code}"
+        # post() は webhook_url が空なら送らずに戻るので、ここでは必ず値がある。
+        return f"{type(error).__name__}: {str(error).replace(self.webhook_url, '<webhook URL>')}"
 
     def _create_digest_embed(self, digest: DigestResult) -> dict:
         now_str = digest.generated_at.strftime("%Y-%m-%d %H:%M")

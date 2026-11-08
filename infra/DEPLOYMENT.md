@@ -116,7 +116,7 @@ printf '%s' "$(openssl rand -hex 32)" | gcloud secrets versions add news-api-key
 `news-api-key` は `news-agent` の `/mcp` と `/api/v1` を守る固定キー。32文字以上が必要で
 （Viewer は短いキーを無効として扱い `503` を返す）、`openssl rand -hex 32` は64文字になる。
 値はあとで `gcloud secrets versions access latest --secret=news-api-key --project=<PROJECT_ID>`
-で読み出してエージェント側に登録する。Cloud Run は6つのシークレットすべてを `latest` で参照するので、
+で読み出してエージェント側に登録する。Cloud Run は6つのシークレットすべてを `latest` で参照する（`news-api-key` は `agent_enabled = true` のとき）ので、
 どれか1つでもバージョンが0件だと次の手順の `terraform apply` が失敗する。
 
 **注意**: `python3 -c "print(key)" | gcloud secrets versions add ...` のように
@@ -738,19 +738,24 @@ IAP の内側の `news-viewer` だけが出す。
 - 意味検索のため `EMBEDDING_*` を `news-viewer` と同じ値で渡し、`NEWS_API_ALLOW_FIRESTORE_SEARCH=true`
   にしている。**検索のたびに検索語が embedding エンドポイントへ送られ、従量課金が発生する**。
   `llm_provider = "vertex"` のときは `news-viewer` と同じく `EMBEDDING_*` を渡さず、キーワード一致に縮退する
+- `agent_enabled = true` のときだけ作る（既定は作らない。下の「有効にする」参照）
 - 最大1インスタンス・最小0。キーなしのリクエストは `401` で返るだけで DB にも embedding にも触れない
 
-#### 既存環境に追加する
+#### 有効にする
 
-`news-agent` は `news-api-key` の `latest` を参照するので、先にシークレットとその値を作ってから
-全体を反映する（いきなり `terraform apply` すると、バージョン0件のシークレットを参照して失敗する）。
-`viewer_image` は `/mcp` を含む News-Viewer（v1.8.0 以降）にしておく。
+`news-agent` は `agent_enabled = true` のときだけ作られる（既定は `false`）。
+**`viewer_image` が `/mcp` と `NEWS_AGENT_ONLY` を持つ News-Viewer v1.8.0 以降になってから有効にする**。
+それより古いイメージは `NEWS_AGENT_ONLY` を知らないので、IAP なしで画面も旧 API も認証なしで
+公開されてしまう。また `news-agent` は `news-api-key` の `latest` を参照するので、
+シークレットに値が無いまま有効にすると `terraform apply` が失敗する。
 
 ```bash
 cd infra
+# 1. シークレットの入れ物を作って値を入れる（agent_enabled = false のままでも作られる）
 terraform apply -target=google_secret_manager_secret.news_api_key
 printf '%s' "$(openssl rand -hex 32)" | gcloud secrets versions add news-api-key --project=<PROJECT_ID> --data-file=-
-terraform plan    # news-viewer に差分が出ないこと（env の値は変えていない）を確認する
+# 2. terraform.tfvars で viewer_image を v1.8.0 以降にし、agent_enabled = true を足す
+terraform plan    # news-viewer は image 以外に差分が出ないこと（env の値は変えていない）を確認する
 terraform apply
 terraform output agent_url
 ```
@@ -762,7 +767,7 @@ terraform output agent_url
 
 1. ベースドメインの所有権を確認済みでなければ `gcloud domains verify <ベースドメイン>`。
 2. `infra/terraform.tfvars` に `agent_domain = "news-agent.your-domain.example.com"` を追加して
-   `terraform apply`（空文字のままなら Domain Mapping は作らない）。
+   `terraform apply`（空文字のまま、または `agent_enabled = false` なら Domain Mapping は作らない）。
 3. `terraform output agent_domain_mapping_records` で必要なレコードを確認し、DNS に
    CNAME（`news-agent` → `ghs.googlehosted.com.`）を追加する。
 4. SSL 証明書の発行を待つ（通常15分、最大24時間。その間の404/TLSエラーは異常ではない）。
@@ -784,13 +789,17 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST "$AGENT/mcp" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_news","arguments":{"query":"AI"}}}'
 
-# 正しいキーならツール一覧と search_news の結果が返る
-curl -s -X POST "$AGENT/mcp" -H "Authorization: Bearer $NEWS_API_KEY" \
-  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-curl -s -X POST "$AGENT/mcp" -H "Authorization: Bearer $NEWS_API_KEY" \
-  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_news","arguments":{"query":"AI"}}}'
+# 正しいキーなら initialize → ツール一覧 → search_news の結果が返る
+MCP_HEADERS=(-H "Authorization: Bearer $NEWS_API_KEY" -H 'Content-Type: application/json'
+  -H 'Accept: application/json, text/event-stream' -H 'MCP-Protocol-Version: 2025-06-18')
+curl -s -D - -X POST "$AGENT/mcp" "${MCP_HEADERS[@]}" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+# 上の応答ヘッダーに Mcp-Session-Id があれば、以降の呼び出しにも付ける
+#   MCP_HEADERS+=(-H "Mcp-Session-Id: <値>")
+curl -s -X POST "$AGENT/mcp" "${MCP_HEADERS[@]}" -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+curl -s -X POST "$AGENT/mcp" "${MCP_HEADERS[@]}" -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+curl -s -X POST "$AGENT/mcp" "${MCP_HEADERS[@]}" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_news","arguments":{"query":"AI"}}}'
 
 # REST（/api/v1）も同じキーで読める
 curl -s -H "X-News-Api-Key: $NEWS_API_KEY" "$AGENT/api/v1/batches?limit=1"

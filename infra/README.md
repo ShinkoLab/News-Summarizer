@@ -7,7 +7,8 @@ Cloud Scheduler、Secret Manager、直接IAPをTerraformで管理します。Vie
 アクセスできるようにする」参照）。
 AIエージェント（Meta Muse などのリモートMCPクライアント）向けには、同じViewerイメージを
 IAPなしのエージェント専用サービス `news-agent` としても動かし、`/mcp` と `/api/v1` だけを
-固定キー（`news-api-key`）で守って公開します（`agent_domain` で独自ドメインも付けられます。
+固定キー（`news-api-key`）で守って公開します（既定では作らず`agent_enabled = true`で有効化。
+`viewer_image`がNews-Viewer v1.8.0以降であることが前提です。`agent_domain` で独自ドメインも付けられます。
 `DEPLOYMENT.md` の「エージェント専用サービス（news-agent）」参照）。
 LLMは既定でOpenAI互換エンドポイント（`llm_base_url`/`llm_model`で指定、APIキーは
 Secret Manager経由）を利用します。Vertex AI経路もコード側（`summarizer/llm_client.py`）は
@@ -99,7 +100,7 @@ gcloud run jobs execute news-summarizer \
 
 ## コストガード
 
-- Viewerと`news-agent`はそれぞれ最小0・最大1インスタンス。`news-agent`の検索は検索語ごとに
+- Viewerと`news-agent`（有効時）はそれぞれ最小0・最大1インスタンス。`news-agent`の検索は検索語ごとに
   embeddingの従量課金が発生する
 - Jobは1タスク、失敗時の自動再試行なし
 - Schedulerは既定で1日1回（`schedule`で変更可）

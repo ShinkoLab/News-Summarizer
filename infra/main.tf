@@ -660,7 +660,12 @@ resource "google_cloud_run_domain_mapping" "viewer" {
 //
 // 画面・旧 /api/batches はこのサービスからは見えない。家族向けの画面は従来どおり
 // IAP の内側の news-viewer だけが出す。
+//
+// var.agent_enabled（既定 false）で opt-in にしている。NEWS_AGENT_ONLY を知らない
+// v1.8.0 未満の Viewer イメージでこのサービスを立てると、IAP なしで画面も旧 API も
+// そのまま公開されてしまう。viewer_image を v1.8.0 以降にしてから true にすること。
 resource "google_cloud_run_v2_service" "news_agent" {
+  count                = var.agent_enabled ? 1 : 0
   name                 = "news-agent"
   location             = var.region
   ingress              = "INGRESS_TRAFFIC_ALL"
@@ -747,8 +752,8 @@ resource "google_cloud_run_v2_service" "news_agent" {
 }
 
 resource "google_cloud_run_domain_mapping" "agent" {
-  count    = var.agent_domain != "" ? 1 : 0
-  location = google_cloud_run_v2_service.news_agent.location
+  count    = var.agent_enabled && var.agent_domain != "" ? 1 : 0
+  location = google_cloud_run_v2_service.news_agent[0].location
   name     = var.agent_domain
 
   metadata {
@@ -756,7 +761,7 @@ resource "google_cloud_run_domain_mapping" "agent" {
   }
 
   spec {
-    route_name = google_cloud_run_v2_service.news_agent.name
+    route_name = google_cloud_run_v2_service.news_agent[0].name
   }
 
   depends_on = [google_cloud_run_v2_service.news_agent]

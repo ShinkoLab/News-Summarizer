@@ -12,8 +12,8 @@ output "viewer_domain_mapping_records" {
 }
 
 output "agent_url" {
-  description = "news-agent (agent-only Viewer: /mcp and /api/v1, no IAP) default URL"
-  value       = google_cloud_run_v2_service.news_agent.uri
+  description = "news-agent (agent-only Viewer: /mcp and /api/v1, no IAP) default URL; null when agent_enabled = false"
+  value       = try(google_cloud_run_v2_service.news_agent[0].uri, null)
 }
 
 output "agent_domain_mapping_records" {

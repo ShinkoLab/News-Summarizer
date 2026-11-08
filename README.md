@@ -139,6 +139,7 @@ Viewer には AI エージェントなどから記事を読むための読み取
 `X-News-Api-Key` ヘッダーに同じ値を渡す。
 
 ```bash
+NEWS_API_KEY="$(sed -n 's/^NEWS_API_KEY=//p' .env)"   # .env と同じ値をシェルに読み込む
 curl -H "X-News-Api-Key: $NEWS_API_KEY" 'http://127.0.0.1:3080/api/v1/batches?limit=3'
 ```
 

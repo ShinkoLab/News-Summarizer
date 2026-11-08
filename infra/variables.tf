@@ -198,8 +198,14 @@ variable "viewer_domain" {
   default     = ""
 }
 
+variable "agent_enabled" {
+  description = "Create the agent-only service news-agent (/mcp and /api/v1 without IAP, guarded by the news-api-key secret). Requires viewer_image to be News-Viewer v1.8.0 or later: older images ignore NEWS_AGENT_ONLY and would expose the whole Viewer without authentication. The news-api-key secret must have a version before enabling"
+  type        = bool
+  default     = false
+}
+
 variable "agent_domain" {
-  description = "Custom domain (e.g. news-agent.example.com) to map to the agent-only service (news-agent: /mcp and /api/v1, no IAP) via Cloud Run Domain Mapping. Empty string (default) skips domain mapping entirely"
+  description = "Custom domain (e.g. news-agent.example.com) to map to the agent-only service (news-agent: /mcp and /api/v1, no IAP) via Cloud Run Domain Mapping. Only used when agent_enabled = true. Empty string (default) skips domain mapping entirely"
   type        = string
   default     = ""
 }

@@ -473,7 +473,9 @@ is unaffected and still stores JSON.
   `infra/README.md` for the layout, `infra/DEPLOYMENT.md` for the actual runbook and
   the operational gotchas hit so far
 - **Two Cloud Run services run the same Viewer image** (`var.viewer_image`): `news-viewer`
-  (browser UI behind IAP, `viewer_users`) and `news-agent` (no IAP, `invoker_iam_disabled = true`,
+  (browser UI behind IAP, `viewer_users`) and `news-agent` (opt-in via `agent_enabled`, default
+  `false` — a Viewer image older than v1.8.0 ignores `NEWS_AGENT_ONLY` and would expose the whole
+  UI unauthenticated; no IAP, `invoker_iam_disabled = true`,
   `NEWS_AGENT_ONLY=true` so only `/mcp` and `/api/v1` answer; authorization is solely the fixed
   key in the `news-api-key` secret → `NEWS_API_KEY`, sent as `Authorization: Bearer` by remote MCP
   clients such as Meta Muse, which cannot pass IAP). `news-agent` also gets

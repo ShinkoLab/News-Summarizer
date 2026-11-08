@@ -84,14 +84,14 @@ API key は自動発行しないので、`MINIFLUX_API_KEY` は必須。スタ�
 
 ### イメージ
 
-- `summarizer` / `web` は既定で GHCR の公開イメージ（`ghcr.io/shinkolab/news-summarizer:2.7.0` /
+- `summarizer` / `web` は既定で GHCR の公開イメージ（`ghcr.io/shinkolab/news-summarizer:2.7.1` /
   `ghcr.io/shinkolab/news-viewer:1.5.3`）を pull する
 - 手元のコードで動かすときは `docker compose up -d --build`。Summarizer はこのリポジトリから、
   Viewer は [News-Viewer](https://github.com/ShinkoLab/News-Viewer) のリリースタグ（`v1.5.3`）を
   Compose が URL から直接ビルドする。手元の News-Viewer を開発しているときは
   `.env` に `NEWS_VIEWER_CONTEXT=../News-Viewer` を設定して差し替える。別のバージョンを pull したいときは
   `NEWS_SUMMARIZER_IMAGE` / `NEWS_VIEWER_IMAGE` で指定する
-- `--build` したイメージは公開イメージと同じ名前（例: `news-summarizer:2.7.0`）で手元に残り、以後の
+- `--build` したイメージは公開イメージと同じ名前（例: `news-summarizer:2.7.1`）で手元に残り、以後の
   `docker compose up -d` もそれを使い続ける。公開イメージに戻すときは `docker compose pull` する
 - pull に失敗した（オフライン・GHCR の障害など）ときは、Compose がソースからのビルドに切り替える
   （数分かかる）

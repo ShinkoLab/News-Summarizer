@@ -7,9 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Security
-- Discord 配信失敗のログから Webhook URL を含み得る例外本文・traceback を除き、HTTP クライアントの URL 付き INFO / DEBUG ログも抑止する
-
 ### Fixed
 - POP3 の削除失敗で残った処理済みメールを、本文を再取得せず次回以降に削除再試行する（新着0件でも実行、dry-run は削除しない）
 - Discord の HTTP エラーを成功扱いせず異常終了し、SQLite / Firestore の永続 outbox から次回配信を再開する。投稿済みの進捗と生成時の内容を保持して再要約を避ける（応答喪失時の重複はあり得る）
@@ -18,12 +15,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 全取得ソースの失敗を「新着なし」の正常終了と区別し、異常終了する。正常な0件取得と部分成功は維持し、POP3 の途中切断までに取得した記事も処理する
 - Keep SQLite dry runs read-only: do not create the source database or apply schema migrations unless DB output is explicitly requested.
 
+## [2.7.1] - 2026-11-08
+
 ### Changed
-- `docker compose up` は GHCR の公開イメージ（`news-summarizer:2.7.0` / `news-viewer:1.5.3`）を pull
+- `docker compose up` は GHCR の公開イメージ（`news-summarizer:2.7.1` / `news-viewer:1.5.3`）を pull
   するようになり、初回のビルドが不要になった。手元のコードで動かすときは `--build` を付ける。
   `NEWS_SUMMARIZER_IMAGE` / `NEWS_VIEWER_IMAGE` で版を差し替えられる
 - GHCR 公開ワークフローは再ビルドせず、検査したイメージそのものをステージングパッケージ経由で公開する
 - PR の CI がステージングパッケージに push した版は、照合が終わったら自動で削除する
+
+### Security
+- Discord の webhook の URL（それだけで投稿できる）がログに出ないようにした。httpx / httpcore の
+  リクエストのログは、`logging.level` に関係なく WARNING 以上しか出さない。そのため、LLM や
+  Miniflux への `HTTP Request: ...` の行も出なくなる。Discord への投稿に失敗したときは、
+  HTTP のステータスか例外の種類だけを出す。以前の版で出したログには URL が残っているので、
+  ログを人に渡したことがあれば webhook を作り直す
 
 ## [2.7.0] - 2026-11-01
 

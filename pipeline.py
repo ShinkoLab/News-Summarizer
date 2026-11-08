@@ -11,6 +11,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Literal
 
+import httpx
 import numpy as np
 from tqdm import tqdm
 
@@ -508,8 +509,10 @@ def persist_and_publish(
             except Exception as e:
                 # Discord の手順より先に落とすと、outbox を使わない直接投稿が二度と送られない。
                 # 保存済みの記事は次回の重複排除で既読化されるので、報告は投稿の後に回す。
-                # httpx のエラーは MinifluxFetcher 側で traceback 付きで記録済み。
-                logger.error("保存後のRSS既読化に失敗しました (%s)。", describe_failure(e))
+                # httpx の HTTPError は MinifluxFetcher 側で記録済み。それ以外（実装の不具合など）は
+                # ここでしか記録されないので traceback を残す。
+                logger.error("保存後のRSS既読化に失敗しました (%s)。", describe_failure(e),
+                             exc_info=not isinstance(e, httpx.HTTPError))
                 mark_read_error = e
     else:
         logger.info("[Dry-Run] データベースへの保存をスキップしました。")

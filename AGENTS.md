@@ -443,7 +443,9 @@ is unaffected and still stores JSON.
   `NEWS_SUMMARIZER_INTERVAL_SECONDS`, `MINIFLUX_BUNDLED`, `MINIFLUX_ADMIN_*`,
   `MINIFLUX_IMPORT_STARTER_FEEDS`) or the OS (`TZ`) — add config keys in both places together.
   `web`'s `CATEGORY_ORDER` is a hardcoded copy of `categories.yaml`'s order (Terraform derives it
-  in production); update it when reordering categories. See README "Docker Compose の構成と運用"
+  in production); update it when reordering categories. `web`'s `NEWS_API_KEY` is passed straight
+  to the News-Viewer container (enables its read-only `/api/v1`; empty = disabled) and is not a
+  summarizer config key. See README "Docker Compose の構成と運用"
 - **`cloudbuild.yaml`** — Cloud Build config for the summarizer image
 - **`docker-compose.yml` + `docker-compose.override.yml`** — self-host stack for trying the project
   (clone → edit `.env` → `docker compose up -d`). `docker-compose.yml` holds `summarizer`
@@ -470,6 +472,20 @@ is unaffected and still stores JSON.
 - **`infra/`** — Terraform: Cloud Run Job, Cloud Scheduler, Firestore, Secret Manager, IAM.
   `infra/README.md` for the layout, `infra/DEPLOYMENT.md` for the actual runbook and
   the operational gotchas hit so far
+- **Two Cloud Run services run the same Viewer image** (`var.viewer_image`): `news-viewer`
+  (browser UI behind IAP, `viewer_users`) and `news-agent` (opt-in via `agent_enabled`, default
+  `false` — a Viewer image older than v1.8.1 ignores `NEWS_AGENT_ONLY` and would expose the whole
+  UI unauthenticated; no IAP, `invoker_iam_disabled = true`,
+  `NEWS_AGENT_ONLY=true` so only `/mcp` and `/api/v1` answer; authorization is solely the fixed
+  key in the `news-api-key` secret → `NEWS_API_KEY`, sent as `Authorization: Bearer` by remote MCP
+  clients such as Meta Muse, which cannot pass IAP). `news-agent` also gets
+  `NEWS_API_ALLOW_FIRESTORE_SEARCH=true`, so each search call costs an embedding request.
+  Its own SA `news-agent-service` has only `roles/datastore.viewer` plus access to `news-api-key`
+  and `news-embedding-api-key`. `CATEGORY_ORDER` and `EMBEDDING_*` for both services come from
+  `local.category_order_env` / `local.viewer_embedding_env` — change them there, never per service,
+  or semantic search silently compares vectors from different models. `agent_domain` (empty =
+  no mapping) adds a Domain Mapping like `viewer_domain`. `news-api-key` must have a version
+  before the full apply (Cloud Run resolves `latest`); rotation is in `infra/DEPLOYMENT.md`
 
 ## Configuration
 

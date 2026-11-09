@@ -83,11 +83,11 @@ services:
   web:
     # 既定では GHCR の公開イメージを pull する。`--build` を付けたときだけ下の context から
     # ビルドする（image と context の版は揃えておく）。
-    image: ${NEWS_VIEWER_IMAGE:-ghcr.io/shinkolab/news-viewer:1.6.0}
+    image: ${NEWS_VIEWER_IMAGE:-ghcr.io/shinkolab/news-viewer:1.8.1}
     build:
       # News-Viewer は別リポジトリ。Compose が URL から直接ビルドするので clone は不要。
       # Viewer 側を手元で開発しているときは NEWS_VIEWER_CONTEXT=../News-Viewer で差し替える。
-      context: ${NEWS_VIEWER_CONTEXT:-https://github.com/ShinkoLab/News-Viewer.git#v1.6.0}
+      context: ${NEWS_VIEWER_CONTEXT:-https://github.com/ShinkoLab/News-Viewer.git#v1.8.1}
     depends_on:
       - summarizer
     ports:
@@ -98,6 +98,9 @@ services:
       # 本番は infra/main.tf が categories.yaml から注入する。並べ替えたらここも合わせる。
       CATEGORY_ORDER: ${CATEGORY_ORDER:-AI・機械学習,テクノロジー,経済・ビジネス,政治・社会,事件・事故・災害,科学・環境,健康・ライフ,カルチャー}
       DATABASE_URL: file:/data/news_summarizer.db
+      # エージェント向け読み取り API（/api/v1）の固定キー。32文字以上（openssl rand -hex 32）。
+      # 空なら API は無効（503）。画面の認証にはならない（README「外部に公開するとき」）。
+      NEWS_API_KEY: ${NEWS_API_KEY:-}
       TZ: ${TZ:-Asia/Tokyo}
     volumes:
       - summarizer-data:/data:ro

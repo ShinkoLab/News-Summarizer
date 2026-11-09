@@ -211,7 +211,11 @@ jobs:
           pushed_config=$(docker buildx imagetools inspect --raw "${STAGING_IMAGE}@${PUSH_DIGEST}" | jq -r '.config.digest')
           echo "scanned: id=$scanned_id"
           echo "pushed:  manifest=$PUSH_DIGEST config=$pushed_config"
-          if [ -z "$PUSH_DIGEST" ] || [ "$pushed_config" != "$scanned_id" ]; then
+          # docker inspect の .Id は、従来のイメージストアでは config digest だが、containerd の
+          # イメージストアではマニフェスト digest になる。どちらでも照合できるよう、pushed の
+          # config digest か manifest digest のどちらかと一致すれば同じイメージとみなす。
+          if [ -z "$PUSH_DIGEST" ] || [ -z "$pushed_config" ] || [ "$pushed_config" = "null" ] \
+            || { [ "$pushed_config" != "$scanned_id" ] && [ "$PUSH_DIGEST" != "$scanned_id" ]; }; then
             echo "::error::pushed image differs from the scanned image"
             exit 1
           fi

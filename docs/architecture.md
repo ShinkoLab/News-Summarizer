@@ -136,6 +136,22 @@ Miniflux の既読化は2か所で行う。
   保存成功分だけではなく生成した記事全体を含む。未保存記事が後日のバッチに再登場することはある。
   配信の件数制限、再試行、重複の可能性は[運用](operations.md#discord-配信の復旧)を参照
 
+## 読み手（Viewer とエージェント）
+
+保存した記事を読むのは別リポジトリの [News-Viewer](https://github.com/ShinkoLab/News-Viewer)。
+Google Cloud 構成では同じ Viewer イメージを2つの Cloud Run サービスで動かす。
+
+| サービス | 入口 | 守り方 | 公開するもの |
+| --- | --- | --- | --- |
+| `news-viewer` | ブラウザ | IAP（Google ログイン、`viewer_users`） | 画面と API すべて |
+| `news-agent` | リモート MCP クライアント（Meta Muse など） | 固定キー（`NEWS_API_KEY`、`Authorization: Bearer` / `X-News-Api-Key`） | `/mcp` と `/api/v1` だけ（`NEWS_AGENT_ONLY=true`、他は404） |
+
+リモート MCP クライアントは IAP を通れないので、`news-agent` は IAP を付けずに公開し、
+認可をアプリの固定キーに任せる。どちらも Firestore は読むだけで、カテゴリの並び順
+（`categories.yaml` 由来）と embedding の設定は Terraform の同じ `locals` から渡す。
+意味検索の検索語は Summarizer と同じ embedding モデルでベクトル化しないと比較できないため。
+Docker Compose 構成の `web` も `NEWS_API_KEY` を設定すると `/api/v1` を有効にできる（MCP 用の別サービスは無い）。
+
 ## LLM
 
 `llm.provider` で呼び先を選ぶ。

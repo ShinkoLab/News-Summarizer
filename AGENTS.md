@@ -474,7 +474,7 @@ is unaffected and still stores JSON.
   the operational gotchas hit so far
 - **Two Cloud Run services run the same Viewer image** (`var.viewer_image`): `news-viewer`
   (browser UI behind IAP, `viewer_users`) and `news-agent` (opt-in via `agent_enabled`, default
-  `false` — a Viewer image older than v1.8.0 ignores `NEWS_AGENT_ONLY` and would expose the whole
+  `false` — a Viewer image older than v1.8.1 ignores `NEWS_AGENT_ONLY` and would expose the whole
   UI unauthenticated; no IAP, `invoker_iam_disabled = true`,
   `NEWS_AGENT_ONLY=true` so only `/mcp` and `/api/v1` answer; authorization is solely the fixed
   key in the `news-api-key` secret → `NEWS_API_KEY`, sent as `Authorization: Bearer` by remote MCP

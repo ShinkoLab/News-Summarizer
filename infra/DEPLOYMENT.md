@@ -739,12 +739,13 @@ IAP の内側の `news-viewer` だけが出す。
   にしている。**検索のたびに検索語が embedding エンドポイントへ送られ、従量課金が発生する**。
   `llm_provider = "vertex"` のときは `news-viewer` と同じく `EMBEDDING_*` を渡さず、キーワード一致に縮退する
 - `agent_enabled = true` のときだけ作る（既定は作らない。下の「有効にする」参照）
-- 最大1インスタンス・最小0。キーなしのリクエストは `401` で返るだけで DB にも embedding にも触れない
+- 最大1インスタンス・最小0。キーなしで呼べるのは `initialize` / `ping` / `tools/list`（ツール名と説明だけ）で、
+  データを読む `tools/call` と `/api/v1` は `401` を返し DB にも embedding にも触れない
 
 #### 有効にする
 
 `news-agent` は `agent_enabled = true` のときだけ作られる（既定は `false`）。
-**`viewer_image` が `/mcp` と `NEWS_AGENT_ONLY` を持つ News-Viewer v1.8.0 以降になってから有効にする**。
+**`viewer_image` が `/mcp` と `NEWS_AGENT_ONLY` を持つ News-Viewer v1.8.1 以降になってから有効にする**。
 それより古いイメージは `NEWS_AGENT_ONLY` を知らないので、IAP なしで画面も旧 API も認証なしで
 公開されてしまう。また `news-agent` は `news-api-key` の `latest` を参照するので、
 シークレットに値が無いまま有効にすると `terraform apply` が失敗する。
@@ -754,7 +755,7 @@ cd infra
 # 1. シークレットの入れ物を作って値を入れる（agent_enabled = false のままでも作られる）
 terraform apply -target=google_secret_manager_secret.news_api_key
 printf '%s' "$(openssl rand -hex 32)" | gcloud secrets versions add news-api-key --project=<PROJECT_ID> --data-file=-
-# 2. terraform.tfvars で viewer_image を v1.8.0 以降にし、agent_enabled = true を足す
+# 2. terraform.tfvars で viewer_image を v1.8.1 以降にし、agent_enabled = true を足す
 terraform plan    # news-viewer は image 以外に差分が出ないこと（env の値は変えていない）を確認する
 terraform apply
 terraform output agent_url
@@ -784,29 +785,27 @@ NEWS_API_KEY="$(gcloud secrets versions access latest --secret=news-api-key --pr
 # 画面は出さない（404）
 curl -s -o /dev/null -w '%{http_code}\n' "$AGENT/"
 
-# キーなしの MCP 呼び出しは 401
+# キーなしの tools/call は 401（initialize / ping / tools/list は名前と説明だけなのでキーなしでも通る）
 curl -s -o /dev/null -w '%{http_code}\n' -X POST "$AGENT/mcp" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_news","arguments":{"query":"AI"}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_news","arguments":{"q":"AI"}}}'
 
-# 正しいキーなら initialize → ツール一覧 → search_news の結果が返る
+# 正しいキーなら search_news の結果が返る。/mcp は状態を持たない JSON 応答だけの実装なので、
+# initialize やセッション ID（Mcp-Session-Id）なしで1回の要求で呼べる
 MCP_HEADERS=(-H "Authorization: Bearer $NEWS_API_KEY" -H 'Content-Type: application/json'
-  -H 'Accept: application/json, text/event-stream' -H 'MCP-Protocol-Version: 2025-06-18')
-curl -s -D - -X POST "$AGENT/mcp" "${MCP_HEADERS[@]}" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
-# 上の応答ヘッダーに Mcp-Session-Id があれば、以降の呼び出しにも付ける
-#   MCP_HEADERS+=(-H "Mcp-Session-Id: <値>")
-curl -s -X POST "$AGENT/mcp" "${MCP_HEADERS[@]}" -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+  -H 'Accept: application/json, text/event-stream')
 curl -s -X POST "$AGENT/mcp" "${MCP_HEADERS[@]}" -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 curl -s -X POST "$AGENT/mcp" "${MCP_HEADERS[@]}" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_news","arguments":{"query":"AI"}}}'
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_news","arguments":{"q":"AI"}}}'
 
-# REST（/api/v1）も同じキーで読める
-curl -s -H "X-News-Api-Key: $NEWS_API_KEY" "$AGENT/api/v1/batches?limit=1"
+# REST（/api/v1）も同じキーで読める（X-News-Api-Key でも Authorization: Bearer でもよい）
+curl -s -H "Authorization: Bearer $NEWS_API_KEY" "$AGENT/api/v1/batches?limit=1"
 ```
 
-`search_news` の引数名は `tools/list` が返す `inputSchema` に合わせる。`/api/v1` の
-エンドポイントと受け付けるヘッダーは News-Viewer の README を参照。
+`search_news` は `q`（必須）・`category`・`period` を受け付ける（`tools/list` の `inputSchema` 参照）。
+`/api/v1` のエンドポイントは News-Viewer の README を参照。ブラウザから `Origin` 付きで
+`/mcp` を呼ぶ要求は、Viewer の `NEWS_MCP_ALLOWED_ORIGINS` に載っていなければ 403 になる
+（Muse のようなサーバー間の呼び出しは `Origin` を付けないので影響しない）。
 
 #### Meta Muse に登録する
 

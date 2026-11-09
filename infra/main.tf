@@ -662,8 +662,8 @@ resource "google_cloud_run_domain_mapping" "viewer" {
 // IAP の内側の news-viewer だけが出す。
 //
 // var.agent_enabled（既定 false）で opt-in にしている。NEWS_AGENT_ONLY を知らない
-// v1.8.0 未満の Viewer イメージでこのサービスを立てると、IAP なしで画面も旧 API も
-// そのまま公開されてしまう。viewer_image を v1.8.0 以降にしてから true にすること。
+// v1.8.1 未満の Viewer イメージでこのサービスを立てると、IAP なしで画面も旧 API も
+// そのまま公開されてしまう。viewer_image を v1.8.1 以降にしてから true にすること。
 resource "google_cloud_run_v2_service" "news_agent" {
   count                = var.agent_enabled ? 1 : 0
   name                 = "news-agent"

@@ -199,7 +199,7 @@ variable "viewer_domain" {
 }
 
 variable "agent_enabled" {
-  description = "Create the agent-only service news-agent (/mcp and /api/v1 without IAP, guarded by the news-api-key secret). Requires viewer_image to be News-Viewer v1.8.0 or later: older images ignore NEWS_AGENT_ONLY and would expose the whole Viewer without authentication. The news-api-key secret must have a version before enabling"
+  description = "Create the agent-only service news-agent (/mcp and /api/v1 without IAP, guarded by the news-api-key secret). Requires viewer_image to be News-Viewer v1.8.1 or later: older images ignore NEWS_AGENT_ONLY and would expose the whole Viewer without authentication. The news-api-key secret must have a version before enabling"
   type        = bool
   default     = false
 }

@@ -11,7 +11,7 @@ viewer_users = [
 # ドメイン所有権確認が先に必要。詳細は infra/DEPLOYMENT.md 参照。
 # viewer_domain = "viewer.your-domain.example.com"
 # エージェント専用サービス news-agent（/mcp と /api/v1、IAP なし）を作るか。
-# viewer_image が News-Viewer v1.8.0 以降で、news-api-key に値を入れてから true にする
+# viewer_image が News-Viewer v1.8.1 以降で、news-api-key に値を入れてから true にする
 # （古いイメージだと画面ごと認証なしで公開される）。詳細は infra/DEPLOYMENT.md 参照。
 # agent_enabled = true
 # news-agent の独自ドメイン。空なら作らない

@@ -12,14 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   IAP なしで動かし、`/mcp` と `/api/v1` だけを固定キー（Secret Manager の `news-api-key`）で守って公開する。
   Meta Muse などのリモート MCP クライアントから `Authorization: Bearer <キー>` で記事を検索できる（意味検索は
   検索語ごとに embedding の従量課金が発生する）。`agent_domain` で独自ドメインも付けられる。
-  既定では作らず、`agent_enabled = true` で有効にする。**`viewer_image` を News-Viewer v1.8.0 以降にし、
+  既定では作らず、`agent_enabled = true` で有効にする。**`viewer_image` を News-Viewer v1.8.1 以降にし、
   `news-api-key` に値を入れてから有効にする**（古いイメージでは画面ごと認証なしで公開される）
   （手順は `infra/DEPLOYMENT.md` の「エージェント専用サービス（news-agent）」）
 - Docker Compose の `web` に `NEWS_API_KEY` を渡すようにした。`.env` に32文字以上のキーを設定すると
   Viewer の読み取り API（`/api/v1`）が有効になる（未設定なら従来どおり無効）
 
 ### Changed
-- Docker Compose の `web` を News-Viewer v1.7.0 に更新した（v1.6.0: 同じタイムスタンプのバッチがページ送りで抜ける問題の修正、iOS PWA の上端のぼかし対策、Next.js などの脆弱性の修正。v1.7.0: 読み取り API `/api/v1`）
+- Docker Compose の `web` を News-Viewer v1.8.1 に更新した（v1.6.0: 同じタイムスタンプのバッチがページ送りで抜ける問題の修正、iOS PWA の上端のぼかし対策、Next.js などの脆弱性の修正。v1.7.0: 読み取り API `/api/v1`。v1.8.x: MCP エンドポイント `/mcp` とエージェント専用モード `NEWS_AGENT_ONLY`）
 
 ## [2.8.0] - 2026-11-08
 

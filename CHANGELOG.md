@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-11-13
+
 ### Added
 - Google Cloud 構成に、AI エージェント専用の Cloud Run サービス `news-agent` を追加した。Viewer と同じイメージを
   IAP なしで動かし、`/mcp` と `/api/v1` だけを固定キー（Secret Manager の `news-api-key`）で守って公開する。

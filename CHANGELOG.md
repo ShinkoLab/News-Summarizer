@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.1] - 2026-11-15
+
 ### Changed
 - Docker Compose の `web` を News-Viewer v1.8.2 に更新した（ホーム画面に追加した iOS の Web アプリで、
   上端のぼかし対策が効いていなかった問題の修正）

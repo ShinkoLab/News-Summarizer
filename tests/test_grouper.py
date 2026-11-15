@@ -110,3 +110,21 @@ def test_pipeline_embedding_failure_returns_no_vectors(
     assert groups == {}
     assert embeddings is None
     grouping.assert_not_called()
+
+
+def test_pipeline_grouping_uses_passed_config_not_singleton(
+    mocker, isolated_global_config, minimal_app_config, sample_article, sample_summary
+):
+    """group_pairs() must branch on run_pipeline()'s config, not config.config."""
+    isolated_global_config.llm.embedding_model = "singleton-embedding"
+    isolated_global_config.summarizer.steps["grouper"] = SummarizerStepConfig(use_embeddings=True)
+    mocker.patch(
+        "summarizer.embedder.get_embeddings",
+        side_effect=AssertionError("embedding path must not run"),
+    )
+    llm_grouping = mocker.patch("pipeline.group_articles")
+    llm_grouping.return_value.groups = []
+    groups, embeddings = group_pairs([(sample_article, sample_summary)], RunOptions(), minimal_app_config)
+    llm_grouping.assert_called_once()
+    assert groups == {}
+    assert embeddings is None

@@ -174,7 +174,8 @@ suite runs without any local config; external calls are stubbed with `pytest-moc
 `isolated_global_config` fixture also swaps the contents of the import-time `config.config`
 singleton (which *does* read a local `config.yaml` or ambient env vars) for a minimal test config,
 so a developer's `config.yaml` cannot change which branches tests take or which endpoints they hit.
-Pipeline code should still read the `AppConfig` passed to `run_pipeline()` rather than the singleton.
+`group_pairs()` reads the `AppConfig` passed to `run_pipeline()`; the summarizer/digest/embedder/Discord
+modules still read the singleton, which is the same object in production (`main.py`).
 
 If `uv run pytest` fails with `Failed to spawn: pytest`, the venv was created under a different
 absolute path (stale shebangs). `uv sync --dry-run` will not detect this — run `uv sync --reinstall`.

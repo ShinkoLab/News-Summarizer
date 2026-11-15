@@ -9,15 +9,17 @@ from summarizer.grouper import group_summaries
 
 
 @pytest.fixture
-def embedding_config(mocker, minimal_app_config):
-    minimal_app_config.llm.embedding_model = "test-embedding"
-    minimal_app_config.summarizer.steps["grouper"] = SummarizerStepConfig(
+def embedding_config(mocker, isolated_global_config):
+    # Configure the (isolated) singleton in place: group_pairs() reads the passed
+    # config, while group_summaries()/get_step_config() read the singleton, and
+    # both must agree.
+    isolated_global_config.llm.embedding_model = "test-embedding"
+    isolated_global_config.summarizer.steps["grouper"] = SummarizerStepConfig(
         use_embeddings=True, similarity_threshold=0.85
     )
-    mocker.patch("config.config", minimal_app_config)
     # Fail rather than accidentally contacting a real naming API in any test.
     mocker.patch("summarizer.grouper.get_client", side_effect=AssertionError("API forbidden"))
-    return minimal_app_config
+    return isolated_global_config
 
 
 def test_empty_summaries_skip_clustering_and_naming(mocker, embedding_config):

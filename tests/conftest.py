@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import config as config_module
 from config import (
     AppConfig,
     CategoryDef,
@@ -53,6 +54,42 @@ def minimal_app_config(minimal_llm_config, minimal_taxonomy) -> AppConfig:
         logging=LoggingConfig(level="INFO"),
         taxonomy=minimal_taxonomy,
     )
+
+
+# ---------------------------------------------------------------------------
+# Isolate the import-time config singleton
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def isolated_global_config(minimal_llm_config, minimal_taxonomy):
+    """Replace the ``config.config`` singleton's contents for every test.
+
+    ``config.config`` is loaded at import time from the developer's local
+    ``config.yaml`` (or, without one, from ambient environment variables), and
+    most modules hold it via ``from config import config``. Without this, a
+    local config with e.g. embedding grouping enabled makes tests take
+    different branches — and reach real endpoints — than they do in CI.
+
+    The contents are swapped in place (as ``reload_config()`` does) so every
+    module's reference sees the test config, then restored afterwards.
+    """
+    singleton = config_module.config
+    snapshot = dict(singleton.__dict__)
+    isolated = AppConfig(
+        llm=minimal_llm_config.model_copy(deep=True),
+        summarizer=SummarizerConfig(),
+        database=DatabaseConfig(path=":memory:"),
+        discord=DiscordConfig(webhook_url=None),
+        logging=LoggingConfig(level="INFO"),
+        taxonomy=minimal_taxonomy.model_copy(deep=True),
+    )
+    singleton.__dict__.clear()
+    singleton.__dict__.update(isolated.__dict__)
+    try:
+        yield singleton
+    finally:
+        singleton.__dict__.clear()
+        singleton.__dict__.update(snapshot)
 
 
 # ---------------------------------------------------------------------------

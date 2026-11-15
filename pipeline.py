@@ -15,7 +15,6 @@ import httpx
 import numpy as np
 from tqdm import tqdm
 
-import config as config_module
 from config import AppConfig
 from logger import get_logger
 from models import Article, ArticleSummary, DigestResult, SaveResult
@@ -316,7 +315,9 @@ def summarize_all(
 
 
 def group_pairs(
-    pairs: list[tuple[Article, ArticleSummary]], options: RunOptions
+    pairs: list[tuple[Article, ArticleSummary]],
+    options: RunOptions,
+    config: AppConfig,
 ) -> tuple[dict[int, tuple], np.ndarray | None]:
     """Group articles by topic using embeddings or LLM.
 
@@ -327,9 +328,11 @@ def group_pairs(
     article_group_map: dict[int, tuple] = {}
     embeddings: np.ndarray | None = None
 
-    grouper_cfg = config_module.config.summarizer.steps.get("grouper")
+    # Read the run's own config, not the import-time singleton: run_pipeline()
+    # callers (tests, --config) may pass a different AppConfig.
+    grouper_cfg = config.summarizer.steps.get("grouper")
     use_embeddings = grouper_cfg.use_embeddings if grouper_cfg else False
-    embedding_model = config_module.config.llm.embedding_model
+    embedding_model = config.llm.embedding_model
 
     if use_embeddings and embedding_model:
         logger.info("Embedding を取得中...")
@@ -667,7 +670,7 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
         # Keep retries untouched if the stage aborts, including cancellation.
         total_failure = True
         try:
-            save_result = _process(articles, db, options, rss_fetcher)
+            save_result = _process(articles, db, options, rss_fetcher, config)
             total_failure = options.run_db and not save_result.saved
         except RunFailedError as e:
             total_failure = True
@@ -711,6 +714,7 @@ def run_pipeline(config: AppConfig, options: RunOptions) -> None:
 def _process(
     articles: list[Article], db, options: RunOptions,
     rss_fetcher: MinifluxFetcher | None,
+    config: AppConfig,
 ) -> SaveResult:
     """Summarize → group → digest → output. Returns what was persisted."""
     pairs = summarize_all(articles, options)
@@ -719,7 +723,7 @@ def _process(
             f"{len(articles)}件の記事を要約しようとしましたが、1件も成功しませんでした。"
         )
 
-    article_group_map, embeddings = group_pairs(pairs, options)
+    article_group_map, embeddings = group_pairs(pairs, options, config)
 
     # ダイジェストも Viewer も「カテゴリ → グループ」で階層化するため、
     # クラスタ内のカテゴリを先に揃えておかないと同じニュースが2箇所に分かれる。

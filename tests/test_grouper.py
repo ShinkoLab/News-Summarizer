@@ -72,7 +72,7 @@ def test_pipeline_singleton_retains_embedding(
     embeddings = np.array([[1.0, 0.0]])
     mocker.patch("summarizer.embedder.get_embeddings", return_value=embeddings)
     naming = mocker.patch("summarizer.grouper._name_clusters")
-    groups, actual = group_pairs([(sample_article, sample_summary)], RunOptions())
+    groups, actual = group_pairs([(sample_article, sample_summary)], RunOptions(), embedding_config)
     assert actual is embeddings
     assert groups == {0: (0, sample_summary.title[:15])}
     naming.assert_not_called()
@@ -85,7 +85,7 @@ def test_pipeline_naming_failure_retains_embeddings_and_clusters(
     pairs = [(make_article(source_id=str(i)), make_article_summary(title=f"記事{i}")) for i in range(3)]
     mocker.patch("summarizer.embedder.get_embeddings", return_value=embeddings)
     mocker.patch("summarizer.grouper._name_clusters", side_effect=RuntimeError("naming down"))
-    groups, actual = group_pairs(pairs, RunOptions())
+    groups, actual = group_pairs(pairs, RunOptions(), embedding_config)
     assert actual is embeddings
     assert groups == {0: (0, "記事0"), 1: (0, "記事0"), 2: (1, "記事2")}
 
@@ -96,7 +96,7 @@ def test_pipeline_clustering_failure_retains_embeddings(
     embeddings = np.array([[1.0, 0.0]])
     mocker.patch("summarizer.embedder.get_embeddings", return_value=embeddings)
     mocker.patch("pipeline.group_summaries", side_effect=RuntimeError("clustering failed"))
-    groups, actual = group_pairs([(sample_article, sample_summary)], RunOptions())
+    groups, actual = group_pairs([(sample_article, sample_summary)], RunOptions(), embedding_config)
     assert groups == {}
     assert actual is embeddings
 
@@ -106,7 +106,7 @@ def test_pipeline_embedding_failure_returns_no_vectors(
 ):
     mocker.patch("summarizer.embedder.get_embeddings", side_effect=RuntimeError("embedding down"))
     grouping = mocker.patch("pipeline.group_summaries")
-    groups, embeddings = group_pairs([(sample_article, sample_summary)], RunOptions())
+    groups, embeddings = group_pairs([(sample_article, sample_summary)], RunOptions(), embedding_config)
     assert groups == {}
     assert embeddings is None
     grouping.assert_not_called()

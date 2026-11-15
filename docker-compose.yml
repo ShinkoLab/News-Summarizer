@@ -54,7 +54,7 @@ services:
     # `docker compose up -d --build` で、この名前のままソースからビルドしたものに置き換わる。
     # summarizer-once と同じイメージ名にして、--build で再ビルドされたものを両方が使う。
     # タグはリリース（chore(release)）のたびに新しい版へ上げる。
-    image: ${NEWS_SUMMARIZER_IMAGE:-ghcr.io/shinkolab/news-summarizer:2.8.0}
+    image: ${NEWS_SUMMARIZER_IMAGE:-ghcr.io/shinkolab/news-summarizer:2.9.0}
     build:
       context: .
     environment:
@@ -69,7 +69,7 @@ services:
 
   summarizer-once:
     profiles: ["manual"]
-    image: ${NEWS_SUMMARIZER_IMAGE:-ghcr.io/shinkolab/news-summarizer:2.8.0}
+    image: ${NEWS_SUMMARIZER_IMAGE:-ghcr.io/shinkolab/news-summarizer:2.9.0}
     build:
       context: .
     environment:
